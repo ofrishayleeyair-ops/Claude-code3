@@ -118,18 +118,23 @@ function fractureGeometry(THREE,geometry,o={}){
     polys.push({v:f.verts.map(p=>{const u=ax>=ay&&ax>=az?[p.z,p.y]:ay>=az?[p.x,p.z]:[p.x,p.y];return [p.x,p.y,p.z,n.x,n.y,n.z,u[0]*uvScale,u[1]*uvScale];}),m:0,cut:false});}}
   const planes=hull?hull.planes:[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].map(([x,y,z])=>({n:new THREE.Vector3(x,y,z),c:x>0?box.max.x:x<0?-box.min.x:y>0?box.max.y:y<0?-box.min.y:z>0?box.max.z:-box.min.z}));
   const sourceVolume=convex?meshVolume:hull.volume;
-  // seeds: rejection-sampled inside the solid with a minimum spacing; optionally clustered near the impact point
+  // Seeds: dart throwing inside the solid (Poisson-disk style). The spacing starts near the mean cell size
+  // cbrt(volume/pieces) so cells come out chunky rather than as slivers, relaxes by 15% whenever 40 darts in a row
+  // fail, and never drops below minSize. With an impact point, a share of the darts is Gaussian around it and the
+  // spacing there shrinks to 45%, giving finer fragments near the hit and larger ones away from it.
   const want=Math.max(1,Math.min(256,Math.round(o.pieces==null?8:o.pieces))),rnd=KE.random(o.seed==null?1:o.seed);
   const minSize=Math.max(o.minSize==null?.08:o.minSize,diag*1e-4),seeds=[],impact=o.point?readVec(o.point,new THREE.Vector3()):null,margin=minSize*.25;
   const inside=p=>{for(const pl of planes)if(pl.n.dot(p)-pl.c>-margin)return false;return true;};
   const gauss=()=>{let u=0;for(let i=0;i<4;i++)u+=rnd();return (u-2)*.866;};
-  const sigma=diag*(o.spread==null?.22:o.spread);
-  let minDist=minSize;
-  for(let attempt=0,limit=want*120;seeds.length<want&&attempt<limit;attempt++){
-    if(attempt===Math.floor(limit*.6))minDist*=.5;
-    const p=impact&&rnd()<(o.impactBias==null?.6:o.impactBias)?new THREE.Vector3(impact.x+gauss()*sigma,impact.y+gauss()*sigma,impact.z+gauss()*sigma)
+  const sigma=diag*(o.spread==null?.22:o.spread),bias=o.impactBias==null?.6:o.impactBias;
+  let spacing=Math.max(minSize,Math.cbrt(Math.max(sourceVolume,1e-12)/want)*.62),fails=0;
+  for(let attempt=0,limit=want*200;seeds.length<want&&attempt<limit;attempt++){
+    const p=impact&&rnd()<bias?new THREE.Vector3(impact.x+gauss()*sigma,impact.y+gauss()*sigma,impact.z+gauss()*sigma)
       :new THREE.Vector3(box.min.x+rnd()*size.x,box.min.y+rnd()*size.y,box.min.z+rnd()*size.z);
-    if(!inside(p))continue;let ok=true;for(const q of seeds)if(q.distanceToSquared(p)<minDist*minDist){ok=false;break;}if(ok)seeds.push(p);}
+    if(!inside(p))continue;
+    const need=impact?Math.max(minSize,spacing*clamp(.45+.55*p.distanceTo(impact)/(sigma*2.5),.45,1)):spacing;
+    let ok=true;for(const q of seeds)if(q.distanceToSquared(p)<need*need){ok=false;break;}
+    if(ok){seeds.push(p);fails=0;}else if(++fails>=40){spacing=Math.max(minSize,spacing*.85);fails=0;}}
   if(seeds.length<2)return {pieces:[],convex,sourceVolume,seeds};
   const pieces=[];
   for(let i=0;i<seeds.length;i++){const si=seeds[i];let cell=polys;
@@ -170,7 +175,7 @@ class Body{
     this.syncRotation=opts.syncRotation!==false;this.objectOffset=null;
     this.localBounds=new T.Box3();this.radius=0;
     this._prevP=new T.Vector3();this._curP=new T.Vector3();this._prevQ=new T.Quaternion();this._curQ=new T.Quaternion();
-    this._stamp=-1;this._synced=false;this._follow=false;this._joints=null;
+    this._stamp=-1;this._synced=false;this._follow=false;this._joints=null;this._breakable=null;
   }
   _rb(){if(this.removed)throw new Error('KE.Physics3D: body '+this.id+' has been removed');return this.rigidBody;}
   get mass(){return this._rb().mass();}
@@ -188,8 +193,8 @@ class Body{
   getVelocity(out=new this.physics.THREE.Vector3()){const l=this._rb().linvel();return out.set(l.x,l.y,l.z);}
   setAngularVelocity(v){this._rb().setAngvel(setXYZ(this.physics._a,readVec(v,this.physics._t1)),true);return this;}
   getAngularVelocity(out=new this.physics.THREE.Vector3()){const l=this._rb().angvel();return out.set(l.x,l.y,l.z);}
-  setPosition(v){const rb=this._rb();readVec(v,this._curP);rb.setTranslation(setXYZ(this.physics._a,this._curP),true);this._prevP.copy(this._curP);if(!this._follow)this.physics._writeBody(this,1,true);return this;}
-  setRotation(q){const rb=this._rb();readQuat(q,this._curQ,this.physics.THREE);const r=this.physics._q;r.x=this._curQ.x;r.y=this._curQ.y;r.z=this._curQ.z;r.w=this._curQ.w;rb.setRotation(r,true);this._prevQ.copy(this._curQ);if(!this._follow)this.physics._writeBody(this,1,true);return this;}
+  setPosition(v){const rb=this._rb();readVec(v,this._curP);rb.setTranslation(setXYZ(this.physics._a,this._curP),true);this.physics._queriesDirty=true;this._prevP.copy(this._curP);if(!this._follow)this.physics._writeBody(this,1,true);return this;}
+  setRotation(q){const rb=this._rb();readQuat(q,this._curQ,this.physics.THREE);this.physics._queriesDirty=true;const r=this.physics._q;r.x=this._curQ.x;r.y=this._curQ.y;r.z=this._curQ.z;r.w=this._curQ.w;rb.setRotation(r,true);this._prevQ.copy(this._curQ);if(!this._follow)this.physics._writeBody(this,1,true);return this;}
   /* Instant move without interpolation smear; velocities are cleared unless keepVelocity. */
   teleport(pos,quat,{keepVelocity=false}={}){if(pos!=null)this.setPosition(pos);if(quat!=null)this.setRotation(quat);
     if(!keepVelocity&&this.type!=='fixed'){const z=this.physics._a;z.x=z.y=z.z=0;this.rigidBody.setLinvel(z,true);this.rigidBody.setAngvel(z,true);}return this;}
@@ -199,7 +204,7 @@ class Body{
   sleep(){this._rb().sleep();return this;}
   wakeUp(){this._rb().wakeUp();return this;}
   isSleeping(){return this._rb().isSleeping();}
-  setEnabled(on){this._rb().setEnabled(!!on);return this;}
+  setEnabled(on){this._rb().setEnabled(!!on);this.physics._queriesDirty=true;return this;}
   isEnabled(){return this._rb().isEnabled();}
   setGravityScale(s){this._rb().setGravityScale(s,true);return this;}
   setCcd(on){this._rb().enableCcd(!!on);return this;}
@@ -213,7 +218,7 @@ class Body{
 
 /* ---------- joints ---------- */
 class Joint{
-  constructor(physics,joint,type,a,b,axis){this.physics=physics;this.joint=joint;this.type=type;this.bodyA=a;this.bodyB=b;this.axis=axis;this.disposed=false;this._angle0=0;}
+  constructor(physics,joint,type,a,b,axis){this.physics=physics;this.joint=joint;this.type=type;this.bodyA=a;this.bodyB=b;this.axis=axis;this.disposed=false;this._angle0=0;this._anchor=null;}
   _j(){if(this.disposed)throw new Error('KE.Physics3D: joint has been disposed');return this.joint;}
   setLimits(min,max){const j=this._j();if(typeof j.setLimits!=='function')throw new TypeError('KE.Physics3D: '+this.type+' joints have no limits');j.setLimits(min,max);return this;}
   /* motor: {targetVelocity, targetPosition, stiffness, damping, maxForce|factor, model:'acceleration'|'force'} */
@@ -229,7 +234,8 @@ class Joint{
     let ang=2*Math.atan2(r.x*a.x+r.y*a.y+r.z*a.z,r.w);if(ang>Math.PI)ang-=2*Math.PI;if(ang<-Math.PI)ang+=2*Math.PI;return ang;}
   dispose(){if(this.disposed)return;this.disposed=true;const p=this.physics;
     if(p.world&&this.joint&&this.bodyA&&!this.bodyA.removed&&this.bodyB&&!this.bodyB.removed)p.world.removeImpulseJoint(this.joint,true);
-    p.joints.delete(this);for(const b of [this.bodyA,this.bodyB])if(b&&b._joints)b._joints.delete(this);this.joint=null;}
+    p.joints.delete(this);for(const b of [this.bodyA,this.bodyB])if(b&&b._joints)b._joints.delete(this);this.joint=null;
+    if(this._anchor&&!this._anchor.removed&&p.world)p.remove(this._anchor);this._anchor=null;}
 }
 
 /* ---------- kinematic character controller ---------- */
@@ -266,10 +272,12 @@ class CharacterController{
   set pushDynamic(v){this._push=!!v;if(this.controller)this.controller.setApplyImpulsesToDynamicBodies(this._push);}
   /* Request a jump; succeeds when grounded or within coyoteTime of leaving the ground. Returns true on success. */
   jump(speed=5){if(this.disposed)return false;if(this.grounded||this.airTime<=this.coyoteTime){this._jump=speed;return true;}return false;}
-  /* desiredVelocity: world XZ velocity (m/s); Y is ignored unless fly:true. Gravity and jumps are integrated here. */
+  /* desiredVelocity: world XZ velocity (m/s); Y is ignored unless fly:true. Gravity and jumps are integrated here.
+     dt is scaled by physics.timeScale; while the world is paused this is a no-op. */
   move(desiredVelocity,dt){
     if(this.disposed)throw new Error('KE.Physics3D: character has been disposed');
-    const p=this.physics,rb=this.body.rigidBody,c=this.controller;dt=dt>0?Math.min(dt,.1):p.fixedStep;
+    const p=this.physics,rb=this.body.rigidBody,c=this.controller;if(p.paused)return this;
+    dt=(dt>0?Math.min(dt,.1):p.fixedStep)*p.timeScale;if(!(dt>0))return this;
     const v=readVec(desiredVelocity,p._t1);
     if(this._pending){rb.setTranslation(setXYZ(p._a,this._center),true);p.world.propagateModifiedBodyPositionsToColliders();}
     let vy;
@@ -278,6 +286,7 @@ class CharacterController{
       this.verticalVelocity=Math.max(this.verticalVelocity+this.gravity*dt,-this.maxFallSpeed);vy=this.verticalVelocity;}
     if(vy>0&&c.snapToGroundEnabled())c.disableSnapToGround();else if(vy<=0&&this.snapToGround>0&&!c.snapToGroundEnabled())c.enableSnapToGround(this.snapToGround);
     const d=this._desired;d.x=v.x*dt;d.y=vy*dt;d.z=v.z*dt;
+    if(p._queriesDirty&&p.autoUpdateQueries)p.updateQueries();
     c.computeColliderMovement(this.body.collider,d,p.RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,this._filterGroups);
     const m=c.computedMovement();
     this.grounded=c.computedGrounded();
@@ -294,7 +303,7 @@ class CharacterController{
   }
   /* Instant placement (feet position). */
   teleport(pos){const p=this.physics;readVec(pos,this.position);this._center.copy(this.position);this._center.y+=this.height/2;
-    this.body.rigidBody.setTranslation(setXYZ(p._a,this._center),true);p.world.propagateModifiedBodyPositionsToColliders();this._pending=false;
+    this.body.rigidBody.setTranslation(setXYZ(p._a,this._center),true);p.world.propagateModifiedBodyPositionsToColliders();this._pending=false;p._queriesDirty=true;
     this.verticalVelocity=0;this.velocity.set(0,0,0);this.body._curP.copy(this._center);this.body._prevP.copy(this._center);p._writeBody(this.body,1);return this;}
   dispose(){if(this.disposed)return;this.disposed=true;const p=this.physics;
     if(p.world){p.world.removeCharacterController(this.controller);if(!this.body.removed)p.remove(this.body);}
@@ -346,12 +355,12 @@ class PhysicsWorld{
     if(o.solverIterations>0)this.world.numSolverIterations=Math.round(o.solverIterations);
     this.maxSubSteps=Math.max(1,Math.round(o.maxSubSteps||4));this.maxDelta=o.maxDelta>0?o.maxDelta:.25;this.interpolate=o.interpolate!==false;
     this.eventQueue=new R.EventQueue(true);this.events=new KE.Events();this.scene=o.scene||null;
-    this.timeScale=1;this.paused=false;this.time=0;this.accumulator=0;this.alpha=1;this.droppedTime=0;this.stepCount=0;this.lastSubSteps=0;this.disposed=false;
+    this.timeScale=1;this.paused=false;this.autoUpdateQueries=o.autoUpdateQueries!==false;this._queriesDirty=false;this.time=0;this.accumulator=0;this.alpha=1;this.droppedTime=0;this.stepCount=0;this.lastSubSteps=0;this.disposed=false;
     this.maxDebris=o.maxDebris!=null?o.maxDebris:Math.round(64+192*clamp(KE.settings&&Number.isFinite(KE.settings.vfx)?KE.settings.vfx:1,0,1));this.defaults={friction:.6,restitution:.1,density:1,...(o.defaults||{})};
     this.bodies=new Map();this._colliderBody=new Map();this._objectBody=new WeakMap();this._sensors=new Set();
-    this._live=[];this._liveNext=[];this._settle=[];this._followers=new Set();this._forceBodies=new Set();this._debris=[];this._buoyancy=new Map();
+    this._live=[];this._liveNext=[];this._settle=[];this._followers=new Set();this._forceBodies=new Set();this._debris=[];this._buoyancy=new Map();this._breakQueue=[];
     this.characters=new Set();this.joints=new Set();this.vehicles=new Set();
-    this._stepMs=0;this.lastStepMs=0;this._contacts=0;this._awake=0;this._fractureSeed=1;this._ground=null;this._debug=null;
+    this._stepMs=0;this.lastStepMs=0;this._contacts=0;this._awake=0;this._fractureSeed=1;this._debug=null;
     // temps (no per-step allocation on the JS side)
     this._t1=new THREE.Vector3();this._t2=new THREE.Vector3();this._t3=new THREE.Vector3();this._t4=new THREE.Vector3();this._tp=new THREE.Vector3();this._ts=new THREE.Vector3();
     this._tq=new THREE.Quaternion();this._tq2=new THREE.Quaternion();this._tq3=new THREE.Quaternion();this._tm=new THREE.Matrix4();this._tm2=new THREE.Matrix4();
@@ -360,7 +369,8 @@ class PhysicsWorld{
     this._collisionCb=(h1,h2,started)=>{let n=this._evN;if(n>=this._evH1.length){const grow=(A,C)=>{const B=new C(A.length*2);B.set(A);return B;};this._evH1=grow(this._evH1,Float64Array);this._evH2=grow(this._evH2,Float64Array);this._evS=grow(this._evS,Uint8Array);}
       this._evH1[n]=h1;this._evH2[n]=h2;this._evS[n]=started?1:0;this._evN=n+1;};
     this._forceEvents=[];this._forceCb=e=>{this._forceEvents.push({h1:e.collider1(),h2:e.collider2(),magnitude:e.totalForceMagnitude(),force:e.totalForce(),maxDirection:e.maxForceDirection()});};
-    this._activeCb=rb=>{const b=this.bodies.get(rb.handle);if(!b)return;this._awake++;if(!b._synced)return;
+    // Every active body's pose is tracked (object or not): getPosition(), joints, fracture and explode read it.
+    this._activeCb=rb=>{const b=this.bodies.get(rb.handle);if(!b)return;this._awake++;
       b._prevP.copy(b._curP);b._prevQ.copy(b._curQ);const t=rb.translation(),r=rb.rotation();b._curP.set(t.x,t.y,t.z);b._curQ.set(r.x,r.y,r.z,r.w);
       if(b._stamp!==this.stepCount){b._stamp=this.stepCount;this._liveNext.push(b);}};
     if(o.debug&&this.scene)this.debug(this.scene,true);
@@ -442,7 +452,7 @@ class PhysicsWorld{
     body._curP.copy(frame.P);body._prevP.copy(frame.P);body._curQ.copy(frame.Q);body._prevQ.copy(frame.Q);
     if(o.bounds)body.localBounds.copy(o.bounds);else body.localBounds.setFromCenterAndSize(this._t1.set(0,0,0),this._t2.set(.5,.5,.5));
     body.radius=Math.max(body.localBounds.min.length(),body.localBounds.max.length(),1e-3);
-    this.bodies.set(rb.handle,body);for(const c of colliders){this._colliderBody.set(c.handle,body);if(o.sensor)this._sensors.add(c.handle);}
+    this.bodies.set(rb.handle,body);this._queriesDirty=true;for(const c of colliders){this._colliderBody.set(c.handle,body);if(o.sensor)this._sensors.add(c.handle);}
     if(object){this._objectBody.set(object,body);
       if(type==='kinematic'&&o.follow!==false){body._follow=true;this._followers.add(body);}else if(type!=='fixed')body._synced=true;}
     return body;
@@ -541,12 +551,14 @@ class PhysicsWorld{
   /* Removes a body (and its colliders and joints). object:true also detaches the object; owned debris is always detached and its geometry disposed. */
   remove(body,{object=false}={}){
     if(!body||body.removed)return false;this._alive();body.removed=true;
-    if(body._joints){for(const j of [...body._joints]){j.disposed=true;this.joints.delete(j);j.joint=null;}body._joints=null;}
+    // Rapier drops the body's joints with it; mark ours disposed and release private world anchors
+    if(body._joints){for(const j of [...body._joints]){j.disposed=true;this.joints.delete(j);j.joint=null;const other=j.bodyA===body?j.bodyB:j.bodyA;if(other&&other._joints)other._joints.delete(j);
+      const an=j._anchor;j._anchor=null;if(an&&an!==body&&!an.removed)this.remove(an);}body._joints=null;}
     for(const v of [...this.vehicles])if(v.chassis===body)v.dispose();
     if(body.character&&!body.character.disposed){body.character.disposed=true;this.world.removeCharacterController(body.character.controller);this.characters.delete(body.character);}
     this._buoyancy.delete(body);this._followers.delete(body);this._forceBodies.delete(body);
     for(const c of body.colliders){this._colliderBody.delete(c.handle);this._sensors.delete(c.handle);}
-    this.world.removeRigidBody(body.rigidBody);this.bodies.delete(body.id);
+    this.world.removeRigidBody(body.rigidBody);this.bodies.delete(body.id);this._queriesDirty=true;
     if(body.object&&this._objectBody.get(body.object)===body)this._objectBody.delete(body.object);
     if(body.owned||object){const ob=body.object;if(ob){if(ob.parent)ob.parent.remove(ob);if(body.owned&&ob.geometry)ob.geometry.dispose();}}
     if(body.owned){const i=this._debris.indexOf(body);if(i>=0)this._debris.splice(i,1);}
@@ -571,11 +583,12 @@ class PhysicsWorld{
   _substep(){
     const h=this.fixedStep,prof=KE.profiler;
     if(this.events.listeners.has('beforeStep'))this.events.emit('beforeStep',h,this.time);
+    if(this.vehicles.size&&this._queriesDirty&&this.autoUpdateQueries)this.updateQueries();   // wheel rays are scene queries
     for(const b of this._followers)this._follow(b);
     for(const rec of this._buoyancy.values())this._applyBuoyancy(rec,h);
     for(const v of this.vehicles)v._update(h);
     if(prof)prof.begin('physics.step');const t0=performance.now();
-    this.world.step(this.eventQueue);
+    this.world.step(this.eventQueue);this._queriesDirty=false;
     const ms=performance.now()-t0;if(prof)prof.end('physics.step');this.lastStepMs=ms;this._stepMs+=(ms-this._stepMs)*(this.stepCount?.1:1);
     this.time+=h;this.stepCount++;
     for(const c of this.characters)c._pending=false;
@@ -616,15 +629,37 @@ class PhysicsWorld{
       const a=this._colliderBody.get(h1),b=this._colliderBody.get(h2);if(!a||!b||a.removed||b.removed)continue;
       if(s1||s2){const sensor=s1?a:b,other=s1?b:a;if(wantTrigger)this.events.emit('trigger',sensor,other,started);if(sensor.onTrigger&&!sensor.removed)sensor.onTrigger(other,started);
         if(other!==sensor&&other.onTrigger&&!other.removed)other.onTrigger(sensor,started);continue;}
-      if(!wantContact&&!a.onContact&&!b.onContact)continue;
+      const brk=started&&(a._breakable||b._breakable);
+      if(!wantContact&&!a.onContact&&!b.onContact&&!brk)continue;
       const info={started,impulse:0,point:null,normal:null,colliderA:h1,colliderB:h2};
       if(started)this._contactInfo(h1,h2,info);
+      if(brk){this._queueBreak(a,info,-1);this._queueBreak(b,info,1);}
       if(wantContact)this.events.emit('contact',a,b,info);
       if(a.onContact&&!a.removed)a.onContact(b,info);if(b.onContact&&!b.removed&&!a.removed)b.onContact(a,info);}
+    if(this._breakQueue.length)this._processBreaks();
     if(wantForces)for(const e of this._forceEvents){const a=this._colliderBody.get(e.h1),b=this._colliderBody.get(e.h2);if(!a||!b||a.removed||b.removed)continue;
       const info={magnitude:e.magnitude,force:new this.THREE.Vector3(e.force.x,e.force.y,e.force.z),direction:new this.THREE.Vector3(e.maxDirection.x,e.maxDirection.y,e.maxDirection.z)};
       this.events.emit('contactForce',a,b,info);if(a.onContactForce)a.onContactForce(b,info);if(b.onContactForce)b.onContactForce(a,info);}
   }
+  /* ----- impact breaking ----- */
+  /* Marks a Mesh body to fracture automatically when a contact starts with a total impulse >= threshold (N·s,
+     default 4 x mass, i.e. roughly a 4 m/s velocity change). Other options are passed to fracture();
+     impulseScale (default .35) of the contact impulse is re-applied to the pieces along the contact normal. */
+  breakable(body,o={}){
+    this._alive();if(!body||body.removed||!body.object||!body.object.isMesh)throw new TypeError('KE.Physics3D.breakable: a live body whose object is a Mesh is required');
+    const rec={body,threshold:o.threshold!=null?o.threshold:4*Math.max(body.mass,1e-3),options:o,onBreak:o.onBreak||null,queued:false};body._breakable=rec;
+    return {record:rec,dispose(){if(body._breakable===rec)body._breakable=null;}};
+  }
+  _queueBreak(body,info,sign){const rec=body._breakable;if(!rec||rec.queued||body.type!=='dynamic'||!(info.impulse>=rec.threshold))return;rec.queued=true;
+    const T=this.THREE,n=info.normal?info.normal.clone().multiplyScalar(-sign):new T.Vector3(0,1,0);
+    this._breakQueue.push({rec,point:info.point?info.point.clone():body._curP.clone(),direction:n,impulse:info.impulse});}
+  /* Fractures run after event dispatch so no body is removed while events are still being delivered. */
+  _processBreaks(){const q=this._breakQueue;
+    for(let i=0;i<q.length;i++){const e=q[i],rec=e.rec,b=rec.body;rec.queued=false;if(b.removed||b._breakable!==rec)continue;b._breakable=null;
+      const o=rec.options,scale=o.impulseScale==null?.35:o.impulseScale;
+      const pieces=this.fracture(b,{...o,point:o.point||e.point,impulse:o.impulse||e.direction.clone().multiplyScalar(e.impulse*scale)});
+      this.events.emit('break',b,pieces,e);if(rec.onBreak)rec.onBreak(pieces,e);}
+    q.length=0;}
   _contactInfo(h1,h2,info){const c1=this.world.getCollider(h1),c2=this.world.getCollider(h2);if(!c1||!c2)return;let imp=0,px=0,py=0,pz=0,np=0,nx=0,ny=0,nz=0;
     this.world.contactPair(c1,c2,(m,flipped)=>{const nc=m.numContacts();for(let i=0;i<nc;i++)imp+=m.contactImpulse(i);const ns=m.numSolverContacts();
       for(let i=0;i<ns;i++){const p=m.solverContactPoint(i);px+=p.x;py+=p.y;pz+=p.z;np++;}const n=m.normal(),s=flipped?-1:1;nx+=n.x*s;ny+=n.y*s;nz+=n.z*s;});
@@ -638,15 +673,22 @@ class PhysicsWorld{
       else{const set=new Set(ex);pred=c=>!set.has(this._colliderBody.get(c.handle));}}
     if(o.filter){const f=o.filter,prev=pred;pred=c=>{const b=this._colliderBody.get(c.handle);return (!prev||prev(c))&&!!b&&f(b);};}
     return {flags,groups,exRb,pred};}
+  /* Rapier updates its query acceleration structure only inside world.step, so bodies added, removed or teleported
+     since the last step would be invisible to queries. updateQueries() refreshes it with a zero-length step (no
+     integration; pending kinematic targets are applied at once). Queries call it automatically when needed unless
+     autoUpdateQueries is false. */
+  updateQueries(){this._alive();if(!this._queriesDirty)return this;const w=this.world;w.timestep=0;w.step(this.eventQueue);w.timestep=this.fixedStep;this._queriesDirty=false;return this;}
+  _fresh(){if(this._queriesDirty&&this.autoUpdateQueries)this.updateQueries();}
+  _rayOf(org,dir){const r=this._ray||(this._ray=new this.RAPIER.Ray({x:0,y:0,z:0},{x:0,y:1,z:0}));setXYZ(r.origin,org);setXYZ(r.dir,dir);return r;}
   raycast(origin,direction,maxDistance=1000,o={}){
-    this._alive();const R=this.RAPIER,T=this.THREE,org=readVec(origin,this._t1),dir=readVec(direction,this._t2).normalize(),q=this._queryArgs(o);
-    const hit=this.world.castRayAndGetNormal(new R.Ray({x:org.x,y:org.y,z:org.z},{x:dir.x,y:dir.y,z:dir.z}),maxDistance,o.solid!==false,q.flags,q.groups,undefined,q.exRb,q.pred);
+    this._alive();this._fresh();const T=this.THREE,org=readVec(origin,this._t1),dir=readVec(direction,this._t2).normalize(),q=this._queryArgs(o);
+    const hit=this.world.castRayAndGetNormal(this._rayOf(org,dir),maxDistance,o.solid!==false,q.flags,q.groups,undefined,q.exRb,q.pred);
     if(!hit)return null;const d=hit.timeOfImpact;
     return {body:this._colliderBody.get(hit.collider.handle)||null,collider:hit.collider,distance:d,point:new T.Vector3(org.x+dir.x*d,org.y+dir.y*d,org.z+dir.z*d),normal:new T.Vector3(hit.normal.x,hit.normal.y,hit.normal.z)};
   }
   raycastAll(origin,direction,maxDistance=1000,o={}){
-    this._alive();const R=this.RAPIER,T=this.THREE,org=readVec(origin,new T.Vector3()),dir=readVec(direction,new T.Vector3()).normalize(),q=this._queryArgs(o),out=[];
-    this.world.intersectionsWithRay(new R.Ray({x:org.x,y:org.y,z:org.z},{x:dir.x,y:dir.y,z:dir.z}),maxDistance,o.solid!==false,hit=>{const d=hit.timeOfImpact;
+    this._alive();this._fresh();const T=this.THREE,org=readVec(origin,new T.Vector3()),dir=readVec(direction,new T.Vector3()).normalize(),q=this._queryArgs(o),out=[];
+    this.world.intersectionsWithRay(this._rayOf(org,dir),maxDistance,o.solid!==false,hit=>{const d=hit.timeOfImpact;
       out.push({body:this._colliderBody.get(hit.collider.handle)||null,collider:hit.collider,distance:d,point:new T.Vector3().copy(dir).multiplyScalar(d).add(org),normal:new T.Vector3(hit.normal.x,hit.normal.y,hit.normal.z)});return true;},q.flags,q.groups,undefined,q.exRb,q.pred);
     return out.sort((a,b)=>a.distance-b.distance);
   }
@@ -655,13 +697,13 @@ class PhysicsWorld{
     const he=readVec(s.halfExtents||[.5,.5,.5],this._t3);return new R.Cuboid(he.x,he.y,he.z);}
   /* Sweeps a shape ({type:'ball'|'box'|'capsule'|'cylinder', radius, halfExtents, halfHeight} or a Rapier Shape) along direction. */
   shapeCast(shape,origin,rotation,direction,maxDistance=1000,o={}){
-    this._alive();const T=this.THREE,org=readVec(origin,new T.Vector3()),dir=readVec(direction,new T.Vector3()).normalize(),rot=readQuat(rotation,new T.Quaternion(),T),q=this._queryArgs(o);
+    this._alive();this._fresh();const T=this.THREE,org=readVec(origin,new T.Vector3()),dir=readVec(direction,new T.Vector3()).normalize(),rot=readQuat(rotation,new T.Quaternion(),T),q=this._queryArgs(o);
     const hit=this.world.castShape({x:org.x,y:org.y,z:org.z},{x:rot.x,y:rot.y,z:rot.z,w:rot.w},{x:dir.x,y:dir.y,z:dir.z},this._shape(shape),o.targetDistance||0,maxDistance,o.stopAtPenetration!==false,q.flags,q.groups,undefined,q.exRb,q.pred);
     if(!hit)return null;const d=hit.time_of_impact;
     return {body:this._colliderBody.get(hit.collider.handle)||null,collider:hit.collider,distance:d,position:dir.clone().multiplyScalar(d).add(org),point:new T.Vector3(hit.witness1.x,hit.witness1.y,hit.witness1.z),normal:new T.Vector3(hit.normal1.x,hit.normal1.y,hit.normal1.z)};
   }
   sphereCast(origin,radius,direction,maxDistance=1000,o={}){return this.shapeCast({type:'ball',radius},origin,null,direction,maxDistance,o);}
-  overlapShape(shape,center,rotation,o={}){this._alive();const T=this.THREE,c=readVec(center,new T.Vector3()),rot=readQuat(rotation,new T.Quaternion(),T),q=this._queryArgs(o),set=new Set();
+  overlapShape(shape,center,rotation,o={}){this._alive();this._fresh();const T=this.THREE,c=readVec(center,new T.Vector3()),rot=readQuat(rotation,new T.Quaternion(),T),q=this._queryArgs(o),set=new Set();
     this.world.intersectionsWithShape({x:c.x,y:c.y,z:c.z},{x:rot.x,y:rot.y,z:rot.z,w:rot.w},this._shape(shape),col=>{const b=this._colliderBody.get(col.handle);if(b)set.add(b);return true;},q.flags,q.groups,undefined,q.exRb,q.pred);
     return [...set];}
   overlapSphere(center,radius,o={}){return this.overlapShape({type:'ball',radius},center,null,o);}
@@ -669,33 +711,41 @@ class PhysicsWorld{
 
   /* ----- character, joints, vehicle ----- */
   character(object,o={}){this._alive();return new CharacterController(this,object,o);}
-  _worldAnchor(){if(!this._ground||this._ground.removed)this._ground=this._makeBody(null,{type:'fixed',position:[0,0,0],userData:{worldAnchor:true},shape:'none',events:false},[]);return this._ground;}
+  /* Joints to the world attach to a private collider-less fixed body placed at body A's current pose, so both
+     joint frames start aligned and an axis given in A's local frame means the same thing on both sides. */
+  _anchorBody(P,Q){return this._makeBody(null,{type:'fixed',position:P,quaternion:Q,userData:{worldAnchor:true},shape:'none',events:false},[]);}
+  /* anchorA/anchorB: body-local anchors; anchor: one world-space point for both; axis: body-A-local axis (default +Y)
+     or worldAxis: world-space axis. Revolute/prismatic axes are shared by both bodies in Rapier's JS API, so for
+     body-to-body hinges the bodies' relative rotation at creation must be a rotation about that axis (e.g. equal). */
   joint(bodyA,bodyB,o={}){
     this._alive();const R=this.RAPIER,T=this.THREE,type=o.type||'ball';
-    if(!bodyA||bodyA.removed)throw new TypeError('KE.Physics3D.joint: bodyA required');const b=bodyB||this._worldAnchor();if(b.removed)throw new TypeError('KE.Physics3D.joint: bodyB removed');
-    const pa=bodyA._curP,qa=bodyA._curQ,pb=b._curP,qb=b._curQ;
+    if(!bodyA||bodyA.removed)throw new TypeError('KE.Physics3D.joint: bodyA required');if(bodyB&&bodyB.removed)throw new TypeError('KE.Physics3D.joint: bodyB removed');
+    const pa=bodyA._curP,qa=bodyA._curQ,own=bodyB?null:this._anchorBody(pa,qa),b=bodyB||own,pb=b._curP,qb=b._curQ;
+    const invA=qa.clone().invert(),invB=qb.clone().invert();
     // anchors: explicit local anchors, or a world-space anchor, or body A's origin; the missing side keeps the current relative placement
     const world=new T.Vector3();let aA,aB;
-    if(o.anchor!=null){readVec(o.anchor,world);aA=world.clone().sub(pa).applyQuaternion(qa.clone().invert());aB=world.clone().sub(pb).applyQuaternion(qb.clone().invert());}
+    if(o.anchor!=null){readVec(o.anchor,world);aA=world.clone().sub(pa).applyQuaternion(invA);aB=world.clone().sub(pb).applyQuaternion(invB);}
     else{aA=readVec(o.anchorA||[0,0,0],new T.Vector3());world.copy(aA).applyQuaternion(qa).add(pa);
       // distance joints default to B's origin; the others keep the current relative placement (anchor coincides with A's anchor)
-      aB=o.anchorB!=null?readVec(o.anchorB,new T.Vector3()):(type==='rope'||type==='spring')?new T.Vector3():world.clone().sub(pb).applyQuaternion(qb.clone().invert());}
-    const axis=readVec(o.axis||[0,1,0],new T.Vector3()).normalize(),A={x:aA.x,y:aA.y,z:aA.z},B={x:aB.x,y:aB.y,z:aB.z},X={x:axis.x,y:axis.y,z:axis.z};
+      aB=o.anchorB!=null?readVec(o.anchorB,new T.Vector3()):(type==='rope'||type==='spring')&&bodyB?new T.Vector3():world.clone().sub(pb).applyQuaternion(invB);}
+    const axis=o.worldAxis!=null?readVec(o.worldAxis,new T.Vector3()).applyQuaternion(invA):readVec(o.axis||[0,1,0],new T.Vector3());
+    if(!(axis.lengthSq()>0))throw new RangeError('KE.Physics3D.joint: axis must be non-zero');axis.normalize();
+    const A={x:aA.x,y:aA.y,z:aA.z},B={x:aB.x,y:aB.y,z:aB.z},X={x:axis.x,y:axis.y,z:axis.z};
     let data;const worldB=new T.Vector3().copy(aB).applyQuaternion(qb).add(pb),dist=world.distanceTo(worldB);
     switch(type){
-      case 'fixed':{const f2=qb.clone().invert().multiply(qa);data=R.JointData.fixed(A,{x:0,y:0,z:0,w:1},B,{x:f2.x,y:f2.y,z:f2.z,w:f2.w});break;}
+      case 'fixed':{const f2=invB.clone().multiply(qa);data=R.JointData.fixed(A,{x:0,y:0,z:0,w:1},B,{x:f2.x,y:f2.y,z:f2.z,w:f2.w});break;}
       case 'ball':case 'spherical':data=R.JointData.spherical(A,B);break;
       case 'hinge':case 'revolute':data=R.JointData.revolute(A,B,X);break;
       case 'prismatic':case 'slider':data=R.JointData.prismatic(A,B,X);break;
       case 'rope':data=R.JointData.rope(o.length!=null?o.length:Math.max(dist,1e-3),A,B);break;
       case 'spring':data=R.JointData.spring(o.length!=null?o.length:dist,o.stiffness==null?50:o.stiffness,o.damping==null?2:o.damping,A,B);break;
-      default:throw new RangeError('KE.Physics3D.joint: unknown type '+type);}
+      default:if(own)this.remove(own);throw new RangeError('KE.Physics3D.joint: unknown type '+type);}
     if(o.limits&&(type==='hinge'||type==='revolute'||type==='prismatic'||type==='slider')){data.limitsEnabled=true;data.limits=[o.limits[0],o.limits[1]];}
     const raw=this.world.createImpulseJoint(data,bodyA.rigidBody,b.rigidBody,true);
     if(o.limits&&typeof raw.setLimits==='function')raw.setLimits(o.limits[0],o.limits[1]);
     if(o.collide===false||o.contacts===false)raw.setContactsEnabled(false);
     const j=new Joint(this,raw,type==='revolute'?'hinge':type==='slider'?'prismatic':type==='spherical'?'ball':type,bodyA,b,axis);
-    if(j.type==='hinge')j._angle0=j._rawAngle();
+    j._anchor=own;if(j.type==='hinge')j._angle0=j._rawAngle();
     if(o.motor)j.setMotor(o.motor);
     for(const body of [bodyA,b]){(body._joints||(body._joints=new Set())).add(j);}
     this.joints.add(j);return j;
@@ -793,6 +843,7 @@ class PhysicsWorld{
      Lines show the latest simulated pose, up to one fixed step ahead of interpolated meshes. */
   debug(scene=this.scene,enabled=true,o={}){
     this._alive();
+    if(typeof scene==='boolean'){o=enabled&&typeof enabled==='object'?enabled:o;enabled=scene;scene=this.scene;}
     if(enabled&&typeof enabled==='object'){o=enabled;enabled=true;}
     if(!enabled){if(this._debug){const d=this._debug;if(d.lines.parent)d.lines.parent.remove(d.lines);d.lines.geometry.dispose();d.lines.material.dispose();this._debug=null;}return this;}
     if(!scene)throw new TypeError('KE.Physics3D.debug: scene required');const T=this.THREE;
@@ -823,7 +874,7 @@ class PhysicsWorld{
     for(const b of this.bodies.values()){if(b.owned&&b.object){if(b.object.parent)b.object.parent.remove(b.object);if(b.object.geometry)b.object.geometry.dispose();}
       b.removed=true;b.rigidBody=null;b.colliders=[];b.collider=null;b._joints=null;}
     this.bodies.clear();this._colliderBody.clear();this._sensors.clear();this._followers.clear();this._forceBodies.clear();this._buoyancy.clear();
-    this._live.length=0;this._liveNext.length=0;this._settle.length=0;this._debris.length=0;
+    this._live.length=0;this._liveNext.length=0;this._settle.length=0;this._debris.length=0;this._breakQueue.length=0;
     this.eventQueue.free();this.world.free();this.eventQueue=null;this.world=null;this.disposed=true;
     this.events.emit('dispose',this);this.events.clear();
   }

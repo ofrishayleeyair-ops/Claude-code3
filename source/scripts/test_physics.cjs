@@ -6,7 +6,7 @@ function check(name,cond,detail=''){if(cond){passed++;console.log('PASS '+name);
 const near=(a,b,e)=>Math.abs(a-b)<=e;
 
 (async()=>{
-const {page,close}=await openPage({modules:['src/modules/00-core-v3.js','src/modules/40-physics.js'],libs:true,atlas:false,viewport:{width:960,height:600},name:'physics'});
+const {page,close}=await openPage({modules:['src/modules/00-core-v3.js','src/modules/22-water.js','src/modules/40-physics.js'],libs:true,atlas:false,viewport:{width:640,height:400},name:'physics'});
 try{
 /* shared helpers inside the page */
 await page.evaluate(()=>{
@@ -71,6 +71,16 @@ check('raycast skips sensors by default, hits them with solidOnly:false',near(r.
 check('raycast exclude and raycastAll ordering',r.excl&&near(r.exclDist,8.5,1e-3)&&r.all===2&&r.allSorted,JSON.stringify(r));
 check('sphereCast and overlapSphere',r.scBody&&near(r.sc,r.t-.5/Math.cos(Math.PI/6),.01)&&r.scNormal>.999&&r.ov&&r.ov2===0&&r.miss===null,JSON.stringify(r));}
 
+/* ---------- 4b. queries see bodies added/moved since the last step ---------- */
+{const r=await page.evaluate(async()=>{const THREE=window.THREE,p=await H.world();
+  const m=H.box(1,1,1);const b=p.addBox(m,{type:'fixed'});const h1=p.raycast([0,5,0],[0,-1,0],10);
+  b.setPosition([4,0,0]);const h2=p.raycast([4,5,0],[0,-1,0],10),h3=p.raycast([0,5,0],[0,-1,0],10);
+  const d=H.box(1,1,1);d.position.set(8,3,0);const bd=p.addBox(d);bd.setVelocity([0,0,0]);const y0=bd.getPosition().y;const pcs=p.fracture(bd,{pieces:5,seed:2});const ov=p.overlapSphere([8,3,0],1.2).length;
+  const p2=await H.world({autoUpdateQueries:false});p2.addBox(H.box(1,1,1),{type:'fixed'});const m1=p2.raycast([0,5,0],[0,-1,0],10);p2.updateQueries();const m2=p2.raycast([0,5,0],[0,-1,0],10);
+  const out={h1:h1&&h1.distance,h2:h2&&h2.distance,h3,n:pcs.length,ov,y0,y1:bd.removed,m1,m2:m2&&m2.distance};p.dispose();p2.dispose();return out;});
+check('queries see new, moved and fractured bodies before the next step (autoUpdateQueries)',near(r.h1,4.5,1e-3)&&near(r.h2,4.5,1e-3)&&r.h3===null&&r.ov===r.n&&r.n===5,JSON.stringify(r));
+check('autoUpdateQueries:false defers to updateQueries()',r.m1===null&&near(r.m2,4.5,1e-3),JSON.stringify(r));}
+
 /* ---------- 5. sensor trigger enter/exit and contact events ---------- */
 {const r=await page.evaluate(async()=>{const THREE=window.THREE,p=await H.world();H.ground(p);
   const zone=H.box(3,1,3);zone.position.set(0,3,0);const sensor=p.addBox(zone,{type:'fixed',sensor:true});
@@ -81,6 +91,19 @@ check('sphereCast and overlapSphere',r.scBody&&near(r.sc,r.t-.5/Math.cos(Math.PI
   H.run(p,3);off();const s=p.stats();p.dispose();return {trig,cb,contacts,contactsActive:s.contacts};});
 check('sensor trigger fires enter then exit',r.trig.length===2&&r.trig[0].entered===true&&r.trig[1].entered===false&&r.trig.every(e=>e.s&&e.o)&&r.cb.join()==='true,false',JSON.stringify(r.trig));
 check('contact event fires with impulse, point and normal',r.contacts.length>=1&&r.contacts[0].pair&&r.contacts[0].impulse>0&&near(r.contacts[0].py,0,.05)&&r.contacts[0].ny>.95,JSON.stringify(r.contacts.slice(0,2)));}
+
+/* ---------- 5b. body handle API, object-less bodies, mass ---------- */
+{const r=await page.evaluate(async()=>{const THREE=window.THREE,p=await H.world();H.ground(p);
+  const free=p.addSphere(null,{radius:.5,position:[0,5,0]});H.run(p,.5);const freeY=free.getPosition().y;
+  const heavy=p.addBox(H.box(1,1,1),{mass:5,position:[3,.5,0]});const mass=heavy.mass;
+  const m=H.box(.5,.5,.5);m.position.set(6,3,0);const b=p.addBox(m);b.setEnabled(false);H.run(p,.5);const disabledY=m.position.y;b.setEnabled(true);
+  b.teleport([6,.25,4],new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),.5));const tp={x:m.position.x,y:m.position.y,z:m.position.z,yaw:new THREE.Euler().setFromQuaternion(m.quaternion).y};
+  b.sleep();const slept=b.isSleeping();b.wakeUp();const woke=!b.isSleeping();
+  b.setVelocity([0,4,0]);const vy=b.getVelocity(new THREE.Vector3()).y;b.applyTorqueImpulse([0,.1,0]);b.setAngularVelocity([0,2,0]);
+  const out={freeY,mass,disabledY,tp,slept,woke,vy};p.dispose();return out;});
+check('object-less body pose is tracked',r.freeY<5-.5*9.81*.25*.8&&r.freeY>.4,String(r.freeY));
+check('mass option sets body mass',near(r.mass,5,1e-3),String(r.mass));
+check('setEnabled(false) freezes, teleport places, sleep/wakeUp, setVelocity',near(r.disabledY,3,1e-6)&&near(r.tp.x,6,1e-6)&&near(r.tp.y,.25,1e-6)&&near(r.tp.z,4,1e-6)&&near(r.tp.yaw,.5,1e-5)&&r.slept&&r.woke&&near(r.vy,4,1e-6),JSON.stringify(r));}
 
 /* ---------- 6. hinge joint ---------- */
 {const r=await page.evaluate(async()=>{const THREE=window.THREE,p=await H.world();
@@ -97,10 +120,17 @@ check('contact event fires with impulse, point and normal',r.contacts.length>=1&
   // ball + rope + fixed joints keep their constraints
   const a=H.box(.4,.4,.4);a.position.set(0,5,5);const ba=p.addBox(a,{type:'fixed'});const c=H.box(.4,.4,.4);c.position.set(1.5,5,5);const bc=p.addBox(c);
   const rope=p.joint(ba,bc,{type:'rope'});H.run(p,2);const ropeLen=a.position.distanceTo(c.position);
-  const out={maxAnchorErr,minY,ang,axisTilt,maxLim,motorAng,ropeLen,joints:p.stats().joints};hinge.dispose();out.afterDispose=p.stats().joints;p.dispose();return out;});
+  // world-space axis on an arbitrarily rotated body: no snap at creation, rotation stays about world X
+  const w=H.box(.6,.3,1.2);w.position.set(30,3,0);w.rotation.set(.3,.6,.2);const bw=p.addBox(w,{angularDamping:.02});const q0=w.quaternion.clone();
+  const wh=p.joint(bw,null,{type:'hinge',anchor:[30,3,0],worldAxis:[1,0,0]});H.run(p,.5);const snap=w.quaternion.angleTo(q0);
+  bw.applyTorqueImpulse([.05,0,0]);H.run(p,.5);const dq=bw.getQuaternion().multiply(q0.clone().invert());const dAxis=new THREE.Vector3(dq.x,dq.y,dq.z).normalize();
+  const out={maxAnchorErr,minY,ang,axisTilt,maxLim,motorAng,ropeLen,snap,axisX:Math.abs(dAxis.x),turned:2*Math.acos(Math.min(1,Math.abs(dq.w))),whAngle:wh.angle(),joints:p.stats().joints,bodies:p.stats().bodies};
+  hinge.dispose();out.afterDispose=p.stats().joints;out.bodiesAfter=p.stats().bodies;p.remove(bw);out.afterRemove=p.stats().joints;out.bodiesAfterRemove=p.stats().bodies;out.whDisposed=wh.disposed;p.dispose();return out;});
 check('hinge joint keeps its anchor and axis while swinging',r.maxAnchorErr<.03&&r.minY>1.95&&r.axisTilt>.999&&Math.abs(r.ang)>.5,JSON.stringify(r));
 check('hinge limits and motor',r.maxLim<.47&&r.motorAng>.6,JSON.stringify(r));
-check('rope joint bounds distance; joint dispose removes it',r.ropeLen<1.53&&r.joints===4&&r.afterDispose===3,JSON.stringify(r));}
+check('rope joint bounds distance; joint dispose removes it and its world anchor',r.ropeLen<1.53&&r.joints===5&&r.afterDispose===4&&r.bodiesAfter===r.bodies-1,JSON.stringify(r));
+check('hinge with worldAxis on a rotated body: no snap, turns about world X',r.snap<.01&&r.axisX>.999&&r.turned>.1&&Math.abs(Math.abs(r.whAngle)-r.turned)<.02,JSON.stringify(r));
+check('removing a jointed body disposes its joints and private anchors',r.afterRemove===3&&r.bodiesAfterRemove===r.bodiesAfter-2&&r.whDisposed,JSON.stringify(r));}
 
 /* ---------- 7. character controller ---------- */
 {const r=await page.evaluate(async()=>{const THREE=window.THREE,p=await H.world();H.ground(p,80);
@@ -116,7 +146,9 @@ check('rope joint bounds distance; joint dispose removes it',r.ropeLen<1.53&&r.j
   const hero3=new THREE.Group();hero3.position.set(-2,0,-12);const ch3=p.character(hero3,{maxSlope:45*Math.PI/180});for(let i=0;i<180;i++){ch3.move(v,1/60);p.step(1/60);}
   // wall
   const wall=H.box(.4,3,4);wall.position.set(3.2,1.5,12);p.addBox(wall,{type:'fixed'});
-  const hero2=new THREE.Group();hero2.position.set(0,0,12);const ch2=p.character(hero2);for(let i=0;i<150;i++){ch2.move(v,1/60);p.step(1/60);}
+  const zone=H.box(.8,2,2);zone.position.set(.9,1,12);const zs=p.addBox(zone,{type:'fixed',sensor:true});const zt=[];
+  const hero2=new THREE.Group();hero2.position.set(0,0,12);const ch2=p.character(hero2);p.on('trigger',(s,o,e)=>{if(s===zs)zt.push({e,ch:o===ch2.body,x:+ch2.position.x.toFixed(2)});});
+  for(let i=0;i<150;i++){ch2.move(v,1/60);p.step(1/60);}
   const wallX=ch2.position.x,wallHit=ch2.collisions.length;
   // push a dynamic crate
   const crate=H.box(.8,.8,.8);crate.position.set(2,.4,24);const cb=p.addBox(crate,{density:.3,friction:.3});
@@ -125,14 +157,15 @@ check('rope joint bounds distance; joint dispose removes it',r.ropeLen<1.53&&r.j
   // jump
   const hero5=new THREE.Group();hero5.position.set(-10,0,-24);const ch5=p.character(hero5);for(let i=0;i<10;i++){ch5.move(new THREE.Vector3(),1/60);p.step(1/60);}
   const wasGrounded=ch5.grounded,jumped=ch5.jump(5);let peak=0;for(let i=0;i<120;i++){ch5.move(new THREE.Vector3(),1/60);p.step(1/60);peak=Math.max(peak,ch5.position.y);}
-  const out={slope,steepY:ch3.position.y,steepX:ch3.position.x,wallX,wallHit,pushed,wasGrounded,jumped,peak,landed:ch5.grounded&&ch5.position.y<.05};
+  const out={slope,steepY:ch3.position.y,steepX:ch3.position.x,wallX,wallHit,pushed,wasGrounded,jumped,peak,landed:ch5.grounded&&ch5.position.y<.05,zt};
   ch.dispose();out.bodiesAfterDispose=p.stats().characters;p.dispose();return out;});
 check('character walks up a gentle 15deg slope',r.slope.x>3&&near(r.slope.y,r.slope.expected,.1)&&r.slope.grounded&&near(r.slope.objY,r.slope.y,.1),JSON.stringify(r.slope));
 check('character cannot climb a 60deg slope',r.steepY<.6,JSON.stringify({y:r.steepY,x:r.steepX}));
 check('character is blocked by a wall',r.wallX<3-.35+.05&&r.wallX>2.3&&r.wallHit>0,JSON.stringify({x:r.wallX,hits:r.wallHit}));
 check('character pushes a dynamic crate',r.pushed>.5,String(r.pushed));
 check('character jumps and lands',r.wasGrounded&&r.jumped&&r.peak>1&&r.peak<1.6&&r.landed,JSON.stringify(r));
-check('character dispose unregisters it',r.bodiesAfterDispose===4);}
+check('character dispose unregisters it',r.bodiesAfterDispose===4);
+check('character entering/leaving a sensor fires trigger events',r.zt.length===2&&r.zt[0].e===true&&r.zt[1].e===false&&r.zt.every(z=>z.ch)&&r.zt[0].x<.3&&r.zt[1].x>1.5,JSON.stringify(r.zt));}
 
 /* ---------- 8. fracture ---------- */
 {const r=await page.evaluate(async()=>{const THREE=window.THREE,KE=window.KitsuneEngine,p=await H.world();const scene=new THREE.Scene();H.ground(p,40,-5);
@@ -159,6 +192,14 @@ check('fracture pieces inherit momentum (initial +x velocity minus impulse)',nea
 check('sphere fracture keeps mesh volume; non-convex source uses its hull',Math.abs(r.sv/r.meshV-1)<.02&&r.tkConvex===false&&r.tkN===6&&r.sphereShape==='sphere',JSON.stringify(r));
 check('interior material applied to cut faces; debris tracked and disposed',r.sn===10&&r.matOK&&r.debris===18&&r.debrisAfter===17&&r.geomDisposed&&r.afterDispose===0,JSON.stringify(r));}
 
+/* ---------- 8b. impact breaking ---------- */
+{const r=await page.evaluate(async()=>{const THREE=window.THREE,p=await H.world();H.ground(p);const scene=new THREE.Scene();
+  const a=H.box(1,1,1);a.position.set(0,4,0);scene.add(a);const ba=p.addBox(a);const got=[];p.breakable(ba,{pieces:6,seed:3,onBreak:(pcs,e)=>got.push({n:pcs.length,imp:e.impulse,py:e.point.y})});
+  const c=H.box(1,1,1);c.position.set(3,4,0);scene.add(c);const bc=p.addBox(c);p.breakable(bc,{threshold:1e9});
+  const ev=[];p.on('break',(b,pcs)=>ev.push(b===ba));H.run(p,2);
+  const out={got,ev,aRemoved:ba.removed,cIntact:!bc.removed,cY:c.position.y,pieces:scene.children.filter(o=>o.name.endsWith('-piece')).length};p.dispose();return out;});
+check('breakable body fractures on a hard impact; high threshold survives',r.got.length===1&&r.got[0].n===6&&r.got[0].imp>=4&&r.got[0].py<.2&&r.ev.join()==='true'&&r.aRemoved&&r.cIntact&&near(r.cY,.5,.02)&&r.pieces===6,JSON.stringify(r));}
+
 /* ---------- 9. explosion ---------- */
 {const r=await page.evaluate(async()=>{const THREE=window.THREE,p=await H.world();H.ground(p);const list=[];
   for(let i=0;i<8;i++){const a=i/8*Math.PI*2,m=H.box(.5,.5,.5);m.position.set(Math.cos(a)*2,.25,Math.sin(a)*2);list.push(p.addBox(m));}
@@ -177,6 +218,14 @@ check('explode imparts outward (and upward) velocity to bodies in range and wake
   const out={ya:a.position.y,yc:c.position.y,va:ba.getVelocity().length(),submerged:fa.submerged,upright:Math.abs(up.y),waveRange:maxW-minW};p.dispose();return out;});
 check('buoyancy floats a half-density box with its center at the water line, upright',near(r.ya,0,.03)&&r.va<.05&&near(r.submerged,.5,.05)&&r.upright>.99,JSON.stringify(r));
 check('buoyancy: quarter-density box rides higher; wave function bobs the body',near(r.yc,.125,.03)&&r.waveRange>.3,JSON.stringify(r));}
+
+/* ---------- 10b. buoyancy on KE.Water's CPU wave surface ---------- */
+{const r=await page.evaluate(async()=>{const THREE=window.THREE,KE=window.KitsuneEngine;if(!KE.Water)return {skip:true};const p=await H.world();
+  const water=new KE.Water(THREE,new THREE.Scene(),{level:.5,amplitude:.08,wavelength:9});p.on('beforeStep',(h,t)=>{water.time=t;});
+  const m=H.box(1,.6,1);m.position.set(2,2,3);const b=p.addBox(m,{density:.5});p.addBuoyancy(b,{waterLevel:(x,z)=>water.heightAt(x,z)});
+  H.run(p,6);let maxErr=0;H.run(p,2,1/60,()=>{maxErr=Math.max(maxErr,Math.abs(m.position.y-water.heightAt(m.position.x,m.position.z)));});
+  const out={maxErr,y:m.position.y};water.dispose();p.dispose();return out;});
+check('buoyancy follows KE.Water.heightAt (box rides the waves)',r.skip||r.maxErr<.12,JSON.stringify(r));}
 
 /* ---------- 11. transform sync: parents, scale fitting, interpolation, auto shapes ---------- */
 {const r=await page.evaluate(async()=>{const THREE=window.THREE,p=await H.world({gravity:[0,-9.81,0]});H.ground(p,40,-20);
@@ -217,45 +266,48 @@ check('raycast vehicle rests on its wheels and drives forward (+Z)',r.contact&&r
 {const r=await page.evaluate(async()=>{const THREE=window.THREE,p=await H.world();const scene=new THREE.Scene();H.ground(p);const bs=[];
   for(let i=0;i<5;i++){const m=H.box(.5,.5,.5);m.position.set(i,3,0);scene.add(m);bs.push(p.addBox(m));}
   p.debug(scene,true);H.run(p,.5);const lines=scene.getObjectByName('physics-debug');const vc=lines?lines.geometry.drawRange.count:0;
+  p.debug(false);const offGone=!scene.getObjectByName('physics-debug')&&p._debug===null;p.debug(scene,true);
   const s=p.stats();p.pause(true);const y=bs[0].getPosition().y;p.step(1/60);const pausedY=bs[0].getPosition().y;p.pause(false);
   p.timeScale=0;const n0=p.step(1/60);p.timeScale=1;
   const handles=[...p.bodies.values()];p.dispose();let threw=false;try{p.step(1/60);}catch(e){threw=/disposed/.test(e.message);}
-  return {vc,s,pausedSame:y===pausedY,n0,hasLines:!!lines,linesGone:!scene.getObjectByName('physics-debug'),worldNull:p.world===null&&p.eventQueue===null,handlesFreed:handles.every(b=>b.rigidBody===null&&b.removed),threw,objectsKept:scene.children.length===5};});
+  return {vc,offGone,s,pausedSame:y===pausedY,n0,hasLines:!!lines,linesGone:!scene.getObjectByName('physics-debug'),worldNull:p.world===null&&p.eventQueue===null,handlesFreed:handles.every(b=>b.rigidBody===null&&b.removed),threw,objectsKept:scene.children.length===5};});
 check('stats report bodies/colliders/awake/stepMs',r.s.bodies===6&&r.s.colliders===6&&r.s.dynamic===5&&r.s.awake>=5&&r.s.stepMs>0,JSON.stringify(r.s));
-check('debug renderer draws collider wireframes',r.hasLines&&r.vc>100,String(r.vc));
+check('debug renderer draws collider wireframes; debug(false) removes them',r.hasLines&&r.vc>100&&r.offGone,String(r.vc));
 check('pause and timeScale stop the simulation',r.pausedSame&&r.n0===0);
 check('dispose frees world, event queue, handles and debug lines',r.linesGone&&r.worldNull&&r.handlesFreed&&r.threw&&r.objectsKept,JSON.stringify(r));}
 
 /* ---------- 15. screenshot: lit scene mid-simulation with a tower, fracture debris and debug wireframes ---------- */
-{const r=await page.evaluate(async()=>{const THREE=window.THREE,KE=window.KitsuneEngine,p=await H.world();
-  const lin=hex=>new THREE.Color(hex).convertSRGBToLinear();
-  const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(960,600);renderer.outputEncoding=THREE.sRGBEncoding;renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
-  renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05;document.body.appendChild(renderer.domElement);
-  const scene=new THREE.Scene();scene.background=new THREE.Color(0xa9c9e6);scene.fog=new THREE.Fog(lin(0xa9c9e6),24,60);
-  const cam=new THREE.PerspectiveCamera(46,960/600,.1,200);cam.position.set(6.2,4.1,8.6);cam.lookAt(-.2,1.3,-.4);
-  scene.add(new THREE.HemisphereLight(lin(0xcfe3ff),lin(0x4a3a2a),.55));const sun=new THREE.DirectionalLight(lin(0xfff0d8),2.2);sun.position.set(-6,12,7);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.bias=-.0005;
-  Object.assign(sun.shadow.camera,{left:-10,right:10,top:10,bottom:-10,near:1,far:40});scene.add(sun);
+{const r=await page.evaluate(async()=>{const THREE=window.THREE,KE=window.KitsuneEngine,p=await KE.Physics3D.create(THREE,{});
+  const run=s=>H.run(p,s);
+  const W=640,Hh=400,lin=hex=>new THREE.Color(hex).convertSRGBToLinear();
+  const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(W,Hh);renderer.outputEncoding=THREE.sRGBEncoding;renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+  renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.0;document.body.appendChild(renderer.domElement);
+  const scene=new THREE.Scene();scene.background=new THREE.Color(0x9cc3e4);scene.fog=new THREE.Fog(lin(0x9cc3e4),22,55);
+  const cam=new THREE.PerspectiveCamera(47,W/Hh,.1,200);cam.position.set(4.6,3.1,6.6);cam.lookAt(-.5,.9,-.9);
+  scene.add(new THREE.HemisphereLight(lin(0xd6e6ff),lin(0x5a4a38),.65));const sun=new THREE.DirectionalLight(lin(0xfff1dc),2.4);sun.position.set(-5,11,6);sun.castShadow=true;sun.shadow.mapSize.set(1024,1024);sun.shadow.bias=-.0004;sun.shadow.normalBias=.02;
+  Object.assign(sun.shadow.camera,{left:-9,right:9,top:9,bottom:-9,near:1,far:40});scene.add(sun);
   const land=KE.terrain(THREE,{w:41,h:41,sub:1,height:(i,j)=>{const x=i-20,z=j-20,r=Math.hypot(x,z);return r<8?0:Math.min(3,(r-8)*.3)*(.75+.25*Math.sin(i*.7+j*.3));},
-    tint:(i,j)=>{const n=.85+.15*Math.sin(i*1.7+j*.9)*Math.cos(j*1.3-i*.4);return [n,n,n];},material:new THREE.MeshStandardMaterial({color:lin(0x6f8f4e),roughness:.95,vertexColors:true})});
+    tint:(i,j)=>{const n=.82+.18*Math.sin(i*1.7+j*.9)*Math.cos(j*1.3-i*.4);return [n,n*.98,n*.9];},material:new THREE.MeshStandardMaterial({color:lin(0x7b9a55),roughness:.95,vertexColors:true})});
   for(const m of land){m.position.set(-20.5,0,-20.5);m.receiveShadow=true;scene.add(m);}scene.updateMatrixWorld(true);p.addTerrain(land);
-  const palette=[0xb5652e,0xd08a4a,0x9c4f27,0xc97a3c].map(lin);const mk=(w,h,d,c)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:c,roughness:.75}));m.castShadow=m.receiveShadow=true;scene.add(m);return m;};
+  const palette=[0xb5652e,0xd08a4a,0x9c4f27,0xc97a3c].map(lin);const mk=(w,h,d,c,r=.75)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:c,roughness:r}));m.castShadow=m.receiveShadow=true;scene.add(m);return m;};
   // tower of six crates
-  for(let i=0;i<6;i++){const m=mk(.8,.5,.8,palette[i%4]);m.position.set(-4,.25+i*.5,-1.2);m.rotation.y=i*.12;p.addBox(m,{friction:.8,restitution:0});}
-  // brick wall, one course knocked by a ball
-  const bricks=[];for(let y=0;y<5;y++)for(let x=0;x<5;x++){const m=mk(.9,.4,.45,palette[(x*3+y)%4]);m.position.set(.2+x*.92+(y%2)*.46,.2+y*.405,-2.2);bricks.push(p.addBox(m,{friction:.7}));}
-  const ball=new THREE.Mesh(new THREE.SphereGeometry(.32,32,20),new THREE.MeshStandardMaterial({color:lin(0x3b5f9e),roughness:.25,metalness:.3}));ball.castShadow=true;ball.position.set(3.6,.9,1.5);scene.add(ball);const bb=p.addSphere(ball,{density:6});
-  H.run(p,1.2);bb.setVelocity([0,1.5,-11]);
-  // a stone block fractured mid-air by an impact
-  const big=mk(1.3,1.3,1.3,lin(0x8a8f96));big.material.roughness=.9;big.position.set(1.9,3.1,2.4);big.rotation.set(.35,.5,.1);const bigB=p.addBox(big,{density:2.5});H.run(p,.15);
-  const interior=new THREE.MeshStandardMaterial({color:lin(0xd9cdb8),roughness:1});
-  const pieces=p.fracture(bigB,{pieces:16,seed:11,point:big.position.clone().add(new THREE.Vector3(-.5,-.4,-.3)),impulse:new THREE.Vector3(-4,8,1),interiorMaterial:interior});
+  for(let i=0;i<6;i++){const m=mk(.8,.5,.8,palette[i%4]);m.position.set(-4.4,.25+i*.5,1.2);m.rotation.y=i*.12;p.addBox(m,{friction:.8,restitution:0});}
+  // brick wall knocked by a ball
+  for(let y=0;y<5;y++)for(let x=0;x<5;x++){const m=mk(.9,.4,.45,palette[(x*3+y)%4]);m.position.set(.4+x*.92+(y%2)*.46,.2+y*.405,-2.4);p.addBox(m,{friction:.7});}
+  const ball=new THREE.Mesh(new THREE.SphereGeometry(.32,32,20),new THREE.MeshStandardMaterial({color:lin(0x3b5f9e),roughness:.25,metalness:.3}));ball.castShadow=true;ball.position.set(3.9,.9,1.4);scene.add(ball);const bb=p.addSphere(ball,{density:6});
+  run(1.0);bb.setVelocity([0,1.5,-11]);
+  // breakable stone block: fractures by itself when it hits the ground
+  const big=mk(1.3,1.3,1.3,lin(0x8d939b),.9);big.position.set(-1.2,2.6,1.3);big.rotation.set(.35,.5,.1);const bigB=p.addBox(big,{density:2.5});
+  const interior=new THREE.MeshStandardMaterial({color:lin(0xe0d2bb),roughness:1});let pieces=[];
+  p.breakable(bigB,{pieces:18,seed:11,impulse:new THREE.Vector3(1,9,1),scatter:1.1,interiorMaterial:interior,onBreak:pcs=>{pieces=pcs;}});
+  for(let i=0;i<120&&!pieces.length;i++)p.step(1/60);const landed=bigB.removed;
   pieces.forEach(q=>{q.object.castShadow=q.object.receiveShadow=true;});
-  H.run(p,.3);p.step(1/60-1e-6);
-  p.debug(scene,true,{fixed:false});
+  run(.3);p.step(1/60-1e-6);
+  p.debug(scene,true,{fixed:false,opacity:.55});
   renderer.render(scene,cam);
-  const s=p.stats();return {pieces:pieces.length,bodies:s.bodies,lines:scene.getObjectByName('physics-debug').geometry.drawRange.count};});
-await page.screenshot({path:path.join(ROOT,'.test-output/physics.png')});
-check('screenshot scene built (tower, bricks, fracture, debug lines)',r.pieces===16&&r.lines>0,JSON.stringify(r));}
+  const s=p.stats();return {landed,pieces:pieces.length,bodies:s.bodies,lines:scene.getObjectByName('physics-debug').geometry.drawRange.count};});
+await page.screenshot({path:path.join(ROOT,'.test-output/physics.png'),timeout:120000});
+check('screenshot scene built (tower, bricks, fracture on impact, debug lines)',r.landed&&r.pieces===18&&r.lines>0,JSON.stringify(r));}
 
 }catch(e){console.log('FAIL exception '+(e.stack||e.message));failed++;}
 await close().catch(e=>{console.log('FAIL browser errors: '+e.message);failed++;});

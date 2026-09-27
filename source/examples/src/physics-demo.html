@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Physics playground · kitsune enginev3</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#9cc3e4;font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#10202c}
+  canvas{display:block;touch-action:none}
+  #hud{position:fixed;left:12px;top:12px;max-width:min(360px,calc(100vw - 24px));background:#ffffffd9;border-radius:10px;padding:10px 12px;box-shadow:0 2px 12px #0002}
+  #hud h1{font-size:14px;margin:0 0 4px}
+  #hud p{margin:0 0 6px}
+  #hud kbd{font:600 11px ui-monospace,monospace;background:#e6edf3;border:1px solid #c3d0db;border-radius:4px;padding:0 4px}
+  #stats{font:12px ui-monospace,monospace;white-space:pre;color:#2c4254}
+  #err{position:fixed;inset:0;display:none;place-items:center;background:#0b1520e6;color:#fff;font-size:15px;padding:24px;text-align:center}
+</style>
+</head>
+<body>
+<div id="hud">
+  <h1>Physics playground</h1>
+  <p><kbd>WASD</kbd> walk · <kbd>Space</kbd> jump · drag to orbit</p>
+  <p><kbd>Click</kbd> throw a ball · <kbd>Shift</kbd>+click explode · <kbd>F</kbd> fracture the aimed body</p>
+  <p><kbd>G</kbd> collider wireframes · <kbd>T</kbd> slow motion · <kbd>P</kbd> pause · <kbd>R</kbd> reset</p>
+  <div id="stats"></div>
+</div>
+<div id="err"></div>
+<!--THREE-->
+<!--KITSUNE-->
+<script>
+(async function(){
+'use strict';
+const THREE=window.THREE,KE=window.KitsuneEngine;
+const fail=msg=>{const e=document.getElementById('err');e.textContent=msg;e.style.display='grid';};
+if(!KE||!KE.Physics3D||!KE.Physics3D.available){fail('This page needs the kitsune engine with Rapier (kitsune-libs.js). Build it without --lite.');return;}
+
+/* ---------- renderer, camera, lights ---------- */
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
+renderer.outputEncoding=THREE.sRGBEncoding;renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+const lin=hex=>new THREE.Color(hex).convertSRGBToLinear();
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x9cc3e4);scene.fog=new THREE.Fog(lin(0x9cc3e4),30,80);
+const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,.1,300);camera.position.set(9,7,13);
+const controls=new THREE.OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.maxPolarAngle=1.45;controls.minDistance=4;controls.maxDistance=40;
+scene.add(new THREE.HemisphereLight(lin(0xd6e6ff),lin(0x5a4a38),.65));
+const sun=new THREE.DirectionalLight(lin(0xfff1dc),2.4);sun.position.set(-8,16,9);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);
+sun.shadow.bias=-.0004;sun.shadow.normalBias=.02;Object.assign(sun.shadow.camera,{left:-16,right:16,top:16,bottom:-16,near:1,far:60});scene.add(sun);
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+
+/* ---------- materials and helpers ---------- */
+const mat=(c,r=.75,m=0)=>new THREE.MeshStandardMaterial({color:lin(c),roughness:r,metalness:m});
+const wood=[0xb5652e,0xd08a4a,0x9c4f27,0xc97a3c].map(c=>mat(c));
+const stone=mat(0x8d939b,.9),stoneInside=mat(0xe0d2bb,1),metal=mat(0x3b5f9e,.25,.3),dark=mat(0x2f3338,.6);
+const POOL={x:9,z:-6,r:4.2,level:-.35};
+const waterLevel=(x,z,t)=>Math.hypot(x-POOL.x,z-POOL.z)<POOL.r+.5?POOL.level+.05*Math.sin(t*1.7+x*.8)+.04*Math.cos(t*1.3+z*.9):-1e3;
+
+/* ---------- world ---------- */
+let physics=null,hero=null,heroObj=null,world=null,debugOn=false;
+const aim=new THREE.Raycaster(),ndc=new THREE.Vector2(),tmp=new THREE.Vector3();
+
+async function build(){
+  if(world){physics.dispose();scene.remove(world);KE.disposeObject(world);}
+  world=new THREE.Group();scene.add(world);
+  physics=await KE.Physics3D.create(THREE,{scene:world});
+  const box=(w,h,d,m,x,y,z,o={})=>{const mesh=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);mesh.position.set(x,y,z);mesh.castShadow=mesh.receiveShadow=true;world.add(mesh);return {mesh,body:physics.addBox(mesh,o)};};
+
+  // terrain: a flat play area with a sunken pool and rising rim
+  const land=KE.terrain(THREE,{w:61,h:61,sub:1,height:(i,j)=>{const x=i-30,z=j-30,r=Math.hypot(x,z),p=Math.hypot(x-POOL.x,z-POOL.z);
+      const rim=r<17?0:Math.min(4,(r-17)*.35)*(.75+.25*Math.sin(i*.7+j*.3));return rim-(p<POOL.r+1?1.6*Math.min(1,(POOL.r+1-p)/1.5):0);},
+    tint:(i,j)=>{const n=.82+.18*Math.sin(i*1.7+j*.9)*Math.cos(j*1.3-i*.4);return [n,n*.98,n*.9];},
+    material:new THREE.MeshStandardMaterial({color:lin(0x7b9a55),roughness:.95,vertexColors:true})});
+  for(const m of land){m.position.set(-30.5,0,-30.5);m.receiveShadow=true;world.add(m);}
+  world.updateMatrixWorld(true);physics.addTerrain(land);
+  const water=new THREE.Mesh(new THREE.CircleGeometry(POOL.r+.4,48),new THREE.MeshStandardMaterial({color:lin(0x2d7fa0),roughness:.08,metalness:.1,transparent:true,opacity:.72}));
+  water.rotation.x=-Math.PI/2;water.position.set(POOL.x,POOL.level,POOL.z);world.add(water);
+
+  // crate tower and a brick wall
+  for(let i=0;i<7;i++)box(.8,.5,.8,wood[i%4],-5,.25+i*.5,-2,{friction:.8,restitution:0}).mesh.rotation.y=i*.1;
+  for(let y=0;y<6;y++)for(let x=0;x<6;x++)box(.9,.4,.45,wood[(x*3+y)%4],-1+x*.92+(y%2)*.46,.2+y*.405,-5,{friction:.7});
+  // breakable stone pillars
+  for(let i=0;i<3;i++){const s=box(.9,1.8,.9,stone,3+i*1.6,.9,2.5,{density:2.2});physics.breakable(s.body,{pieces:10,interiorMaterial:stoneInside,onBreak:shade});}
+  // floating crates in the pool
+  for(let i=0;i<5;i++){const a=i/5*Math.PI*2,c=box(.7,.5,.7,wood[i%4],POOL.x+Math.cos(a)*2,1+i*.4,POOL.z+Math.sin(a)*2,{density:.45});physics.addBuoyancy(c.body,{waterLevel});}
+  // hinged door on a frame, and a lamp on a rope
+  box(.2,2.4,.2,dark,-8,1.2,4,{type:'fixed'});box(.2,.2,1.6,dark,-8,2.5,4.7,{type:'fixed'});
+  const door=box(.08,2.1,1.2,wood[2],-8,1.1,4.75,{angularDamping:.4});
+  physics.joint(door.body,null,{type:'hinge',anchor:[-8,1.1,4.12],worldAxis:[0,1,0],limits:[-1.9,1.9]});
+  const lamp=new THREE.Mesh(new THREE.SphereGeometry(.28,24,16),metal);lamp.position.set(-3,2.2,5);lamp.castShadow=true;world.add(lamp);
+  const lampBody=physics.addSphere(lamp,{density:3,linearDamping:.05});physics.joint(lampBody,null,{type:'rope',anchor:[-3,5.2,5],length:3});
+  lampBody.applyImpulse([6,0,0]);
+
+  // player: capsule character (feet at the origin)
+  heroObj=new THREE.Group();const torso=new THREE.Mesh(new THREE.CylinderGeometry(.33,.33,.9,20),mat(0xf2efe8,.6));torso.position.y=.8;
+  const head=new THREE.Mesh(new THREE.SphereGeometry(.3,20,14),mat(0xf2efe8,.6));head.position.y=1.45;
+  const nose=new THREE.Mesh(new THREE.BoxGeometry(.12,.12,.25),mat(0xe07a3a,.5));nose.position.set(0,1.45,.3);
+  for(const m of [torso,head,nose]){m.castShadow=true;heroObj.add(m);}heroObj.position.set(0,0,6);world.add(heroObj);
+  hero=physics.character(heroObj,{radius:.35,height:1.75});
+  if(debugOn)physics.debug(world,true,{fixed:false});
+}
+function shade(pieces){for(const p of pieces)p.object.castShadow=p.object.receiveShadow=true;}
+
+/* ---------- input ---------- */
+const keys=new Set();
+addEventListener('keydown',e=>{keys.add(e.code);
+  if(e.code==='KeyG'){debugOn=!debugOn;physics.debug(world,debugOn,{fixed:false});}
+  if(e.code==='KeyT')physics.timeScale=physics.timeScale<1?1:.25;
+  if(e.code==='KeyP')physics.pause(!physics.paused);
+  if(e.code==='KeyR')build();
+  if(e.code==='KeyF'){const hit=aimHit();if(hit&&hit.body&&hit.body.type==='dynamic'&&hit.body.object&&hit.body.object.isMesh)shade(physics.fracture(hit.body,{pieces:8,point:hit.point,impulse:aim.ray.direction.clone().multiplyScalar(4*hit.body.mass),interiorMaterial:hit.body.object.material===stone?stoneInside:undefined}));}
+  if(e.code==='Space'&&hero)hero.jump(6);});
+addEventListener('keyup',e=>keys.delete(e.code));
+addEventListener('blur',()=>keys.clear());
+function setAim(e){ndc.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);aim.setFromCamera(ndc,camera);}
+function aimHit(){return physics.raycast(aim.ray.origin,aim.ray.direction,200,{exclude:hero&&hero.body});}
+addEventListener('pointermove',setAim);
+let down=null;
+renderer.domElement.addEventListener('pointerdown',e=>{down={x:e.clientX,y:e.clientY};});
+renderer.domElement.addEventListener('pointerup',e=>{if(!down||Math.hypot(e.clientX-down.x,e.clientY-down.y)>6)return;down=null;setAim(e);
+  if(e.shiftKey){const hit=aimHit();if(hit){physics.explode(hit.point,5,30,{upward:.4});}return;}
+  const ball=new THREE.Mesh(new THREE.SphereGeometry(.22,20,14),metal);ball.castShadow=true;
+  ball.position.copy(aim.ray.origin).addScaledVector(aim.ray.direction,1.2);world.add(ball);
+  const b=physics.addSphere(ball,{density:8,ccd:true});b.setVelocity(tmp.copy(aim.ray.direction).multiplyScalar(22));
+  setTimeout(()=>{if(!b.removed){physics.remove(b,{object:true});ball.geometry.dispose();}},12000);});
+
+/* ---------- frame ---------- */
+const clock=new THREE.Clock(),move=new THREE.Vector3(),fwd=new THREE.Vector3(),right=new THREE.Vector3(),up=new THREE.Vector3(0,1,0);
+let fps=60,statT=0;
+await build();
+function frame(){
+  const dt=Math.min(clock.getDelta(),.1);
+  // camera-relative walking
+  camera.getWorldDirection(fwd);fwd.y=0;fwd.normalize();right.crossVectors(fwd,up);
+  move.set(0,0,0);if(keys.has('KeyW'))move.add(fwd);if(keys.has('KeyS'))move.sub(fwd);if(keys.has('KeyD'))move.add(right);if(keys.has('KeyA'))move.sub(right);
+  if(move.lengthSq()>0){move.normalize().multiplyScalar(4.5);heroObj.rotation.y=Math.atan2(move.x,move.z);}
+  hero.move(move,dt);physics.step(dt);
+  controls.target.lerp(tmp.copy(heroObj.position).setY(heroObj.position.y+1),1-Math.exp(-6*dt));controls.update();
+  renderer.render(scene,camera);
+  fps+=(1/Math.max(dt,1e-3)-fps)*.05;statT-=dt;
+  if(statT<=0){statT=.25;const s=physics.stats();
+    document.getElementById('stats').textContent=`bodies ${s.bodies}  awake ${s.awake}  debris ${s.debris}\nstep ${s.stepMs.toFixed(2)} ms  fps ${fps.toFixed(0)}${physics.paused?'  PAUSED':physics.timeScale<1?'  SLOW':''}`;}
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})().catch(e=>{const el=document.getElementById('err');el.textContent='Error: '+e.message;el.style.display='grid';console.error(e);});
+</script>
+</body>
+</html>
