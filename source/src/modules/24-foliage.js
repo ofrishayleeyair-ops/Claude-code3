@@ -80,12 +80,20 @@ kfM=modelMatrix*instanceMatrix;
 #endif
 transformed=kfWind(transformed,normal,kfM);}
 #include <project_vertex>`;
+/* Cards seen edge-on smear their texture into streaks: fade their alpha by the true (derivative) face
+   normal against the view direction so the alpha test removes them (colour pass only). */
+const EDGE_FADE=`#if defined(ALPHATEST)&&defined(USE_MAP)
+{vec3 kfFN=normalize(cross(dFdx(vViewPosition),dFdy(vViewPosition)));float kfNdv=abs(dot(kfFN,normalize(vViewPosition)));diffuseColor.a*=mix(1.,smoothstep(.06,.34,kfNdv),kfEdgeFade);}
+#endif
+`;
 /* Alpha-tested cutouts lose coverage in small mips; scale alpha up with the mip level (Golus 2017). */
 const ALPHA_MIP=`#if defined(ALPHATEST)&&defined(USE_MAP)
 {vec2 kfT=vUv*kfMapSize;vec2 kfDx=dFdx(kfT),kfDy=dFdy(kfT);float kfLod=.5*log2(max(max(dot(kfDx,kfDx),dot(kfDy,kfDy)),1e-8));diffuseColor.a*=1.+max(kfLod,0.)*kfAlphaMip;}
 #endif
 #include <alphatest_fragment>`;
-/* Thin-leaf transmission and wrap lighting added for every direct light (already shadowed). */
+/* Thin-leaf transmission and wrap lighting, added for every direct light. It is injected by redefining
+   the RE_Direct macro (not by rewriting lights_fragment_begin), so light loops patched by other systems
+   (KE.CascadedShadows replaces that chunk) still call it, with their shadowing already applied. */
 const TRANSLUCENT_GLSL=`
 void kfTranslucent(const in IncidentLight L,const in GeometricContext g,const in PhysicalMaterial m,inout ReflectedLight r){
  float ndl=dot(g.normal,L.direction);
@@ -97,24 +105,37 @@ void kfTranslucent(const in IncidentLight L,const in GeometricContext g,const in
 #endif
  r.directDiffuse+=L.color*m.diffuseColor*t;
 }
+void kfRE_Direct(const in IncidentLight L,const in GeometricContext g,const in PhysicalMaterial m,inout ReflectedLight r){RE_Direct_Physical(L,g,m,r);kfTranslucent(L,g,m,r);}
+#undef RE_Direct
+#define RE_Direct kfRE_Direct
 `;
-
+/* String patch with a clear failure: minified three.js strips chunk comments, so only #include lines are targeted. */
+function inject(src,target,replacement,what){if(src.indexOf(target)<0)throw new Error('KE.foliage: shader patch target '+target+' missing in '+what+' (Three.js r128 required)');return src.replace(target,replacement);}
 function patchFoliage(THREE,sh,cfg,kind){
   const U=foliageUniforms(THREE);Object.assign(sh.uniforms,sharedRefs(U),cfg.uniforms);const f=cfg.flags;
   const defs=(f.attr?'#define KF_WIND_ATTRIBUTE\n':'');
-  sh.vertexShader=defs+NOISE_GLSL()+WIND_UNIFORMS+GUST_GLSL+TREE_WIND_GLSL+'uniform float kfNormalsUp;\n'+sh.vertexShader.replace('#include <project_vertex>',WIND_APPLY);
-  if(kind==='main')sh.vertexShader=sh.vertexShader.replace('#include <beginnormal_vertex>','#include <beginnormal_vertex>\nobjectNormal=normalize(mix(objectNormal,vec3(0.,1.,0.),kfNormalsUp*.5));');
-  let fs='uniform float kfTranslucency;uniform vec3 kfTransColor;uniform float kfMapSize;uniform float kfAlphaMip;\n'+sh.fragmentShader;
-  if(f.alpha)fs=fs.replace('#include <alphatest_fragment>',ALPHA_MIP);
+  let vs=inject(sh.vertexShader,'#include <project_vertex>',WIND_APPLY,kind+' vertex shader');
+  if(kind==='main'&&cfg.uniforms.kfNormalsUp.value>0)vs=inject(vs,'#include <beginnormal_vertex>','#include <beginnormal_vertex>\nobjectNormal=normalize(mix(objectNormal,vec3(0.,1.,0.),kfNormalsUp*.5));',kind+' vertex shader');
+  sh.vertexShader=defs+NOISE_GLSL()+WIND_UNIFORMS+GUST_GLSL+TREE_WIND_GLSL+'uniform float kfNormalsUp;\n'+vs;
+  let fs='uniform float kfTranslucency;uniform vec3 kfTransColor;uniform float kfMapSize;uniform float kfAlphaMip;uniform float kfEdgeFade;\n'+sh.fragmentShader;
+  if(f.alpha)fs=inject(fs,'#include <alphatest_fragment>',(kind==='main'?EDGE_FADE:'')+ALPHA_MIP,kind+' fragment shader');
   if(kind==='main'){
     /* Keep the (outward-bent) interpolated normal on back faces: canopy lighting stays volumetric. */
-    if(f.unflip)fs=fs.replace('#include <normal_fragment_begin>','#include <normal_fragment_begin>\n#if defined(DOUBLE_SIDED)&&!defined(FLAT_SHADED)\nnormal=normalize(vNormal);geometryNormal=normal;\n#endif');
-    if(f.trans){fs=fs.replace('#include <lights_physical_pars_fragment>','#include <lights_physical_pars_fragment>\n'+TRANSLUCENT_GLSL)
-      .replace('#include <lights_fragment_begin>',THREE.ShaderChunk.lights_fragment_begin.split('RE_Direct( directLight, geometry, material, reflectedLight );').join('RE_Direct( directLight, geometry, material, reflectedLight );kfTranslucent( directLight, geometry, material, reflectedLight );'));}
+    if(f.unflip)fs=inject(fs,'#include <normal_fragment_begin>','#include <normal_fragment_begin>\n#if defined(DOUBLE_SIDED)&&!defined(FLAT_SHADED)\nnormal=normalize(vNormal);geometryNormal=normal;\n#endif',kind+' fragment shader');
+    if(f.trans)fs=inject(fs,'#include <lights_physical_pars_fragment>','#include <lights_physical_pars_fragment>\n'+TRANSLUCENT_GLSL,kind+' fragment shader');
   }
   sh.fragmentShader=fs;
 }
-const flagKey=f=>(f.attr?'A':'a')+(f.trans?'T':'t')+(f.unflip?'U':'u')+(f.alpha?'P':'p');
+const flagKey=f=>(f.attr?'A':'a')+(f.trans?'T':'t')+(f.unflip?'U':'u')+(f.alpha?'P':'p')+(f.up?'N':'n');
+/* Install the foliage hook on a material, chaining whatever onBeforeCompile / cache key it already had,
+   so other systems (KE.surface, KE.CascadedShadows, KE.ProbeVolume) compose in either order. */
+function installHook(THREE,mat,cfg,kind){
+  const prev=Object.prototype.hasOwnProperty.call(mat,'onBeforeCompile')?mat.onBeforeCompile:null;
+  const prevKey=Object.prototype.hasOwnProperty.call(mat,'customProgramCacheKey')?mat.customProgramCacheKey.bind(mat):null;
+  mat.onBeforeCompile=function(sh,renderer){if(prev)prev.call(this,sh,renderer);patchFoliage(THREE,sh,cfg,kind);};
+  const key='ke-foliage-2-'+kind+':'+flagKey(cfg.flags);
+  mat.customProgramCacheKey=()=>prevKey?prevKey()+'|'+key:key;
+}
 
 /* ---------- foliage material ---------- */
 KE.foliageMaterial=(THREE,o={})=>{
@@ -124,27 +145,33 @@ KE.foliageMaterial=(THREE,o={})=>{
   const mat=new THREE.MeshStandardMaterial({map,color:srgb(THREE,o.color,0xffffff),alphaTest,roughness:o.roughness!==undefined?o.roughness:.78,metalness:0,side:doubleSided?THREE.DoubleSide:THREE.FrontSide,vertexColors:!!o.vertexColors});
   if(o.bumpMap){mat.bumpMap=o.bumpMap;mat.bumpScale=o.bumpScale!==undefined?o.bumpScale:.03;}
   if(o.normalMap)mat.normalMap=o.normalMap;
+  const normalsUp=o.normalsUp!==undefined?o.normalsUp:(doubleSided?.5:0);
   const uniforms={kfWindAmp:{value:new THREE.Vector3(wind.trunk,wind.branch,wind.leaf)},kfRefHeight:{value:Math.max(1e-3,o.height||1)},kfTranslucency:{value:translucency},
-    kfTransColor:{value:srgb(THREE,o.translucencyColor,0xd2e67a)},kfNormalsUp:{value:o.normalsUp!==undefined?o.normalsUp:(doubleSided?.5:0)},
-    kfMapSize:{value:map&&map.image?Math.max(map.image.width||256,map.image.height||256):256},kfAlphaMip:{value:o.alphaMip!==undefined?o.alphaMip:.25}};
-  const flags={attr:o.windAttribute!==undefined?!!o.windAttribute:true,trans:translucency>0,unflip:doubleSided&&o.keepNormals!==false,alpha:alphaTest>0};
-  const cfg={THREE,uniforms,flags,depth:null,distance:null};
+    kfTransColor:{value:srgb(THREE,o.translucencyColor,0xd2e67a)},kfNormalsUp:{value:normalsUp},
+    kfMapSize:{value:map&&map.image?Math.max(map.image.width||256,map.image.height||256):256},kfAlphaMip:{value:o.alphaMip!==undefined?o.alphaMip:.25},
+    kfEdgeFade:{value:o.edgeFade!==undefined?o.edgeFade:1}};
+  const flags={attr:o.windAttribute!==undefined?!!o.windAttribute:true,trans:translucency>0,unflip:doubleSided&&o.keepNormals!==false,alpha:alphaTest>0,up:normalsUp>0};
+  const cfg={THREE,uniforms,flags,wind,depth:null,distance:null};
   mat.userData.keFoliage=cfg;mat.userData.keTextures=[map,o.bumpMap].filter(Boolean);
+  /* geometry without windWeight reads a constant zero weight (static) instead of failing */
   mat.defaultAttributeValues={windWeight:[0,0,0,0],color:[1,1,1],uv:[0,0]};
-  mat.onBeforeCompile=sh=>patchFoliage(THREE,sh,cfg,'main');
-  mat.customProgramCacheKey=()=>'ke-foliage-1:'+flagKey(flags);
+  installHook(THREE,mat,cfg,'main');
   return mat;
 };
-/* Depth/distance materials with the identical vertex deformation and alpha cutout, for shadow maps. */
+/* Depth/distance materials with the identical vertex deformation and alpha cutout, for shadow maps.
+   Cached per source material; the uniforms are shared by reference, so changing wind amplitudes on the
+   colour material also moves its shadow. */
 KE.foliageDepthMaterial=(material,{distance=false}={})=>{
-  const cfg=material&&material.userData&&material.userData.keFoliage;if(!cfg)throw new TypeError('foliageDepthMaterial expects a material made by KE.foliageMaterial or KE.barkMaterial');
+  const cfg=material&&material.userData&&material.userData.keFoliage;if(!cfg)throw new TypeError('foliageDepthMaterial expects a material made by KE.foliageMaterial, KE.barkMaterial or KE.foliage.applyWind');
   const key=distance?'distance':'depth';if(cfg[key])return cfg[key];const THREE=cfg.THREE;
   const opts={map:material.alphaTest>0?material.map:null,alphaTest:material.alphaTest};
   const d=distance?new THREE.MeshDistanceMaterial(opts):new THREE.MeshDepthMaterial(Object.assign({depthPacking:THREE.RGBADepthPacking},opts));
-  d.extensions={derivatives:true};d.defaultAttributeValues=material.defaultAttributeValues;
-  d.onBeforeCompile=sh=>patchFoliage(THREE,sh,cfg,key);d.customProgramCacheKey=()=>'ke-foliage-'+key+'-1:'+flagKey(cfg.flags);
+  d.extensions={derivatives:true};d.userData.keFoliageDepthOf=material;d.defaultAttributeValues=material.defaultAttributeValues;
+  installHook(THREE,d,cfg,key);
   cfg[key]=d;return d;
 };
+/* Release a foliage material together with its cached shadow materials. */
+function disposeFoliageMaterial(m){if(!m)return;const c=m.userData&&m.userData.keFoliage;if(c){if(c.depth)c.depth.dispose();if(c.distance)c.distance.dispose();c.depth=c.distance=null;}m.dispose();}
 
 /* ---------- procedural textures ---------- */
 const canvas2d=(w,h)=>{const c=document.createElement('canvas');c.width=w;c.height=h;return c;},ctx2d=c=>c.getContext('2d',{willReadFrequently:true});
@@ -196,7 +223,7 @@ function drawLeafCluster(g,r,W,H,st,f){
 }
 function drawBlossom(g,r,x,y,R,rot){
   for(let p=0;p<5;p++){const a=rot+p*TAU/5;g.save();g.translate(x,y);g.rotate(a);
-    const gr=g.createLinearGradient(0,0,R,0);gr.addColorStop(0,'#c9577c');gr.addColorStop(.25,'#f3b8cb');gr.addColorStop(1,r()<.5?'#fde6ee':'#f7d0dc');g.fillStyle=gr;
+    const gr=g.createLinearGradient(0,0,R,0);gr.addColorStop(0,'#b83f68');gr.addColorStop(.3,'#ec94b1');gr.addColorStop(1,r()<.5?'#f9c4d4':'#f4b0c6');g.fillStyle=gr;
     g.beginPath();g.moveTo(0,0);g.bezierCurveTo(R*.35,-R*.55,R*.95,-R*.55,R,-R*.12);g.lineTo(R*.86,0);g.lineTo(R,R*.12);g.bezierCurveTo(R*.95,R*.55,R*.35,R*.55,0,0);g.fill();
     g.strokeStyle='rgba(150,40,80,.25)';g.lineWidth=.8;g.stroke();g.restore();}
   g.fillStyle='#b83a64';g.beginPath();g.arc(x,y,R*.2,0,TAU);g.fill();
@@ -312,12 +339,12 @@ KE.barkMaterial=(THREE,o={})=>{
 /* Species presets. angle: [min,max] degrees from the parent axis per level; start: first child position
    along the parent; shape: crown silhouette controlling child length by attachment height. */
 const SPECIES={
-  broadleaf:{height:5,trunkRadius:.25,levels:3,branches:[6,4,3],lengthFalloff:.62,start:[.36,.28,.22],angle:[[38,68],[30,55],[25,50]],gravity:.035,phototropism:.07,wobble:.16,trunkTop:.74,tipRatio:.32,childRadius:.62,shape:'round',segs:[10,6,5,3],radial:[10,7,5,4],leafCount:230,leafSize:1.2,flare:.5,leafMinT:.35,lean:.06,normalBend:.72,barkColor:0xc9b09a,transColor:0xd8ec7a},
+  broadleaf:{height:5,trunkRadius:.25,levels:3,branches:[6,4,3],lengthFalloff:.62,start:[.36,.28,.22],angle:[[38,68],[30,55],[25,50]],gravity:.035,phototropism:.07,wobble:.16,trunkTop:.74,tipRatio:.32,childRadius:.62,shape:'round',segs:[10,6,5,3],radial:[10,7,5,4],leafCount:190,cross:.55,leafSize:1.2,flare:.5,leafMinT:.35,lean:.06,normalBend:.72,barkColor:0xc9b09a,transColor:0xd8ec7a},
   conifer:{height:7.5,trunkRadius:.22,levels:2,branches:[30,5],lengthFalloff:.34,start:[.1,.2],angle:[[78,102],[40,62]],gravity:.07,phototropism:.05,wobble:.08,trunkTop:1,tipRatio:.12,childRadius:.3,shape:'cone',segs:[12,5,3],radial:[9,5,4],leafCount:300,leafSize:1.1,flare:.3,leafMinT:.1,lean:.02,normalBend:.55,flatCards:true,barkColor:0xc4a08a,transColor:0xb6d66a},
-  sakura:{height:4.3,trunkRadius:.24,levels:3,branches:[5,4,3],lengthFalloff:.7,start:[.3,.25,.2],angle:[[45,75],[30,58],[25,50]],gravity:.02,phototropism:.05,wobble:.3,trunkTop:.55,tipRatio:.3,childRadius:.66,shape:'umbrella',segs:[10,7,5,3],radial:[10,7,5,4],leafCount:260,leafSize:1.05,flare:.45,leafMinT:.3,lean:.14,normalBend:.72,barkColor:0xd8c0b8,transColor:0xffc2d8},
-  birch:{height:6.5,trunkRadius:.15,levels:3,branches:[10,4,3],lengthFalloff:.5,start:[.32,.25,.2],angle:[[26,44],[28,50],[35,65]],gravity:.07,phototropism:.07,wobble:.12,trunkTop:.94,tipRatio:.18,childRadius:.5,shape:'oval',segs:[12,6,4,3],radial:[9,6,4,3],leafCount:230,leafSize:.85,flare:.25,leafMinT:.3,lean:.05,normalBend:.7,barkColor:0xffffff,transColor:0xe4f07a},
+  sakura:{height:4.3,trunkRadius:.24,levels:3,branches:[5,4,3],lengthFalloff:.7,start:[.3,.25,.2],angle:[[45,75],[30,58],[25,50]],gravity:.02,phototropism:.05,wobble:.3,trunkTop:.55,tipRatio:.3,childRadius:.66,shape:'umbrella',segs:[10,7,5,3],radial:[10,7,5,4],leafCount:210,cross:.6,leafSize:1.05,flare:.45,leafMinT:.3,lean:.14,normalBend:.72,barkColor:0xd8c0b8,transColor:0xffc2d8},
+  birch:{height:6.5,trunkRadius:.15,levels:3,branches:[10,4,3],lengthFalloff:.5,start:[.32,.25,.2],angle:[[26,44],[28,50],[35,65]],gravity:.07,phototropism:.07,wobble:.12,trunkTop:.94,tipRatio:.18,childRadius:.5,shape:'oval',segs:[12,6,4,3],radial:[9,6,4,3],leafCount:190,cross:.45,leafSize:.85,flare:.25,leafMinT:.3,lean:.05,normalBend:.7,barkColor:0xffffff,transColor:0xe4f07a},
   palm:{height:6,trunkRadius:.2,levels:0,branches:[11],lengthFalloff:.45,start:[1],angle:[[0,0]],gravity:.1,phototropism:.05,wobble:.02,trunkTop:.95,tipRatio:.72,childRadius:.3,shape:'palm',segs:[14],radial:[10],leafCount:0,leafSize:2.6,flare:.35,leafMinT:1,lean:.3,normalBend:.4,barkColor:0xffffff,transColor:0xd6e878},
-  bush:{height:1.4,trunkRadius:.05,levels:2,branches:[5,4],stems:5,lengthFalloff:.55,start:[.25,.2],angle:[[30,60],[30,55]],gravity:.03,phototropism:.08,wobble:.2,trunkTop:.8,tipRatio:.3,childRadius:.6,shape:'round',segs:[6,4,3],radial:[5,4,3],leafCount:150,leafSize:.62,flare:0,leafMinT:.12,lean:.4,normalBend:.8,barkColor:0xb8a088,transColor:0xc8e070},
+  bush:{height:1.4,trunkRadius:.05,levels:2,branches:[5,4],stems:5,lengthFalloff:.55,start:[.25,.2],angle:[[30,60],[30,55]],gravity:.03,phototropism:.08,wobble:.2,trunkTop:.8,tipRatio:.3,childRadius:.6,shape:'round',segs:[6,4,3],radial:[5,4,3],leafCount:120,cross:.5,leafSize:.62,flare:0,leafMinT:.12,lean:.4,normalBend:.8,barkColor:0xb8a088,transColor:0xc8e070},
 };
 KE.TREE_SPECIES=Object.keys(SPECIES);
 function crownShape(shape,t,level){
@@ -401,24 +428,34 @@ function buildLeaves(branches,sp,o,H,r,layout){
   let mn=[1e9,1e9,1e9],mx=[-1e9,-1e9,-1e9];for(const [p] of pts)for(let k=0;k<3;k++){mn[k]=Math.min(mn[k],p[k]);mx[k]=Math.max(mx[k],p[k]);}
   const leafSize=(o.leafCards&&o.leafCards.size)||sp.leafSize,c=v3.mul(v3.add(mn,mx),.5),R=[0,1,2].map(k=>Math.max(.3,(mx[k]-mn[k])*.5+leafSize*.4));
   const detail=clamp(o.detail,.3,1.5),count=Math.max(8,Math.round(((o.leafCards&&o.leafCards.count)||sp.leafCount)*detail)),size=leafSize/Math.sqrt(clamp(detail,.3,1)),bend=sp.normalBend;
-  const cols=layout.cols,rows=layout.rows,inset=.004;
-  for(let q=0;q<count;q++){const [ap,br]=pts[Math.floor(r()*pts.length)],p=[ap[0],ap[1],ap[2]],s=sampleBranch(br,ap[3]),radialDir=v3.norm(v3.sub(p,c));
-    let out,right,nrm;
-    if(sp.flatCards){out=v3.norm(v3.add(v3.mul(s.d,1),v3.mul(randUnit(r),.3)));out[1]*=.5;out=v3.norm(out);right=v3.norm(v3.cross(out,[0,1,0]));nrm=v3.cross(right,out);
-      const roll=(r()-.5)*.7;nrm=v3.norm(v3.add(v3.mul(nrm,Math.cos(roll)),v3.mul(right,Math.sin(roll))));right=v3.norm(v3.cross(out,nrm));right=v3.mul(right,-1);}
-    else{out=v3.norm(v3.add(v3.add(v3.mul(s.d,.65),v3.mul(radialDir,.8)),v3.mul(randUnit(r),.55)));out[1]-=.12;out=v3.norm(out);right=v3.norm(v3.cross(out,randUnit(r)));nrm=v3.cross(right,out);}
-    if(v3.dot(nrm,radialDir)<0){nrm=v3.mul(nrm,-1);right=v3.mul(right,-1);}
-    const sz=size*(.72+.5*r()),ci=Math.floor(r()*cols*rows),cx=ci%cols,cy=Math.floor(ci/cols),flip=r()<.5,base=a.p.length/3;
-    const tint=[1+(r()-.5)*.14,1+(r()-.5)*.12,1+(r()-.5)*.18],droop=sp.flatCards?.08:.16;
+  const cols=layout.cols,rows=layout.rows,inset=.004;let cards=0;
+  /* One 2x3-vertex card: rooted slightly behind p, extending along out, drooping with t^2; vertex
+     normals bend toward the crown ellipsoid normal; AO darkens toward the crown core and underside. */
+  const emitCard=(p,out,right,nrm,sz,ci,flip,tint,droop,bw,phase)=>{const cx=ci%cols,cy=Math.floor(ci/cols),base=a.p.length/3;
     for(let row=0;row<3;row++){const t=row/2;for(let col=0;col<2;col++){const x=col-.5;
       let v=v3.add(v3.add(v3.sub(p,v3.mul(out,sz*.06)),v3.mul(out,sz*t)),v3.mul(right,sz*x));v[1]-=sz*droop*t*t;
       const en=v3.norm([(v[0]-c[0])/(R[0]*R[0]),(v[1]-c[1])/(R[1]*R[1]),(v[2]-c[2])/(R[2]*R[2])]),vn=v3.norm(v3.add(v3.mul(nrm,1-bend),v3.mul(en,bend)));
       const rn=Math.hypot((v[0]-c[0])/R[0],(v[1]-c[1])/R[1],(v[2]-c[2])/R[2]),ao=(.42+.58*smooth(.05,1,rn))*(.78+.22*clamp((v[1]-(c[1]-R[1]))/(2*R[1]),0,1));
       a.p.push(v[0],v[1],v[2]);a.n.push(vn[0],vn[1],vn[2]);
       const uu=(cx+(flip?1-(x+.5):(x+.5))*(1-2*inset)+inset)/cols,vv=1-(cy+1)/rows+(inset+t*(1-2*inset))/rows;a.uv.push(uu,vv);
-      a.c.push(ao*tint[0],ao*tint[1],ao*tint[2]);a.w.push(clamp(v[1]/H,0,1),s.w,t,br.phase);}}
-    for(let row=0;row<2;row++){const k=base+row*2;idx.push(k,k+1,k+2,k+1,k+3,k+2);}}
-  return {a,idx,canopy:{c,R},cards:count};
+      a.c.push(ao*tint[0],ao*tint[1],ao*tint[2]);a.w.push(clamp(v[1]/H,0,1),bw,t,phase);}}
+    for(let row=0;row<2;row++){const k=base+row*2;idx.push(k,k+1,k+2,k+1,k+3,k+2);}};
+  for(let q=0;q<count;q++){const [ap,br]=pts[Math.floor(r()*pts.length)],p=[ap[0],ap[1],ap[2]],s=sampleBranch(br,ap[3]),radialDir=v3.norm(v3.sub(p,c));
+    let out,right,nrm;
+    if(sp.flatCards){out=v3.norm(v3.add(v3.mul(s.d,1),v3.mul(randUnit(r),.3)));out[1]*=.5;out=v3.norm(out);right=v3.norm(v3.cross(out,[0,1,0]));nrm=v3.cross(right,out);
+      const roll=(r()-.5)*.7;nrm=v3.norm(v3.add(v3.mul(nrm,Math.cos(roll)),v3.mul(right,Math.sin(roll))));right=v3.norm(v3.cross(out,nrm));right=v3.mul(right,-1);}
+    else{out=v3.norm(v3.add(v3.add(v3.mul(s.d,.65),v3.mul(radialDir,.8)),v3.mul(randUnit(r),.55)));out[1]-=.12;out=v3.norm(out);
+      /* Face the card outward from the crown (shingle-like) with a random roll about its axis, so from
+         outside most cards are seen face-on while silhouettes stay irregular. */
+      let face=v3.sub(radialDir,v3.mul(out,v3.dot(radialDir,out)));face=v3.len(face)<.2?perpBasis(out)[0]:v3.norm(face);
+      const side=v3.cross(out,face),roll=(r()-.5)*(sp.cardRoll!==undefined?sp.cardRoll:1.5);nrm=v3.norm(v3.add(v3.mul(face,Math.cos(roll)),v3.mul(side,Math.sin(roll))));right=v3.cross(out,nrm);}
+    if(v3.dot(nrm,radialDir)<0){nrm=v3.mul(nrm,-1);right=v3.mul(right,-1);}
+    const sz=size*(.72+.5*r()),tint=[1+(r()-.5)*.14,1+(r()-.5)*.12,1+(r()-.5)*.18],droop=sp.flatCards?.08:.16;
+    emitCard(p,out,right,nrm,sz,Math.floor(r()*cols*rows),r()<.5,tint,droop,s.w,br.phase);
+    /* optional crossed second card (rotated 90 degrees about the card axis): no gaps when the first is edge-on */
+    if(!sp.flatCards&&r()<(sp.cross||0)){const n2=v3.dot(right,radialDir)>=0?right:v3.mul(right,-1);emitCard(p,out,v3.cross(out,n2),n2,sz*.9,Math.floor(r()*cols*rows),r()<.5,tint,droop,s.w,br.phase);cards++;}
+    cards++;}
+  return {a,idx,canopy:{c,R},cards};
 }
 /* Palm fronds: arching 3-wide strips (V-folded along the rachis) textured with one atlas cell each. */
 function buildFronds(trunkTop,sp,o,H,r,layout){
@@ -445,6 +482,12 @@ KE.treeGeometry=(THREE,o={})=>{
   const k=clamp(target/Math.max(top,1e-3),.6,1.6);for(const b of branches){for(const p of b.pts){p[0]*=k;p[1]*=k;p[2]*=k;}b.length*=k;}
   const leaves=species==='palm'?buildFronds(sampleBranch(branches[0],1),sp,opts,H,r,layout):buildLeaves(branches,sp,opts,H,r,layout);
   const tubes=buildTubes(branches,sp,opts.detail,H,leaves&&leaves.canopy,r);
+  /* Second pass: fit the finished tree (bark and leaf cards) to exactly the requested height, then
+     re-derive the normalised-height wind weight so the main bend is 0 at the root and 1 at the top. */
+  let maxY=0;for(const a of [tubes.a,leaves&&leaves.a])if(a)for(let i=1;i<a.p.length;i+=3)maxY=Math.max(maxY,a.p[i]);
+  const fit=clamp(H/Math.max(maxY,1e-3),.5,2);
+  for(const a of [tubes.a,leaves&&leaves.a]){if(!a)continue;for(let i=0;i<a.p.length;i++)a.p[i]*=fit;for(let i=0,j=0;i<a.p.length;i+=3,j+=4)a.w[j]=clamp(a.p[i+1]/H,0,1);}
+  if(leaves){leaves.canopy.c=v3.mul(leaves.canopy.c,fit);leaves.canopy.R=v3.mul(leaves.canopy.R,fit);}
   const trunk=makeGeometry(THREE,tubes.a,tubes.idx),leafGeo=leaves?makeGeometry(THREE,leaves.a,leaves.idx):null;
   const box=trunk.boundingBox.clone();if(leafGeo)box.union(leafGeo.boundingBox);const sphere=box.getBoundingSphere(new THREE.Sphere());
   const stats={species,branches:branches.length,leafCards:leaves?leaves.cards:0,trunkTriangles:tubes.idx.length/3,leafTriangles:leaves?leaves.idx.length/3:0};
@@ -463,9 +506,56 @@ KE.tree=(THREE,o={})=>{
   let leaves=null;if(geo.leaves){leaves=new THREE.Mesh(geo.leaves,leafMat);leaves.castShadow=leaves.receiveShadow=true;leaves.customDepthMaterial=KE.foliageDepthMaterial(leafMat);leaves.customDistanceMaterial=KE.foliageDepthMaterial(leafMat,{distance:true});group.add(leaves);}
   return {group,trunk,leaves,geometry:{trunk:geo.trunk,leaves:geo.leaves},material:{trunk:barkMat,leaves:leafMat},bounds:geo.bounds,stats:geo.stats,
     dispose(){if(group.parent)group.parent.remove(group);geo.trunk.dispose();if(geo.leaves)geo.leaves.dispose();
-      for(const m of [o.leafMaterial?null:leafMat,o.barkMaterial?null:barkMat]){if(!m)continue;const c=m.userData.keFoliage;if(c.depth)c.depth.dispose();if(c.distance)c.distance.dispose();m.dispose();}
+      if(!o.leafMaterial)disposeFoliageMaterial(leafMat);if(!o.barkMaterial)disposeFoliageMaterial(barkMat);
       if(!o.leafTexture&&!o.leafMaterial)leafTex.dispose();if(!o.barkMaterial&&barkMat.userData.keOwnsMap&&barkMat.map)barkMat.map.dispose();}};
 };
+
+/* ---------- shared light loop for the custom grass/fur shaders ---------- */
+/* Directional lights with shadows. When a KE.CascadedShadows instance is bound (KF_CSM = cascade count)
+   the cascade shadow terms are blended across overlap bands exactly like set-up standard materials,
+   applied to the sun (light 0), and the zero-intensity cascade lights are skipped. */
+const CSM_PARS=`#ifdef KF_CSM
+uniform vec4 keCascades[4];
+#endif
+`;
+const dirLightLoop=body=>`#if NUM_DIR_LIGHTS>0
+ DirectionalLight dl;vec3 lc;
+#if defined(USE_SHADOWMAP)&&NUM_DIR_LIGHT_SHADOWS>0
+ DirectionalLightShadow ds;
+#endif
+#ifdef KF_CSM
+ float kfSh=0.,kfSw=0.,kfWt;vec4 kfC;
+#pragma unroll_loop_start
+ for(int i=0;i<NUM_DIR_LIGHTS;i++){
+#if defined(USE_SHADOWMAP)&&(UNROLLED_LOOP_INDEX<KF_CSM)&&(UNROLLED_LOOP_INDEX<NUM_DIR_LIGHT_SHADOWS)
+  kfC=keCascades[i];kfWt=smoothstep(kfC.x,kfC.y,vViewPosition.z)*(1.-smoothstep(kfC.z,kfC.w,vViewPosition.z));
+  if(kfWt>0.){ds=directionalLightShadows[i];kfSh+=kfWt*(receiveShadow?getShadow(directionalShadowMap[i],ds.shadowMapSize,ds.shadowBias,ds.shadowRadius,vDirectionalShadowCoord[i]):1.);kfSw+=kfWt;}
+#endif
+ }
+#pragma unroll_loop_end
+ kfSh+=1.-kfSw;
+#endif
+#pragma unroll_loop_start
+ for(int i=0;i<NUM_DIR_LIGHTS;i++){
+  dl=directionalLights[i];lc=dl.color;
+#if defined(KF_CSM)&&(UNROLLED_LOOP_INDEX==0)
+  lc*=kfSh;
+#elif defined(KF_CSM)&&(UNROLLED_LOOP_INDEX<KF_CSM)
+  lc*=0.;
+#elif defined(USE_SHADOWMAP)&&(UNROLLED_LOOP_INDEX<NUM_DIR_LIGHT_SHADOWS)
+  ds=directionalLightShadows[i];lc*=receiveShadow?getShadow(directionalShadowMap[i],ds.shadowMapSize,ds.shadowBias,ds.shadowRadius,vDirectionalShadowCoord[i]):1.;
+#endif
+  ${body}
+ }
+#pragma unroll_loop_end
+#endif`;
+/* Keep a custom ShaderMaterial in sync with a cascaded-shadow source (cheap; call every frame). */
+function syncShadowSource(mat,csm){
+  const want=csm&&csm.lights&&csm.lights.length&&csm.uniforms&&csm.uniforms.keCascades?Math.max(1,csm.count|0):0,cur=mat.defines.KF_CSM|0;
+  if(want)mat.uniforms.keCascades=csm.uniforms.keCascades;
+  if(want!==cur){if(want)mat.defines.KF_CSM=want;else delete mat.defines.KF_CSM;mat.needsUpdate=true;}
+}
+const liveSystems=new Set();
 
 /* ---------- interactive grass ---------- */
 const GRASS_VS=`
@@ -478,8 +568,10 @@ attribute vec4 aRoot;attribute vec4 aShape;attribute vec4 aColor;
 varying vec3 vColor;varying vec2 vBlade;varying vec3 vNormal;varying vec3 vViewPosition;
 void main(){
  vec3 root=aRoot.xyz;float rnd=aRoot.w,dist=length(root.xz-uCenter);
- float lodT=smoothstep(uLodRadius*.72,uLodRadius,dist),keep=mix(1.,uFarFraction,lodT);
- float fade=(1.-smoothstep(uRadius*.8,uRadius,dist))*(1.-smoothstep(keep-.05,keep,aColor.w));
+ /* aColor.w is the blade's rank in its cell (0..1): the ring beyond the LOD radius keeps only the first
+    uFarFraction ranks (the same set outer cells are filled with), thinned smoothly over the band */
+ float lodT=smoothstep(uLodRadius*.72,uLodRadius,dist),keep=mix(1.,uFarFraction,lodT)+.04;
+ float fade=(1.-smoothstep(uRadius*.8,uRadius,dist))*(1.-smoothstep(keep-.04,keep,aColor.w));
  float h=aShape.y*fade,w=aShape.z*mix(1.,uFarWiden,lodT),yaw=aShape.x;
  vec2 face=vec2(cos(yaw),sin(yaw));vec3 side=vec3(-face.y,0.,face.x);
  float S=keWindStrength,gust=kfGust(root.xz);
@@ -488,8 +580,8 @@ void main(){
  for(int i=0;i<${MAX_INTERACTORS};i++){if(i>=keInteractorCount)break;vec4 it=keInteractors[i];
   vec2 d=root.xz-it.xz;float dl=length(d),r=max(it.w,.05);
   float vert=1.-smoothstep(0.,r*.6+.3,(it.y-r)-(root.y+aShape.y));
-  float inf=(1.-smoothstep(r*.45,r*1.5,dl))*vert*uInteract;
-  bend+=(dl>1e-4?d/dl:face)*(inf*2.2);}
+  float inf=(1.-smoothstep(r*.35,r*1.6+.08,dl))*vert*uInteract;
+  bend+=(dl>1e-4?d/dl:face)*(inf*2.6);}
  float a=length(bend);vec2 bd=a>1e-5?bend/a:face;a=clamp(a,1e-3,1.45);
  vec3 b3=vec3(bd.x,0.,bd.y);
  /* circular-arc blade approximated by a quadratic Bezier: tangent vertical at the root, length h */
@@ -515,31 +607,16 @@ const GRASS_FS=`
 #include <bsdfs>
 #include <lights_pars_begin>
 #include <shadowmap_pars_fragment>
-uniform vec3 uTipColor;uniform float uTipMix;uniform float uTranslucency;uniform float uAmbient;
+${CSM_PARS}uniform vec3 uTipColor;uniform float uTipMix;uniform float uTranslucency;uniform float uAmbient;uniform float uRootShade;
 varying vec3 vColor;varying vec2 vBlade;varying vec3 vNormal;varying vec3 vViewPosition;
 void main(){
  float t=vBlade.x;vec3 base=vColor*(.92+.16*vBlade.y);
- vec3 tip=mix(base*1.3,uTipColor,uTipMix);
- vec3 albedo=mix(base*.55,base,smoothstep(0.,.45,t));albedo=mix(albedo,tip,smoothstep(.4,1.,t)*.85);
+ vec3 tip=mix(base*1.2,uTipColor,uTipMix);
+ vec3 albedo=mix(base*.6,base,smoothstep(0.,.45,t));albedo=mix(albedo,tip,smoothstep(.45,1.,t));
  vec3 v=normalize(vViewPosition),n=normalize(vNormal),upV=normalize((viewMatrix*vec4(0.,1.,0.,0.)).xyz);
  if(!gl_FrontFacing)n=normalize(2.*dot(n,upV)*upV-n);
- vec3 direct=vec3(0.),spec=vec3(0.);float ndl,trans;vec3 lc;
-#if NUM_DIR_LIGHTS>0
- DirectionalLight dl;
-#if defined(USE_SHADOWMAP)&&NUM_DIR_LIGHT_SHADOWS>0
- DirectionalLightShadow ds;
-#endif
-#pragma unroll_loop_start
- for(int i=0;i<NUM_DIR_LIGHTS;i++){
-  dl=directionalLights[i];lc=dl.color;
-#if defined(USE_SHADOWMAP)&&(UNROLLED_LOOP_INDEX<NUM_DIR_LIGHT_SHADOWS)
-  ds=directionalLightShadows[i];lc*=receiveShadow?getShadow(directionalShadowMap[i],ds.shadowMapSize,ds.shadowBias,ds.shadowRadius,vDirectionalShadowCoord[i]):1.;
-#endif
-  ndl=dot(n,dl.direction);trans=pow(saturate(dot(v,-dl.direction)),4.)*uTranslucency*(.2+.8*t);
-  direct+=lc*(saturate((ndl+.6)/1.6)+trans);spec+=lc*(pow(saturate(dot(n,normalize(dl.direction+v))),28.)*.07*t);
- }
-#pragma unroll_loop_end
-#endif
+ vec3 direct=vec3(0.),spec=vec3(0.);float ndl,trans;
+${dirLightLoop('ndl=dot(n,dl.direction);trans=pow(saturate(dot(v,-dl.direction)),4.)*uTranslucency*(.2+.8*t);direct+=lc*(saturate((ndl+.6)/1.6)+trans);spec+=lc*(pow(saturate(dot(n,normalize(dl.direction+v))),28.)*.07*t);')}
 #if NUM_POINT_LIGHTS>0
  PointLight pl;vec3 pv;float pd;
 #pragma unroll_loop_start
@@ -558,8 +635,9 @@ void main(){
  }
 #pragma unroll_loop_end
 #endif
- float ao=mix(.4,1.,smoothstep(0.,.65,t));
- gl_FragColor=vec4(albedo*(direct+amb*uAmbient*ao)+spec,1.);
+ /* dense grass self-occludes: both direct and ambient light fall off toward the root */
+ float occ=mix(uRootShade,1.,smoothstep(0.,.8,t)),ao=mix(.35,1.,smoothstep(0.,.65,t));
+ gl_FragColor=vec4(albedo*(direct*occ+amb*uAmbient*ao)+spec*occ,1.);
 #include <tonemapping_fragment>
 #include <encodings_fragment>
 #include <fog_fragment>
@@ -576,7 +654,7 @@ let rs=1;const rnext=()=>{rs=(rs+0x6D2B79F5)|0;let t=rs;t=Math.imul(t^(t>>>15),t
    travelling gusts and pushed by up to 8 interactors in the vertex shader. */
 KE.grassField=(THREE,scene,o={})=>{
   const U=foliageUniforms(THREE),count=Math.max(0,Math.floor(o.count!==undefined?o.count:(KE.settings.grass||7000)));
-  const radius=Math.max(2,o.radius||25),cellSize=o.cellSize||clamp(radius/7,1.5,8),lodRadius=clamp(o.lodRadius!==undefined?o.lodRadius:radius*.45,cellSize,radius),farFraction=clamp(o.farFraction!==undefined?o.farFraction:.3,.05,1);
+  const radius=Math.max(2,o.radius||25),cellSize=o.cellSize||clamp(radius/7,1.5,8),lodRadius=clamp(o.lodRadius!==undefined?o.lodRadius:radius*.4,cellSize,radius),farFraction=clamp(o.farFraction!==undefined?o.farFraction:.28,.05,1);
   const heightAt=o.heightAt||(()=>0),density=o.density||(()=>1),colorFn=o.color||null,bh=o.bladeHeight||[.35,.8],bw=o.bladeWidth!==undefined?o.bladeWidth:.05,segments=clamp(Math.round(o.segments||4),1,8),seed=o.seed||1;
   const stub={mesh:null,count:0,update(){return 0;},setVisible(){},dispose(){}};if(!count)return stub;
   /* window offsets: cells whose nearest point to the camera cell lies inside radius (conservative) */
@@ -593,8 +671,9 @@ KE.grassField=(THREE,scene,o={})=>{
   const aRoot=new THREE.InstancedBufferAttribute(root,4),aShape=new THREE.InstancedBufferAttribute(shape,4),aColor=new THREE.InstancedBufferAttribute(color,4,true);
   for(const a of [aRoot,aShape,aColor])a.setUsage(THREE.DynamicDrawUsage);
   geo.setAttribute('aRoot',aRoot);geo.setAttribute('aShape',aShape);geo.setAttribute('aColor',aColor);geo.instanceCount=capacity;
-  const own={uCenter:{value:new THREE.Vector2()},uRadius:{value:radius},uLodRadius:{value:lodRadius},uFarFraction:{value:kFar/kNear},uFarWiden:{value:o.farWiden!==undefined?o.farWiden:1.6},uInteract:{value:o.interact===false?0:1},
-    uTipColor:{value:srgb(THREE,o.tipColor,0xd6d98a)},uTipMix:{value:o.tipColor===null?0:.65},uTranslucency:{value:o.translucency!==undefined?o.translucency:.8},uAmbient:{value:o.ambient!==undefined?o.ambient:1}};
+  const own={uCenter:{value:new THREE.Vector2()},uRadius:{value:radius},uLodRadius:{value:lodRadius},uFarFraction:{value:kFar/kNear},uFarWiden:{value:o.farWiden!==undefined?o.farWiden:1.8},uInteract:{value:o.interact===false?0:1},
+    uTipColor:{value:srgb(THREE,o.tipColor,0xc9cf7a)},uTipMix:{value:o.tipColor===null?0:(o.tipMix!==undefined?o.tipMix:.4)},uTranslucency:{value:o.translucency!==undefined?o.translucency:.6},uAmbient:{value:o.ambient!==undefined?o.ambient:1},
+    uRootShade:{value:o.rootShade!==undefined?o.rootShade:.4}};
   const uniforms=THREE.UniformsUtils.merge([THREE.UniformsLib.lights,THREE.UniformsLib.fog]);Object.assign(uniforms,sharedRefs(U),{keInteractors:U.keInteractors,keInteractorCount:U.keInteractorCount},own);
   const vs=NOISE_GLSL()+WIND_UNIFORMS+GUST_GLSL+GRASS_VS;
   const mat=new THREE.ShaderMaterial({uniforms,vertexShader:vs,fragmentShader:GRASS_FS,lights:true,fog:true,side:THREE.DoubleSide});
@@ -606,20 +685,34 @@ KE.grassField=(THREE,scene,o={})=>{
   for(let s=0;s<slots;s++){slotBase[s]=s<nearSlots?s*kNear:nearSlots*kNear+(s-nearSlots)*kFar;slotK[s]=s<nearSlots?kNear:kFar;}
   const freeNear=new Int32Array(nearSlots),freeFar=new Int32Array(farSlots),col=[1,1,1];let nFreeNear=0,nFreeFar=0,ccx=1e9,ccz=1e9,dirtyMin=1e9,dirtyMax=-1;
   const stats={cellsFilled:0,lastFilled:0,bladesPerNearCell:kNear,bladesPerFarCell:kFar,capacity,slots};
+  /* Tufts: each cell holds nClumps clump centres on a jittered low-discrepancy (R2) pattern; blade i
+     belongs to clump i % nClumps, so any prefix of the blade list (the sparser outer rings) still covers
+     every clump. Blades splay outward from their clump centre (yaw faces away, lean grows with offset)
+     and share the clump's height, tint and lean bias, which reads as natural grass tussocks. */
+  const clumpSize=clamp(o.clumpSize!==undefined?o.clumpSize:5,1,16),nClumps=Math.max(1,Math.round(kNear/clumpSize)),clumpR=o.clumpRadius!==undefined?o.clumpRadius:Math.min(.22,cellSize/Math.sqrt(nClumps)*.75);
+  const clumps=new Float32Array(nClumps*6);
   const fillCell=(slot,gx,gz)=>{
     const base=slotBase[slot],k=slotK[slot];rs=hash3i(gx,gz,seed);const ou=rnext(),ov=rnext();
-    for(let i=0;i<k;i++){const j=base+i,u=(ou+i*.7548776662)%1,v=(ov+i*.5698402910)%1,x=(gx+u)*cellSize,z=(gz+v)*cellSize,rr=rnext();
-      const d=clamp(density(x,z),0,1),yaw=rnext()*TAU,hr=rnext(),wr=rnext(),lr=rnext(),cr=rnext();
+    for(let q=0;q<nClumps;q++){const u=(ou+q*.7548776662)%1,v=(ov+q*.5698402910)%1,jit=.35/Math.sqrt(nClumps);
+      clumps[q*6]=(gx+clamp(u+(rnext()-.5)*jit,0,1))*cellSize;clumps[q*6+1]=(gz+clamp(v+(rnext()-.5)*jit,0,1))*cellSize;
+      clumps[q*6+2]=.7+.45*rnext();clumps[q*6+3]=rnext()*TAU;clumps[q*6+4]=rnext()*.25;clumps[q*6+5]=rnext();}
+    for(let i=0;i<k;i++){const j=base+i,q=i%nClumps,a=rnext()*TAU,rad=clumpR*Math.sqrt(rnext()),rr=rnext(),hr=rnext(),wr=rnext(),cr=rnext(),yr=rnext();
+      const x=clumps[q*6]+Math.cos(a)*rad,z=clumps[q*6+1]+Math.sin(a)*rad,off=rad/Math.max(clumpR,1e-4);
+      const d=clamp(density(x,z),0,1),ch=clumps[q*6+2];
+      /* splay: face away from the clump centre (with some spread), plus the clump's shared lean direction */
+      const lx=Math.cos(a)*(.12+.5*off)+Math.cos(clumps[q*6+3])*clumps[q*6+4],lz=Math.sin(a)*(.12+.5*off)+Math.sin(clumps[q*6+3])*clumps[q*6+4];
       root[j*4]=x;root[j*4+1]=heightAt(x,z);root[j*4+2]=z;root[j*4+3]=rr;
-      shape[j*4]=yaw;shape[j*4+1]=d>rr?lerp(bh[0],bh[1],hr)*(.55+.45*d):0;shape[j*4+2]=bw*(.75+.5*wr);shape[j*4+3]=.12+.4*lr;
+      shape[j*4]=Math.atan2(lz,lx)+(yr-.5)*.9;shape[j*4+1]=d>rr?lerp(bh[0],bh[1],hr)*ch*(1-.35*off)*(.55+.45*d):0;shape[j*4+2]=bw*(.75+.5*wr);shape[j*4+3]=Math.hypot(lx,lz)+.06;
       let c=null;if(colorFn){c=colorFn(x,z,col);if(!c)c=col;}else{const n=.5+.5*Math.sin(x*.21+Math.sin(z*.17)*2.)*Math.cos(z*.19-x*.07);col[0]=lerp(.26,.42,n*.6+cr*.4);col[1]=lerp(.44,.55,n);col[2]=lerp(.14,.2,cr);c=col;}
-      const shade=.88+.24*cr;color[j*4]=clamp(c[0]*shade*255,0,255);color[j*4+1]=clamp(c[1]*shade*255,0,255);color[j*4+2]=clamp(c[2]*shade*255,0,255);color[j*4+3]=Math.min(255,Math.floor(i/kNear*255));}
+      const shade=(.9+.2*cr)*(.82+.3*clumps[q*6+5]);color[j*4]=clamp(c[0]*shade*255,0,255);color[j*4+1]=clamp(c[1]*shade*255,0,255);color[j*4+2]=clamp(c[2]*(.9+.2*clumps[q*6+5])*255,0,255);color[j*4+3]=Math.min(255,Math.floor(i/kNear*255));}
     slotX[slot]=gx;slotZ[slot]=gz;slotUsed[slot]=1;dirtyMin=Math.min(dirtyMin,base);dirtyMax=Math.max(dirtyMax,base+k);stats.cellsFilled++;stats.lastFilled++;};
   const upload=()=>{if(dirtyMax<0)return;for(const [attr,n] of [[aRoot,4],[aShape,4],[aColor,4]]){attr.updateRange.offset=dirtyMin*n;attr.updateRange.count=(dirtyMax-dirtyMin)*n;attr.needsUpdate=true;}dirtyMin=1e9;dirtyMax=-1;};
-  let visible=true;
+  let visible=true,shadowSource=o.shadows||KE.foliage.shadowSource||null;
   const api={mesh,material:mat,geometry:geo,cellSize,radius,lodRadius,stats,
+    /* Bind a KE.CascadedShadows instance so blades receive every cascade (null unbinds). */
+    setShadowSource(csm){shadowSource=csm||null;syncShadowSource(mat,shadowSource);return api;},
     /* Returns the number of cells regenerated this call (0 while the camera stays inside its cell). */
-    update(camX,camZ){if(!Number.isFinite(camX)||!Number.isFinite(camZ))return 0;own.uCenter.value.set(camX,camZ);const cx=Math.floor(camX/cellSize),cz=Math.floor(camZ/cellSize);
+    update(camX,camZ){if(camX&&typeof camX==='object'){camZ=camX.z;camX=camX.x;}if(!Number.isFinite(camX)||!Number.isFinite(camZ))return 0;syncShadowSource(mat,shadowSource);own.uCenter.value.set(camX,camZ);const cx=Math.floor(camX/cellSize),cz=Math.floor(camZ/cellSize);
       stats.lastFilled=0;if(cx===ccx&&cz===ccz)return 0;ccx=cx;ccz=cz;keep.fill(0);nFreeNear=nFreeFar=0;
       for(let s=0;s<slots;s++){const want=s<nearSlots?1:2;let ok=false;if(slotUsed[s]){const dx=slotX[s]-cx,dz=slotZ[s]-cz;if(dx>=-Hc&&dx<=Hc&&dz>=-Hc&&dz<=Hc){const gi=(dz+Hc)*W+dx+Hc;if(ring[gi]===want&&!keep[gi]){keep[gi]=1;ok=true;}}}
         if(!ok){slotUsed[s]=0;if(s<nearSlots)freeNear[nFreeNear++]=s;else freeFar[nFreeFar++]=s;}}
@@ -630,7 +723,8 @@ KE.grassField=(THREE,scene,o={})=>{
     refresh(){ccx=ccz=1e9;slotUsed.fill(0);},
     setVisible(v){visible=!!v;mesh.visible=visible;},
     get visible(){return visible;},
-    dispose(){if(mesh.parent)mesh.parent.remove(mesh);geo.dispose();mat.dispose();if(mesh.customDepthMaterial)mesh.customDepthMaterial.dispose();}};
+    dispose(){liveSystems.delete(api);if(mesh.parent)mesh.parent.remove(mesh);geo.dispose();mat.dispose();if(mesh.customDepthMaterial)mesh.customDepthMaterial.dispose();}};
+  syncShadowSource(mat,shadowSource);liveSystems.add(api);
   return api;
 };
 
@@ -656,7 +750,7 @@ const FUR_VS=`
 #include <common>
 #include <fog_pars_vertex>
 #include <shadowmap_pars_vertex>
-attribute float aShell;
+attribute vec2 aShell;// x: shell index, y: per-mesh length multiplier
 uniform float uShells;uniform float uLength;uniform float uDensity;uniform float uDroop;uniform float uWindResponse;uniform float uCurl;
 uniform vec3 uGravity;uniform vec3 uInertia;
 varying vec3 vCoord;varying float vH;varying float vShell;varying vec3 vNormal;varying vec3 vViewPosition;varying vec3 vDirV;
@@ -664,17 +758,17 @@ varying vec3 vCoord;varying float vH;varying float vShell;varying vec3 vNormal;v
 varying vec2 vFurUv;
 #endif
 void main(){
- float h=(aShell+1.)/uShells;
+ float h=(aShell.x+1.)/uShells;
  mat3 m=mat3(modelMatrix);vec3 sc=vec3(length(m[0]),length(m[1]),length(m[2]));
  vec3 wn=normalize(m*(normal/(sc*sc)));vec4 wp=modelMatrix*vec4(position,1.);
  vec3 wd=vec3(keWindDir.x,0.,keWindDir.y);float gust=kfGust(wp.xz);
  vec3 force=uGravity+uInertia+wd*(keWindStrength*uWindResponse*(.3+gust+.25*sin(keTime*4.3+dot(wp.xyz,vec3(3.1,1.7,2.3)))));
  force-=wn*(min(dot(force,wn),0.)*.6);
  vec3 dir=normalize(wn+force*(h*uDroop));
- vec3 p=wp.xyz+dir*(uLength*h);
+ vec3 p=wp.xyz+dir*(uLength*aShell.y*h);
  vec3 lp=position*sc;
  vCoord=lp*uDensity+vec3(sin(h*5.1+lp.y*37.),cos(h*4.3+lp.x*31.),sin(h*3.7+lp.z*29.))*(uCurl*h*.012);
- vH=h;vShell=aShell;
+ vH=h;vShell=aShell.x;
 #ifdef USE_FUR_MAP
  vFurUv=uv;
 #endif
@@ -695,7 +789,7 @@ uniform sampler3D uStrands;
 #include <bsdfs>
 #include <lights_pars_begin>
 #include <shadowmap_pars_fragment>
-uniform vec3 uColor;uniform vec3 uTipColor;uniform float uThickness;uniform float uColorVar;uniform float uRim;uniform float uLengthVar;uniform float uUnder;
+${CSM_PARS}uniform vec3 uColor;uniform vec3 uTipColor;uniform float uThickness;uniform float uColorVar;uniform float uRim;uniform float uLengthVar;uniform float uUnder;
 #ifdef USE_FUR_MAP
 uniform sampler2D uFurMap;varying vec2 vFurUv;
 #endif
@@ -725,23 +819,8 @@ void main(){
 #endif
  vec3 albedo=mix(base,uTipColor*(1.+(s.b-.5)*uColorVar),smoothstep(.5,1.,h/len));
  float ao=mix(.3,1.,pow(clamp(h,0.,1.),.75));
- vec3 T=normalize(vDirV),direct=vec3(0.),spec=vec3(0.),lc;float ndl;
-#if NUM_DIR_LIGHTS>0
- DirectionalLight dl;
-#if defined(USE_SHADOWMAP)&&NUM_DIR_LIGHT_SHADOWS>0
- DirectionalLightShadow ds;
-#endif
-#pragma unroll_loop_start
- for(int i=0;i<NUM_DIR_LIGHTS;i++){
-  dl=directionalLights[i];lc=dl.color;
-#if defined(USE_SHADOWMAP)&&(UNROLLED_LOOP_INDEX<NUM_DIR_LIGHT_SHADOWS)
-  ds=directionalLightShadows[i];lc*=receiveShadow?getShadow(directionalShadowMap[i],ds.shadowMapSize,ds.shadowBias,ds.shadowRadius,vDirectionalShadowCoord[i]):1.;
-#endif
-  ndl=dot(N,dl.direction);direct+=lc*saturate((ndl+.5)/1.5);
-  spec+=lc*(pow(sqrt(max(0.,1.-pow(dot(T,normalize(dl.direction+V)),2.))),70.)*.09*h*saturate(ndl+.3));
- }
-#pragma unroll_loop_end
-#endif
+ vec3 T=normalize(vDirV),direct=vec3(0.),spec=vec3(0.);float ndl;
+${dirLightLoop('ndl=dot(N,dl.direction);direct+=lc*saturate((ndl+.5)/1.5);spec+=lc*(pow(sqrt(max(0.,1.-pow(dot(T,normalize(dl.direction+V)),2.))),70.)*.09*h*saturate(ndl+.3));')}
 #if NUM_POINT_LIGHTS>0
  PointLight pl;vec3 pv;float pd;
 #pragma unroll_loop_start
@@ -774,7 +853,8 @@ KE.fur=(THREE,target,o={})=>{
   const U=foliageUniforms(THREE),MAX=64,maxShells=clamp(Math.round(o.shells||16),2,MAX),lod=Object.assign({maxDistance:12},o.lod||{});
   if(o.renderer&&!o.renderer.capabilities.isWebGL2)return {available:false,object:target,meshes:[],update(){},setShells(){},dispose(){}};
   const tex=strandTexture(THREE),cells=tex.userData.cells,density=o.density!==undefined?o.density:900;
-  const shellIdx=new Float32Array(MAX);for(let i=0;i<MAX;i++)shellIdx[i]=i;const aShell=new THREE.InstancedBufferAttribute(shellIdx,1);
+  /* per-mesh instanced attribute: (shell index, length multiplier) */
+  const shellAttr=scale=>{const a=new Float32Array(MAX*2);for(let i=0;i<MAX;i++){a[i*2]=i;a[i*2+1]=scale;}return new THREE.InstancedBufferAttribute(a,2);};
   const g=o.gravity||[0,-1,0],gravity=Array.isArray(g)?new THREE.Vector3(g[0],g[1],g[2]):new THREE.Vector3(g.x,g.y,g.z);
   const inertia=new THREE.Vector3(),inertiaVel=new THREE.Vector3(),tmp=new THREE.Vector3();
   const common={uShells:{value:maxShells},uLength:{value:o.length!==undefined?o.length:.06},uDensity:{value:Math.sqrt(density)/cells},uDroop:{value:o.droop!==undefined?o.droop:.45},
@@ -794,25 +874,31 @@ KE.fur=(THREE,target,o={})=>{
     const n=d>=md?0:d<md*.35?shells:Math.max(Math.min(4,shells),Math.round(shells*(1-.75*(d-md*.35)/(md*.65))));
     geometry.instanceCount=n;if(n>0&&material.uniforms.uShells.value!==n){material.uniforms.uShells.value=n;material.uniformsNeedUpdate=true;}current=n;};
   target.updateMatrixWorld(true);
-  target.traverse(m=>{if(!m.isMesh||m.isInstancedMesh||m.userData.keFurShell||!m.geometry||!m.geometry.attributes.position||!m.geometry.attributes.normal||!include(m))return;
+  target.traverse(m=>{if(!m.isMesh||m.isInstancedMesh||m.userData.keFurShell||!m.geometry||!m.geometry.attributes.position||!m.geometry.attributes.normal)return;
+    /* include(mesh): false skips the mesh, true furs it, a number furs it with that length multiplier */
+    const inc=include(m),lenScale=typeof inc==='number'?inc:(inc?1:0);if(!(lenScale>0))return;
     const src=m.geometry,mat0=Array.isArray(m.material)?m.material[0]:m.material;let mat=materials.get(mat0);if(!mat){mat=makeMaterial(mat0);mat.uniforms.uShells=Object.assign({},common.uShells);materials.set(mat0,mat);}
-    const geo=new THREE.InstancedBufferGeometry();geo.index=src.index;for(const k of ['position','normal','uv'])if(src.attributes[k])geo.setAttribute(k,src.attributes[k]);geo.setAttribute('aShell',aShell);geo.instanceCount=shells;
+    const geo=new THREE.InstancedBufferGeometry();geo.index=src.index;for(const k of ['position','normal','uv'])if(src.attributes[k])geo.setAttribute(k,src.attributes[k]);geo.setAttribute('aShell',shellAttr(lenScale));geo.instanceCount=shells;
     if(!src.boundingSphere)src.computeBoundingSphere();const e=m.matrixWorld.elements,minScale=Math.max(1e-3,Math.min(Math.hypot(e[0],e[1],e[2]),Math.hypot(e[4],e[5],e[6]),Math.hypot(e[8],e[9],e[10])));
-    geo.boundingSphere=src.boundingSphere.clone();geo.boundingSphere.radius+=common.uLength.value*2/minScale;
+    geo.boundingSphere=src.boundingSphere.clone();geo.boundingSphere.radius+=common.uLength.value*lenScale*2/minScale;
     const shell=new THREE.Mesh(geo,mat);shell.userData.keFurShell=true;shell.castShadow=false;shell.receiveShadow=true;shell.raycast=()=>{};shell.onBeforeRender=lodBeforeRender;shell.name='ke-fur-shells';
     m.add(shell);meshes.push(shell);});
   const apply=()=>{const on=KE.settings.fur!==false;for(const s of meshes)s.visible=on;};apply();
   const off=KE.events&&KE.events.on?KE.events.on('settings',apply):null;
-  return {available:true,object:target,meshes,materials:[...materials.values()],
+  let shadowSource=o.shadows||KE.foliage.shadowSource||null;const syncShadows=()=>{for(const m of materials.values())syncShadowSource(m,shadowSource);};syncShadows();
+  const api={available:true,object:target,meshes,materials:[...materials.values()],
+    /* Bind a KE.CascadedShadows instance so fur receives every cascade (null unbinds). */
+    setShadowSource(csm){shadowSource=csm||null;syncShadows();return api;},
     get shells(){return shells;},get renderedShells(){return KE.settings.fur===false?0:current;},
     /* velocity: world-space velocity of the furry object (fur trails behind it with a damped spring) */
-    update(dt=0,velocity=null){apply();dt=clamp(dt,0,.1);if(!dt)return;
+    update(dt=0,velocity=null){apply();syncShadows();dt=clamp(dt,0,.1);if(!dt)return;
       if(velocity)tmp.set(velocity.x||0,velocity.y||0,velocity.z||0).multiplyScalar(-.18*(o.inertia!==undefined?o.inertia:1));else tmp.set(0,0,0);
       if(tmp.lengthSq()>1.44)tmp.setLength(1.2);
       inertiaVel.x+=((tmp.x-inertia.x)*60-inertiaVel.x*9)*dt;inertiaVel.y+=((tmp.y-inertia.y)*60-inertiaVel.y*9)*dt;inertiaVel.z+=((tmp.z-inertia.z)*60-inertiaVel.z*9)*dt;inertia.addScaledVector(inertiaVel,dt);},
     setShells(n){shells=clamp(Math.round(n),0,MAX);for(const s of meshes)s.geometry.instanceCount=shells;for(const m of materials.values())m.uniforms.uShells.value=Math.max(1,shells);current=shells;return shells;},
-    dispose(){if(off)off();for(const s of meshes){if(s.parent)s.parent.remove(s);const g=s.geometry;/* detach shared source buffers so disposing frees only our own */for(const k of ['position','normal','uv'])g.deleteAttribute(k);g.index=null;g.dispose();}
-      aShell.array=new Float32Array(0);for(const m of materials.values())m.dispose();materials.clear();meshes.length=0;releaseStrands();}};
+    dispose(){liveSystems.delete(api);if(off)off();for(const s of meshes){if(s.parent)s.parent.remove(s);const g=s.geometry;/* detach shared source buffers so disposing frees only our own */for(const k of ['position','normal','uv'])g.deleteAttribute(k);g.index=null;g.dispose();}
+      for(const m of materials.values())m.dispose();materials.clear();meshes.length=0;releaseStrands();}};
+  liveSystems.add(api);return api;
 };
 
 /* ---------- foliage spawner ---------- */
@@ -834,7 +920,8 @@ function normBounds(b){if(!b)return {minX:-50,minZ:-50,maxX:50,maxZ:50};if(b.min
   return {minX:cx-sx/2,minZ:cz-sz/2,maxX:cx+sx/2,maxZ:cz+sz/2};}
 function typeParts(geometry,material){
   if(geometry&&geometry.isBufferGeometry)return [{geometry,material:material&&!material.isMaterial&&!Array.isArray(material)?Object.values(material)[0]:material,name:'main'}];
-  const parts=[];for(const k of Object.keys(geometry||{})){if(!geometry[k])continue;parts.push({name:k,geometry:geometry[k],material:material&&material.isMaterial?material:material&&material[k]});}return parts;}
+  /* {trunk, leaves} (or a whole KE.treeGeometry result): every BufferGeometry-valued key is one part */
+  const parts=[];for(const k of Object.keys(geometry||{})){if(!geometry[k]||!geometry[k].isBufferGeometry)continue;parts.push({name:k,geometry:geometry[k],material:material&&material.isMaterial?material:material&&material[k]});}return parts;}
 /* Deterministic Poisson-disc placement of instanced plants, bucketed into square cells. Each frame
    update(camera) classifies cells by distance (and optionally frustum); instance buffers are rebuilt
    only when that classification changes. Uses KE.InstancedLOD when present and opts.useInstancedLOD. */
@@ -868,6 +955,15 @@ KE.FoliageSpawner=class{
       for(let c=1;c<nCells;c++)start[c]=start[c-1]+cnt[c-1];
       const dists=(type.lodDistances&&type.lodDistances.length?type.lodDistances:[Math.min(view,(o.maxDistance||view))*.9*lodScale]).map(d=>d*(type.lodDistances?lodScale:1));
       const levelParts=[parts];for(const l of type.lods||[])levelParts.push(typeParts(l.geometry,l.material));
+      /* Optional hand-off to a shared instanced-LOD system (KE.InstancedLOD, when a later module provides
+         one and opts.instancedLOD !== false). Contract: new KE.InstancedLOD(THREE, scene, {name, matrices,
+         colors, count, levels:[{distance, parts:[{geometry, material, customDepthMaterial}]}], castShadow})
+         returning an object with update(camera) and dispose(). Any failure falls back to the built-in path. */
+      if(o.instancedLOD!==false&&typeof KE.InstancedLOD==='function'&&n>0){
+        try{const lod=new KE.InstancedLOD(THREE,scene,{name:type.name||'type'+ti,matrices:mats,colors:cols,count:n,castShadow:type.castShadow!==false,
+            levels:dists.map((distance,li)=>({distance,parts:levelParts[Math.min(li,levelParts.length-1)].map(p=>({geometry:p.geometry,material:p.material,customDepthMaterial:p.material&&p.material.userData&&p.material.userData.keFoliage?KE.foliageDepthMaterial(p.material):null}))}))});
+          if(lod&&typeof lod.update==='function'){this.groups.push({name:type.name||'type'+ti,count:n,height:hgt,matrices:mats,colors:cols,start,cnt,levels:[{distance:dists[dists.length-1],meshes:[]}],meshes:[],external:lod});this.count+=n;return;}}
+        catch(e){/* fall through to the built-in cell LOD */}}
       const levels=dists.map((dist,li)=>{const lp=levelParts[Math.min(li,levelParts.length-1)];
         return {distance:dist,meshes:lp.map(p=>{const im=new THREE.InstancedMesh(p.geometry,p.material,Math.max(1,n));im.count=0;im.frustumCulled=false;im.castShadow=type.castShadow!==false;im.receiveShadow=true;
           im.instanceColor=new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1,n)*3),3);im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);im.name='ke-foliage-'+(type.name||ti)+'-'+p.name+'-lod'+li;
@@ -875,6 +971,9 @@ KE.FoliageSpawner=class{
           if(scene)scene.add(im);return im;})};});
       this.groups.push({name:type.name||'type'+ti,count:n,height:hgt,matrices:mats,colors:cols,start,cnt,levels,meshes:levels.flatMap(l=>l.meshes)});this.count+=n;});
     this.maxDistance=Math.max(0,...this.groups.map(g=>g.levels[g.levels.length-1].distance));
+    /* cells are frustum-tested with a margin so trees just outside the view still cast their shadows in */
+    this.cullMargin=o.cullMargin!==undefined?o.cullMargin:Math.max(6,...this.groups.map(g=>g.height*1.5));this._box=new THREE.Box3();
+    this.backend=this.groups.some(g=>g.external)?'InstancedLOD':'cells';
     this._frustum=new THREE.Frustum();this._proj=new THREE.Matrix4();this._prev=new Uint8Array(nCells*Math.max(1,this.groups.length));this._cur=new Uint8Array(this._prev.length);this._first=true;this.rebuilds=0;
   }
   /* Returns true when instance buffers were rebuilt this call. */
@@ -882,13 +981,13 @@ KE.FoliageSpawner=class{
     if(!camera)return false;const e=camera.matrixWorld.elements,cx=e[12],cz=e[14],B=this.bounds,cs=this.cellSize,nC=this.cols*this.rows;
     if(this.frustumCull){this._proj.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);this._frustum.setFromProjectionMatrix(this._proj);}
     let changed=this._first;
-    for(let gi=0;gi<this.groups.length;gi++){const g=this.groups[gi],L=g.levels;
+    for(let gi=0;gi<this.groups.length;gi++){const g=this.groups[gi],L=g.levels;if(g.external){g.external.update(camera);continue;}
       for(let c=0;c<nC;c++){let st=0;if(g.cnt[c]){const x0=B.minX+(c%this.cols)*cs,z0=B.minZ+Math.floor(c/this.cols)*cs,dx=Math.max(0,x0-cx,cx-(x0+cs)),dz=Math.max(0,z0-cz,cz-(z0+cs)),d=Math.sqrt(dx*dx+dz*dz);
           for(let li=0;li<L.length;li++)if(d<L[li].distance){st=li+1;break;}
-          if(st&&this.frustumCull){const b=this.cellBoxes[c];if(b.max.y>=b.min.y&&!this._frustum.intersectsBox(b))st=0;}}
+          if(st&&this.frustumCull){const b=this.cellBoxes[c];if(b.max.y>=b.min.y&&!this._frustum.intersectsBox(this._box.copy(b).expandByScalar(this.cullMargin)))st=0;}}
         const k=gi*nC+c;this._cur[k]=st;if(st!==this._prev[k])changed=true;}}
     if(!changed)return false;this._first=false;this._prev.set(this._cur);this.rebuilds++;
-    for(let gi=0;gi<this.groups.length;gi++){const g=this.groups[gi];
+    for(let gi=0;gi<this.groups.length;gi++){const g=this.groups[gi];if(g.external)continue;
       for(let li=0;li<g.levels.length;li++){let n=0;const meshes=g.levels[li].meshes,ma=meshes.length?meshes[0].instanceMatrix.array:null;if(!ma)continue;const ca=meshes[0].instanceColor.array;
         for(let c=0;c<nC;c++){if(this._cur[gi*nC+c]!==li+1)continue;const s=g.start[c],k=g.cnt[c];
           for(let i=0;i<k*16;i++)ma[n*16+i]=g.matrices[s*16+i];for(let i=0;i<k*3;i++)ca[n*3+i]=g.colors[s*3+i];n+=k;}
@@ -897,7 +996,8 @@ KE.FoliageSpawner=class{
     return true;}
   /* Instances visible after the last update (sum over types and LOD levels). */
   get visibleCount(){let n=0;for(const g of this.groups)for(const l of g.levels)n+=l.meshes.length?l.meshes[0].count:0;return n;}
-  dispose(){for(const g of this.groups)for(const m of g.meshes){if(m.parent)m.parent.remove(m);m.dispose();}this.groups.length=0;this.count=0;}
+  /* Removes and frees the instanced meshes (instance buffers). Geometries and materials belong to the caller. */
+  dispose(){for(const g of this.groups){if(g.external&&g.external.dispose)g.external.dispose();for(const m of g.meshes){if(m.parent)m.parent.remove(m);m.dispose();}}this.groups.length=0;this.count=0;}
 };
 
 /* ---------- per-frame driver ---------- */
@@ -913,6 +1013,20 @@ KE.foliage={
       if(o.windDir!==undefined)setWindDir(U.keWindDir.value,o.windDir);if(Number.isFinite(o.gustScale))U.keGustScale.value=Math.max(0,o.gustScale);
       const list=o.interactors;if(list){let n=0;for(let i=0;i<list.length&&n<MAX_INTERACTORS;i++){const it=list[i];if(!it)continue;const p=it.position||it;if(!Number.isFinite(p.x)||!Number.isFinite(p.y)||!Number.isFinite(p.z))continue;
         U.keInteractors.value[n].set(p.x,p.y,p.z,it.radius!==undefined?it.radius:.5);n++;}U.keInteractorCount.value=n;}}},
+  /* Default KE.CascadedShadows for grass and fur created later; also rebinds every live grass/fur system. */
+  shadowSource:null,
+  setShadowSource(csm){this.shadowSource=csm||null;for(const s of liveSystems)s.setShadowSource(this.shadowSource);return this;},
+  /* Add hierarchical wind (and matching shadow materials via attach/foliageDepthMaterial) to an existing
+     lit material, chaining its current onBeforeCompile. Geometry should carry windWeight
+     (see addWindWeights); pass {windAttribute:false, height} to derive weights from object-space height. */
+  applyWind(THREE,material,o={}){
+    if(!material||!material.isMaterial)throw new TypeError('KE.foliage.applyWind expects a material');if(material.userData.keFoliage)return material;foliageUniforms(THREE);
+    const wind=Object.assign({trunk:.02,branch:.06,leaf:.12},o.wind||{}),physical=!!material.isMeshStandardMaterial,translucency=physical&&o.translucency?o.translucency:0;
+    const uniforms={kfWindAmp:{value:new THREE.Vector3(wind.trunk,wind.branch,wind.leaf)},kfRefHeight:{value:Math.max(1e-3,o.height||1)},kfTranslucency:{value:translucency},
+      kfTransColor:{value:srgb(THREE,o.translucencyColor,0xd2e67a)},kfNormalsUp:{value:0},kfMapSize:{value:material.map&&material.map.image?Math.max(material.map.image.width||256,material.map.image.height||256):256},kfAlphaMip:{value:o.alphaMip!==undefined?o.alphaMip:.25},kfEdgeFade:{value:o.edgeFade!==undefined?o.edgeFade:0}};
+    const cfg={THREE,uniforms,wind,depth:null,distance:null,flags:{attr:o.windAttribute!==false,trans:translucency>0,unflip:false,alpha:material.alphaTest>0&&!!material.map,up:false}};
+    material.userData.keFoliage=cfg;material.defaultAttributeValues=Object.assign({windWeight:[0,0,0,0],color:[1,1,1],uv:[0,0]},material.defaultAttributeValues||{});
+    installHook(THREE,material,cfg,'main');material.needsUpdate=true;return material;},
   /* Give a mesh using a foliage/bark material matching shadow materials. */
   attach(mesh){const m=Array.isArray(mesh.material)?mesh.material[0]:mesh.material;if(m&&m.userData.keFoliage){mesh.customDepthMaterial=KE.foliageDepthMaterial(m);mesh.customDistanceMaterial=KE.foliageDepthMaterial(m,{distance:true});}return mesh;},
   /* Add a windWeight attribute to any geometry (height-based), so KE.foliageMaterial sways it. */
@@ -922,5 +1036,5 @@ KE.foliage={
   glsl:{gust:GUST_GLSL,treeWind:TREE_WIND_GLSL}
 };
 
-KE.registerModule('foliage',{provides:['foliageUniforms','foliage','foliageMaterial','foliageDepthMaterial','treeGeometry','tree','leafTexture','barkTexture','barkMaterial','grassField','fur','FoliageSpawner']});
+KE.registerModule('foliage',{provides:['foliageUniforms','foliage','foliageMaterial','foliageDepthMaterial','treeGeometry','tree','TREE_SPECIES','leafTexture','barkTexture','barkMaterial','grassField','fur','FoliageSpawner']});
 })();
