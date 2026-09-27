@@ -113,7 +113,7 @@ void main(){vec2 delta=(vUv-uSunUV)*uStep/24.;vec2 uv=vUv-delta*ign(gl_FragCoord
  for(int i=0;i<24;i++){acc+=texture2D(tSrc,uv).rgb*decay;decay*=.96;uv-=delta;}gl_FragColor=vec4(acc/12.,1.);}`;
 
 /* Temporal AA: 3x3 YCoCg variance clipping, depth-dilated camera reprojection, Catmull-Rom history, Karis weighting. */
-const TAA_FS=`uniform sampler2D tCurrent;uniform sampler2D tHistory;uniform sampler2D tDepth;uniform mat4 uInvProjU;uniform mat4 uInvView;uniform mat4 uPrevViewProj;uniform vec2 uTexel;uniform float uBlend;uniform float uValid;varying vec2 vUv;
+const TAA_FS=`uniform sampler2D tCurrent;uniform sampler2D tHistory;uniform sampler2D tDepth;uniform mat4 uInvProjU;uniform mat4 uInvView;uniform mat4 uPrevViewProj;uniform vec2 uTexel;uniform vec2 uCurTexel;uniform float uBlend;uniform float uValid;varying vec2 vUv;
 ${KE.GLSL.color}
 vec3 tm(vec3 c){return c/(1.+max(c.r,max(c.g,c.b)));}vec3 itm(vec3 c){return c/max(1.-max(c.r,max(c.g,c.b)),1e-4);}
 vec3 catmull(sampler2D t,vec2 uv){vec2 sz=1./uTexel;vec2 sp=uv*sz;vec2 tp=floor(sp-.5)+.5;vec2 f=sp-tp;vec2 w0=f*(-.5+f*(1.-.5*f)),w1=1.+f*f*(-2.5+1.5*f),w2=f*(.5+f*(2.-1.5*f)),w3=f*f*(-.5+.5*f);vec2 w12=w1+w2;vec2 o12=w2/w12;
@@ -121,7 +121,7 @@ vec3 catmull(sampler2D t,vec2 uv){vec2 sz=1./uTexel;vec2 sp=uv*sz;vec2 tp=floor(
  float ws=w12.x*w0.y+w0.x*w12.y+w12.x*w12.y+w3.x*w12.y+w12.x*w3.y;return max(r/ws,0.);}
 vec3 clipAABB(vec3 lo,vec3 hi,vec3 p,vec3 q){vec3 c=.5*(hi+lo),e=.5*(hi-lo)+1e-5;vec3 v=q-c;vec3 a=abs(v/e);float m=max(a.x,max(a.y,a.z));return m>1.?c+v/m:q;}
 void main(){vec3 cur=keRGBToYCoCg(tm(texture2D(tCurrent,vUv).rgb)),m1=vec3(0.),m2=vec3(0.),mn=vec3(1e9),mx=vec3(-1e9);float cd=1.;vec2 cuv=vUv;
- for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){vec2 o=vec2(float(x),float(y))*uTexel;vec3 s=keRGBToYCoCg(tm(texture2D(tCurrent,vUv+o).rgb));m1+=s;m2+=s*s;mn=min(mn,s);mx=max(mx,s);float d=texture2D(tDepth,vUv+o).x;if(d<cd){cd=d;cuv=vUv+o;}}
+ for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){vec2 o=vec2(float(x),float(y))*uCurTexel;vec3 s=keRGBToYCoCg(tm(texture2D(tCurrent,vUv+o).rgb));m1+=s;m2+=s*s;mn=min(mn,s);mx=max(mx,s);float d=texture2D(tDepth,vUv+o).x;if(d<cd){cd=d;cuv=vUv+o;}}
  vec3 mean=m1/9.,sig=sqrt(max(m2/9.-mean*mean,0.));vec3 lo=max(mean-1.25*sig,mn),hi=min(mean+1.25*sig,mx);
  vec4 p=uInvProjU*vec4(vec3(cuv,cd)*2.-1.,1.);p/=p.w;vec4 pc=uPrevViewProj*(uInvView*vec4(p.xyz,1.));vec2 prev=vUv+(pc.xy/pc.w*.5+.5-cuv);
  float blend=uBlend;if(uValid<.5||prev.x<0.||prev.y<0.||prev.x>1.||prev.y>1.)blend=1.;
@@ -190,8 +190,8 @@ KE.Pipeline=class{
   constructor(THREE,renderer,o={}){
     this.THREE=THREE;this.renderer=renderer;this.caps=KE.capabilities(renderer);const caps=this.caps;
     this.hdr=caps.halfRT&&o.hdr!==false;this.hdrType=this.hdr?THREE.HalfFloatType:THREE.UnsignedByteType;this.depthOK=caps.depthTexture;
-    this.enabled=true;this.frame=0;this.historyValid=false;this.size=[0,0];this.targets=[];this.stats={passes:0,ms:0};
-    this.options={taa:true,taaBlend:.1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,
+    this.enabled=true;this.frame=0;this.historyValid=false;this.size=[0,0];this.internal=[0,0];this.targets=[];this.stats={passes:0,ms:0};
+    this.options={taa:true,taaBlend:.1,upscale:1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,
       autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,fxaa:true,sharpen:.18,
       fog:{enabled:true,density:.012,falloff:.12,height:0,start:4,maxOpacity:.9,color:new THREE.Color(.55,.66,.78),inscatter:1.2,inscatterExponent:12,sky:.35,replaceSceneFog:true},
       volumetrics:true,shaftStrength:.25,dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
@@ -214,7 +214,7 @@ KE.Pipeline=class{
         uFogColor:{value:new THREE.Color()},uSunDir:{value:new THREE.Vector3(0,1,0)},uSunColor:{value:new THREE.Color()},uInscatterExp:{value:8},uInscatter:{value:1},uFogSky:{value:0}}),
       shaftMask:M(SHAFT_MASK_FS,{tColor:{value:null},tDepth:{value:null},uSunUV:{value:new THREE.Vector2()},uAspect:{value:1},uThreshold:{value:1}}),
       shaftBlur:M(SHAFT_BLUR_FS,{tSrc:{value:null},uSunUV:{value:new THREE.Vector2()},uStep:{value:.5},uFrame:{value:0}}),
-      taa:M(TAA_FS,{tCurrent:{value:null},tHistory:{value:null},tDepth:{value:null},uInvProjU:{value:this.invProjU},uInvView:{value:new THREE.Matrix4()},uPrevViewProj:{value:this.prevViewProj},uTexel:{value:new THREE.Vector2()},uBlend:{value:.1},uValid:{value:0}}),
+      taa:M(TAA_FS,{tCurrent:{value:null},tHistory:{value:null},tDepth:{value:null},uInvProjU:{value:this.invProjU},uInvView:{value:new THREE.Matrix4()},uPrevViewProj:{value:this.prevViewProj},uTexel:{value:new THREE.Vector2()},uCurTexel:{value:new THREE.Vector2()},uBlend:{value:.1},uValid:{value:0}}),
       dofGather:M(DOF_GATHER_FS,{...depthU(),tColor:{value:null},uFocus:{value:8},uAperture:{value:.03},uMaxBlur:{value:8},uAutoFocus:{value:0},uFullTexel:{value:new THREE.Vector2()}}),
       dofCombine:M(DOF_COMBINE_FS,{tColor:{value:null},tBlur:{value:null}}),
       motion:M(MOTION_FS,{...depthU(),tColor:{value:null},uInvView:{value:new THREE.Matrix4()},uPrevViewProj:{value:this.prevViewProj},uStrength:{value:.5},uFrame:{value:0}}),
@@ -239,18 +239,21 @@ KE.Pipeline=class{
   set(o={}){for(const [k,v] of Object.entries(o)){const cur=this.options[k];if(cur&&typeof cur==='object'&&!cur.isColor&&!Array.isArray(cur)&&v&&typeof v==='object'&&!v.isColor&&!Array.isArray(v)){for(const [kk,vv] of Object.entries(v)){if(cur[kk]&&cur[kk].isColor&&vv!==undefined&&!(vv&&vv.isColor))cur[kk].set(vv);else if(cur[kk]&&cur[kk].isColor&&vv&&vv.isColor)cur[kk].copy(vv);else cur[kk]=vv;}}else this.options[k]=v;}return this;}
   /* Map KE.settings quality keys onto pipeline passes. */
   applySettings(s=KE.settings){const o=this.options;o.taa=!!s.taa&&this.depthOK;o.gtao=!!s.gtao&&this.depthOK;o.ssgi=!!s.ssgi&&this.depthOK&&this.hdr;o.bloom=s.bloom!==false;o.volumetrics=!!s.volumetrics;o.autoExposure=!!s.autoExposure&&this.hdr;
-    o.fxaa=!!s.aa&&!o.taa;o.dof.enabled=!!s.dof&&this.depthOK;o.motionBlur.enabled=!!s.motionBlur&&this.depthOK;this.uniforms.keSSR.value=s.ssr?1:0;this.enabled=s.pipeline!==false;
+    o.fxaa=!!s.aa&&!o.taa;o.upscale=Number.isFinite(s.upscale)?s.upscale:1;o.dof.enabled=!!s.dof&&this.depthOK;o.motionBlur.enabled=!!s.motionBlur&&this.depthOK;this.uniforms.keSSR.value=s.ssr?1:0;this.enabled=s.pipeline!==false;
     const q=s.preset==='ultra'||s.preset==='cinematic';this.m.gtao.defines.SLICES=q?3:2;this.m.gtao.defines.STEPS=q?8:6;this.m.gtao.needsUpdate=true;this.historyValid=false;return this;}
   target(w,h,{type=this.hdrType,format=this.THREE.RGBAFormat,filter=this.THREE.LinearFilter,depth=false}={}){const T=this.THREE,t=new T.WebGLRenderTarget(Math.max(1,w),Math.max(1,h),{type,format,minFilter:filter,magFilter:filter,depthBuffer:depth,stencilBuffer:false,generateMipmaps:false});t.texture.generateMipmaps=false;this.targets.push(t);return t;}
   setSize(){const s=this.renderer.getDrawingBufferSize(this._v2);this._resize(s.x,s.y);return this;}
-  _resize(W,H){W=Math.max(1,Math.floor(W));H=Math.max(1,Math.floor(H));if(W===this.size[0]&&H===this.size[1])return;const T=this.THREE;this.disposeTargets();this.size=[W,H];
-    const w2=Math.max(1,W>>1),h2=Math.max(1,H>>1);
-    this.scene=this.target(W,H,{depth:true});if(this.depthOK){this.scene.depthTexture=new T.DepthTexture(W,H,T.UnsignedIntType);this.scene.depthTexture.format=T.DepthFormat;}
-    this.colorCopy=this.target(W,H);this.linearDepth=this.target(W,H,{type:this.caps.floatRT?T.FloatType:this.hdrType,format:this.caps.webgl2?T.RedFormat:T.RGBAFormat,filter:T.NearestFilter});
-    this.lit=this.target(W,H);this.taa=[this.target(W,H),this.target(W,H)];this.post=[this.target(W,H),this.target(W,H)];this.ldr=this.target(W,H,{type:T.UnsignedByteType});
+  /* Display targets (TAA history onward) use the drawing-buffer size; scene and lighting targets use the internal
+     size (display × upscale when TAA is on), which TAA reconstructs back to display resolution. */
+  _resize(W,H){W=Math.max(1,Math.floor(W));H=Math.max(1,Math.floor(H));const u=this.options.taa?clamp(this.options.upscale||1,.5,1):1,IW=Math.max(1,Math.round(W*u)),IH=Math.max(1,Math.round(H*u));
+    if(W===this.size[0]&&H===this.size[1]&&IW===this.internal[0]&&IH===this.internal[1])return;const T=this.THREE;this.disposeTargets();this.size=[W,H];this.internal=[IW,IH];
+    const w2=Math.max(1,IW>>1),h2=Math.max(1,IH>>1),dw2=Math.max(1,W>>1),dh2=Math.max(1,H>>1);
+    this.scene=this.target(IW,IH,{depth:true});if(this.depthOK){this.scene.depthTexture=new T.DepthTexture(IW,IH,T.UnsignedIntType);this.scene.depthTexture.format=T.DepthFormat;}
+    this.colorCopy=this.target(IW,IH);this.linearDepth=this.target(IW,IH,{type:this.caps.floatRT?T.FloatType:this.hdrType,format:this.caps.webgl2?T.RedFormat:T.RGBAFormat,filter:T.NearestFilter});
+    this.lit=this.target(IW,IH);this.taa=[this.target(W,H),this.target(W,H)];this.post=[this.target(W,H),this.target(W,H)];this.ldr=this.target(W,H,{type:T.UnsignedByteType});
     this.ao=[this.target(w2,h2),this.target(w2,h2)];this.gi=[this.target(w2,h2),this.target(w2,h2)];this.giHist=[this.target(w2,h2),this.target(w2,h2)];
-    this.shafts=[this.target(w2,h2),this.target(w2,h2)];this.dofBlur=this.target(w2,h2);
-    this.bloomMips=[];let bw=w2,bh=h2;for(let i=0;i<6&&bw>=4&&bh>=4;i++){this.bloomMips.push(this.target(bw,bh));bw>>=1;bh>>=1;}
+    this.shafts=[this.target(w2,h2),this.target(w2,h2)];this.dofBlur=this.target(dw2,dh2);
+    this.bloomMips=[];let bw=dw2,bh=dh2;for(let i=0;i<6&&bw>=4&&bh>=4;i++){this.bloomMips.push(this.target(bw,bh));bw>>=1;bh>>=1;}
     this.lumTargets=[64,16,4,1].map(n=>this.target(n,n,{type:this.caps.floatRT?T.FloatType:this.hdrType,filter:T.NearestFilter}));this.adapt=[0,1].map(()=>this.target(1,1,{type:this.caps.floatRT?T.FloatType:this.hdrType,filter:T.NearestFilter}));
     this.historyValid=false;this.adaptValid=false;this.giValid=false;}
   resetHistory(){this.historyValid=false;this.giValid=false;return this;}
@@ -259,16 +262,16 @@ KE.Pipeline=class{
   render(scene,camera,dt=1/60){
     const R=this.renderer,T=this.THREE,o=this.options,U=this.uniforms;
     if(!this.enabled){KE.prepareCamera(camera);R.render(scene,camera);return;}
-    const t0=performance.now();this.setSize();const [W,H]=this.size;this.frame++;this.stats.passes=0;
+    const t0=performance.now();this.setSize();const [W,H]=this.size,[IW,IH]=this.internal;this.frame++;this.stats.passes=0;
     const prevTarget=R.getRenderTarget(),prevTone=R.toneMapping,prevAutoClear=R.autoClear,prevInfo=R.info.autoReset,prevFog=scene.fog,prevBg=scene.background,prevMask=camera.layers.mask;
     R.info.autoReset=false;R.info.reset();
     camera.updateMatrixWorld();if(camera.isPerspectiveCamera||camera.isOrthographicCamera)camera.updateProjectionMatrix();
     this.invProjU.copy(camera.projectionMatrix).invert();this.viewProj.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);
     const jitter=o.taa&&!(camera.view&&camera.view.enabled);
-    if(jitter){const i=(this.frame%8)+1;camera.setViewOffset(W,H,halton(i,2)-.5,halton(i,3)-.5,W,H);}
+    if(jitter){const n=IW<W?16:8,i=(this.frame%n)+1;camera.setViewOffset(IW,IH,halton(i,2)-.5,halton(i,3)-.5,IW,IH);}
     this.proj.copy(camera.projectionMatrix);this.invProj.copy(this.proj).invert();
-    const near=camera.near,far=camera.far,texel=this._v2.set(1/W,1/H),frameValid=this.historyValid;
-    Object.assign(U.keNearFar.value,{x:near,y:far});U.keResolution.value.set(W,H);U.keProjection.value.copy(this.proj);U.keInvProjection.value.copy(this.invProj);U.keViewMatrix.value.copy(camera.matrixWorldInverse);U.keInvView.value.copy(camera.matrixWorld);U.keTime.value+=dt;U.keFrame.value=this.frame;
+    const near=camera.near,far=camera.far,texel=this._v2.set(1/IW,1/IH),dtexel=(this._dt||(this._dt=new T.Vector2())).set(1/W,1/H),frameValid=this.historyValid;
+    Object.assign(U.keNearFar.value,{x:near,y:far});U.keResolution.value.set(IW,IH);U.keProjection.value.copy(this.proj);U.keInvProjection.value.copy(this.invProj);U.keViewMatrix.value.copy(camera.matrixWorldInverse);U.keInvView.value.copy(camera.matrixWorld);U.keTime.value+=dt;U.keFrame.value=this.frame;
     const sun=o.sun;if(sun){this._sunWorld.copy(sun.position).sub(sun.target.position).normalize();U.keSunDirection.value.copy(this._sunWorld);U.keSunColor.value.copy(sun.color).multiplyScalar(sun.intensity);}
     try{
       // 1. Opaque scene into the HDR target (linear, no tone mapping), without the translucent layer.
@@ -283,7 +286,7 @@ KE.Pipeline=class{
       camera.layers.mask=prevMask;scene.background=prevBg;scene.fog=prevFog;
       // 4. Half-resolution ambient occlusion and indirect light.
       const halfTexel=(this._half||(this._half=new T.Vector2())).set(1/this.ao[0].width,1/this.ao[0].height);
-      if(o.gtao){const g=this.m.gtao;this.bindDepth(g,near,far,texel);g.uniforms.uRadius.value=o.aoRadius;g.uniforms.uProjScale.value=H/(2*Math.tan((camera.fov||50)*Math.PI/360));g.uniforms.uFrame.value=this.frame%64;g.uniforms.uPower.value=o.aoPower;this.pass(g,this.ao[0]);this.blur(this.ao,halfTexel,0);}
+      if(o.gtao){const g=this.m.gtao;this.bindDepth(g,near,far,texel);g.uniforms.uRadius.value=o.aoRadius;g.uniforms.uProjScale.value=IH/(2*Math.tan((camera.fov||50)*Math.PI/360));g.uniforms.uFrame.value=this.frame%64;g.uniforms.uPower.value=o.aoPower;this.pass(g,this.ao[0]);this.blur(this.ao,halfTexel,0);}
       let giTex=this._black;
       if(o.ssgi){const g=this.m.ssgi;this.bindDepth(g,near,far,texel);g.uniforms.tPrevColor.value=this.historyValid?this.taa[(this.frame+1)&1].texture:this.colorCopy.texture;g.uniforms.uProj.value.copy(this.proj);g.uniforms.uInvView.value.copy(camera.matrixWorld);g.uniforms.uFrame.value=this.frame%64;g.uniforms.uGIRadius.value=o.giRadius;this.pass(g,this.gi[0]);
         const tt=this.m.ssgiTemporal,hi=this.frame&1;this.bindDepth(tt,near,far,texel);tt.uniforms.tCurrent.value=this.gi[0].texture;tt.uniforms.tHistory.value=this.giHist[hi^1].texture;tt.uniforms.uInvView.value.copy(camera.matrixWorld);tt.uniforms.uValid.value=this.giValid?1:0;this.pass(tt,this.giHist[hi]);
@@ -291,7 +294,7 @@ KE.Pipeline=class{
       // 5. Light shafts from the sun's screen position.
       let shaftsOn=0;if(o.volumetrics&&sun&&this.depthOK){const s=this._v3.copy(this._sunWorld).multiplyScalar(far*.5).add(camera.position).project(camera);camera.getWorldDirection(this._fwd);
         const facing=this._fwd.dot(this._sunWorld),vis=clamp((facing-.1)*2.5,0,1)*clamp(1-Math.max(Math.abs(s.x),Math.abs(s.y))*.45,0,1)*clamp(this._sunWorld.y*6,0,1);
-        if(vis>.01){const sx=s.x*.5+.5,sy=s.y*.5+.5,mk=this.m.shaftMask;mk.uniforms.tColor.value=this.scene.texture;mk.uniforms.tDepth.value=this.scene.depthTexture;mk.uniforms.uSunUV.value.set(sx,sy);mk.uniforms.uAspect.value=W/H;mk.uniforms.uThreshold.value=this.hdr?1.5:.8;this.pass(mk,this.shafts[0]);
+        if(vis>.01){const sx=s.x*.5+.5,sy=s.y*.5+.5,mk=this.m.shaftMask;mk.uniforms.tColor.value=this.scene.texture;mk.uniforms.tDepth.value=this.scene.depthTexture;mk.uniforms.uSunUV.value.set(sx,sy);mk.uniforms.uAspect.value=IW/IH;mk.uniforms.uThreshold.value=this.hdr?1.5:.8;this.pass(mk,this.shafts[0]);
           const b=this.m.shaftBlur;b.uniforms.uSunUV.value.set(sx,sy);b.uniforms.uFrame.value=this.frame%64;b.uniforms.tSrc.value=this.shafts[0].texture;b.uniforms.uStep.value=.55;this.pass(b,this.shafts[1]);b.uniforms.tSrc.value=this.shafts[1].texture;b.uniforms.uStep.value=.22;this.pass(b,this.shafts[0]);shaftsOn=vis;}}
       // 6. Lighting composite with height fog.
       const c=this.m.composite,cu=c.uniforms,f=o.fog;this.bindDepth(c,near,far,texel);cu.tColor.value=this.scene.texture;cu.tAO.value=o.gtao?this.ao[0].texture:this._white;cu.tGI.value=giTex;cu.tShafts.value=this.shafts[0].texture;cu.uInvView.value.copy(camera.matrixWorld);cu.uCamPos.value.setFromMatrixPosition(camera.matrixWorld);cu.uHalfTexel.value.copy(halfTexel);
@@ -299,12 +302,12 @@ KE.Pipeline=class{
       cu.uSunDir.value.copy(this._sunWorld.lengthSq()?this._sunWorld:this._v3.set(0,1,0));if(sun){cu.uSunColor.value.copy(sun.color).multiplyScalar(sun.intensity*(o.volumetrics?1:.35));cu.uShaftColor.value.copy(sun.color).multiplyScalar(sun.intensity);}else cu.uSunColor.value.setRGB(0,0,0);cu.uInscatter.value=f.inscatter;cu.uInscatterExp.value=f.inscatterExponent;cu.uFogSky.value=f.sky;
       this.pass(c,this.lit);let current=this.lit;
       // 7. Temporal anti-aliasing.
-      if(o.taa){const a=this.m.taa,u=a.uniforms,wi=this.frame&1;u.tCurrent.value=this.lit.texture;u.tHistory.value=this.taa[wi^1].texture;u.tDepth.value=this.scene.depthTexture;u.uInvView.value.copy(camera.matrixWorld);u.uTexel.value.copy(texel);u.uBlend.value=o.taaBlend;u.uValid.value=frameValid?1:0;this.pass(a,this.taa[wi]);current=this.taa[wi];this.historyValid=true;}
+      if(o.taa){const a=this.m.taa,u=a.uniforms,wi=this.frame&1;u.tCurrent.value=this.lit.texture;u.tHistory.value=this.taa[wi^1].texture;u.tDepth.value=this.scene.depthTexture;u.uInvView.value.copy(camera.matrixWorld);u.uTexel.value.copy(dtexel);u.uCurTexel.value.copy(texel);u.uBlend.value=o.taaBlend*(IW<W?.8:1);u.uValid.value=frameValid?1:0;this.pass(a,this.taa[wi]);current=this.taa[wi];this.historyValid=true;}
       else{this.historyValid=false;}
       // 8. Depth of field and motion blur.
-      let pi=0;if(o.dof.enabled){const g=this.m.dofGather,u=g.uniforms,d=o.dof;this.bindDepth(g,near,far,texel);u.tColor.value=current.texture;u.uFocus.value=d.focusDistance;u.uAperture.value=d.aperture;u.uMaxBlur.value=d.maxBlur;u.uAutoFocus.value=d.autoFocus?1:0;u.uFullTexel.value.copy(texel);this.pass(g,this.dofBlur);
+      let pi=0;if(o.dof.enabled){const g=this.m.dofGather,u=g.uniforms,d=o.dof;this.bindDepth(g,near,far,texel);u.tColor.value=current.texture;u.uFocus.value=d.focusDistance;u.uAperture.value=d.aperture;u.uMaxBlur.value=d.maxBlur;u.uAutoFocus.value=d.autoFocus?1:0;u.uFullTexel.value.copy(dtexel);this.pass(g,this.dofBlur);
         const cb=this.m.dofCombine;cb.uniforms.tColor.value=current.texture;cb.uniforms.tBlur.value=this.dofBlur.texture;this.pass(cb,this.post[pi]);current=this.post[pi];pi^=1;}
-      if(o.motionBlur.enabled&&frameValid){const mb=this.m.motion;this.bindDepth(mb,near,far,texel);mb.uniforms.tColor.value=current.texture;mb.uniforms.uInvView.value.copy(camera.matrixWorld);mb.uniforms.uStrength.value=o.motionBlur.strength*clamp(1/(60*Math.max(dt,1e-3)),.25,2);mb.uniforms.uFrame.value=this.frame%64;this.pass(mb,this.post[pi]);current=this.post[pi];pi^=1;}
+      if(o.motionBlur.enabled&&frameValid){const mb=this.m.motion;this.bindDepth(mb,near,far,dtexel);mb.uniforms.tColor.value=current.texture;mb.uniforms.uInvView.value.copy(camera.matrixWorld);mb.uniforms.uStrength.value=o.motionBlur.strength*clamp(1/(60*Math.max(dt,1e-3)),.25,2);mb.uniforms.uFrame.value=this.frame%64;this.pass(mb,this.post[pi]);current=this.post[pi];pi^=1;}
       // 9. Bloom.
       let bloomTex=this._black;if(o.bloom&&this.bloomMips.length){const d=this.m.bloomDown,u=this.m.bloomUp;let src=current;
         const th=this.hdr?o.bloomThreshold:.8,knee=Math.max(1e-4,th*o.bloomKnee);d.uniforms.uCurve.value.set(th-knee,knee*2,.25/knee,th);
@@ -319,8 +322,8 @@ KE.Pipeline=class{
       const fm=this.m.final,fu=fm.uniforms,g=o.grading;fu.tInput.value=current.texture;fu.tBloom.value=bloomTex;fu.tExposure.value=expTex;fu.tAO.value=o.gtao?this.ao[0].texture:this._white;fu.tGI.value=giTex;fu.tDepth.value=this.scene.depthTexture;fu.tScene.value=this.colorCopy.texture;
       fu.uAuto.value=o.autoExposure?1:0;fu.uManual.value=o.exposure*(R.toneMappingExposure||1);fu.uComp.value=o.exposureCompensation;fu.uKey.value=o.exposureKey;fu.uExpRange.value.set(o.minExposure,o.maxExposure);fu.uBloom.value=o.bloom?o.bloomStrength:0;
       fu.uWB.value.copy(this.whiteBalance(g.temperature,g.tint));fu.uSat.value=g.saturation;fu.uContrast.value=g.contrast;fu.uLift.value.fromArray(g.lift);fu.uGamma.value.fromArray(g.gamma);fu.uGain.value.fromArray(g.gain);fu.uVignette.value=g.vignette;fu.uGrain.value=g.grain;fu.uCA.value=g.chromaticAberration;
-      fu.uSharpen.value=o.taa?o.sharpen:0;fu.uTexel.value.copy(texel);fu.uTime.value=(fu.uTime.value+dt)%1000;fu.uEncode.value=R.outputEncoding===T.sRGBEncoding?1:0;fu.uDebug.value=DEBUG_VIEWS[o.debugView]||0;fu.uNear.value=near;fu.uFar.value=far;
-      if(o.fxaa){this.pass(fm,this.ldr);this.m.fxaa.uniforms.tSrc.value=this.ldr.texture;this.m.fxaa.uniforms.uTexel.value.copy(texel);this.pass(this.m.fxaa,prevTarget);}else this.pass(fm,prevTarget);
+      fu.uSharpen.value=o.taa?o.sharpen*(IW<W?1.6:1):0;fu.uTexel.value.copy(dtexel);fu.uTime.value=(fu.uTime.value+dt)%1000;fu.uEncode.value=R.outputEncoding===T.sRGBEncoding?1:0;fu.uDebug.value=DEBUG_VIEWS[o.debugView]||0;fu.uNear.value=near;fu.uFar.value=far;
+      if(o.fxaa){this.pass(fm,this.ldr);this.m.fxaa.uniforms.tSrc.value=this.ldr.texture;this.m.fxaa.uniforms.uTexel.value.copy(dtexel);this.pass(this.m.fxaa,prevTarget);}else this.pass(fm,prevTarget);
     }finally{
       camera.layers.mask=prevMask;scene.background=prevBg;scene.fog=prevFog;R.toneMapping=prevTone;R.autoClear=prevAutoClear;R.setRenderTarget(prevTarget);R.info.autoReset=prevInfo;
       if(jitter)camera.clearViewOffset();
@@ -331,7 +334,7 @@ KE.Pipeline=class{
   blur(pair,halfTexel,channel){const b=this.m.blur;b.uniforms.uDepthChannel.value=channel;b.uniforms.tSrc.value=pair[0].texture;b.uniforms.uDir.value.set(halfTexel.x,0);this.pass(b,pair[1]);b.uniforms.tSrc.value=pair[1].texture;b.uniforms.uDir.value.set(0,halfTexel.y);this.pass(b,pair[0]);}
   /* Approximate white balance multiplier from temperature (-1 cool .. +1 warm) and tint (-1 green .. +1 magenta). */
   whiteBalance(t,tint){const v=this._wb||(this._wb=new this.THREE.Vector3());v.set(1+t*.18-tint*.04,1-Math.abs(t)*.02+tint*.12*-1,1-t*.22-tint*.04);const l=v.x*.2126+v.y*.7152+v.z*.0722;return v.multiplyScalar(1/l);}
-  disposeTargets(){for(const t of this.targets){if(t.depthTexture)t.depthTexture.dispose();t.dispose();}this.targets.length=0;this.size=[0,0];}
+  disposeTargets(){for(const t of this.targets){if(t.depthTexture)t.depthTexture.dispose();t.dispose();}this.targets.length=0;this.size=[0,0];this.internal=[0,0];}
   dispose(){this.disposeTargets();for(const m of Object.values(this.m))m.dispose();this.quad.dispose();this._black.dispose();this._white.dispose();if(this.onSettings)this.onSettings();const U=this.uniforms;U.keSceneColor.value=null;U.keSceneDepth.value=null;U.keHasScene.value=0;this.enabled=false;}
 };
 KE.registerModule('pipeline',{provides:['Pipeline','GLSL.ssr']});
