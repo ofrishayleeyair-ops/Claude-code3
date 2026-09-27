@@ -26,6 +26,9 @@ class BuildTests(unittest.TestCase):
         text = self.output.read_text()
         self.assertNotIn('<!--THREE-->', text)
         self.assertIn('window.KitsuneEngine=KE', text)
+        self.assertIn('THREE.TransformControls', text)
+        self.assertIn('window.RAPIER=module.exports', text)
+        self.assertLess(text.index('three-addons') if 'three-addons' in text else text.index('THREE.TransformControls'), text.index('window.KitsuneEngine=KE'))
         self.assertEqual(self.source.read_text(), '<html><!--THREE--><!--KITSUNE--></html>')
 
     def test_missing_or_duplicate_markers(self):
@@ -47,14 +50,20 @@ class BuildTests(unittest.TestCase):
         assets = self.root / 'assets'
         assets.mkdir()
         (assets / 'three.min.js').write_text("const x='</ScRiPt>';")
+        (assets / 'three-addons.js').write_text("const a=1;")
+        (assets / 'kitsune-libs.js').write_text("const l='</script >';")
         (assets / 'kitsune-engine.js').write_text("const y='</script>';")
         BUILD.ASSETS = assets
         try:
             self.source.write_text('<!--THREE--><!--KITSUNE-->')
             BUILD.build(self.source, self.output)
             text = self.output.read_text()
-            self.assertEqual(text.lower().count('</script>'), 2)
+            self.assertEqual(text.lower().count('</script>'), 4)
             self.assertIn('<\\/ScRiPt>', text)
+            BUILD.build(self.source, self.output, lite=True)
+            lite = self.output.read_text()
+            self.assertEqual(lite.lower().count('</script>'), 3)
+            self.assertNotIn("const l=", lite)
         finally:
             BUILD.ASSETS = old
 
