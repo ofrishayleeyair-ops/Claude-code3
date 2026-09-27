@@ -188,6 +188,22 @@ if(has('physics3d')&&KE.Physics3D.available){try{physics=await KE.Physics3D.crea
   for(let i=0;i<7;i++){const a=-.55+i*.18,x=48+Math.sin(a)*36.5,z=49+Math.cos(a)*35;const m=new T.Mesh(new T.BoxGeometry(.42,.36,.42),paper);m.position.set(x,.5,z);m.castShadow=true;scene.add(m);
    const b=physics.addBox(m,{density:.3,friction:.4});physics.addBuoyancy(b,{waterLevel:(x,z)=>water.heightAt(x,z),density:1,drag:1.2});props.push(b);}
  }catch(e){console.warn('Spirit Isle: rigid-body props disabled',e);physics=null;}}
+/* Spatial audio (audio module): day birds, night crickets, rain and shore waves; generative music that follows the time of day;
+   synthesized footsteps from the gait's paw plants (stone on the path, grass elsewhere). Falls back to the core tone synth. */
+const sound=has('audio')&&KE.AudioEngine?new KE.AudioEngine(T,{volume:.8}):null;let beds=null,music=null,musicMood='calm',stepSeed=0;
+const onPath=(x,z)=>Math.abs(x-48-Math.sin(z*.13)*2)<1.15&&z>29&&z<70;
+function startSound(){if(!sound||beds)return;sound.unlock().then(()=>{if(beds)return;sound.setReverb({preset:'forest',wet:.18});
+  beds={day:sound.ambience('forest-day',{intensity:.6}),night:sound.ambience('night',{intensity:.05}),rain:sound.ambience('rain',{intensity:0}),shore:sound.ambience('water',{position:[48,0,82],intensity:.7}),wind:sound.ambience('wind',{intensity:.2})};
+  music=sound.music({mood:musicMood,intensity:.3});}).catch(()=>{});}
+if(sound&&foxGait)foxGait.onFootPlant=(leg,i,contact)=>{if(!beds||Math.hypot(player.vx,player.vz)<.4)return;const surface=onPath(contact.x,contact.z)?'stone':ground(contact.x,contact.z)<1.6?'sand':wet>.6?'water':'grass';
+  sound.play(KE.Synth.footstep({surface,intensity:.3+Math.min(.4,Math.hypot(player.vx,player.vz)*.07),seed:(stepSeed++)%4}),{position:contact,volume:.35,bus:'sfx'});};
+/* Level editor (F8) and developer console (backquote): the editor docks over the island with its own camera and loop;
+   actors you place are kept in a GameWorld that shares the scene, physics, audio and particles. */
+let world=null,editor=null;
+if(has('editor')&&KE.Editor&&KE.GameWorld){world=new KE.GameWorld(T,scene,{camera,renderer,physics,audio:sound||undefined,vfx:vfx||undefined,stepPhysics:true,updateVFX:false});
+ editor=new KE.Editor(T,{renderer,scene,camera,world,levelName:'Spirit Isle',render:dt=>pipeline.render(scene,camera,dt),
+  onUpdate:dt=>{sky.update(dt,camera);csm.update(camera);gi.update(camera);lights.update(dt,camera);if(forest)forest.update(camera);if(vfx)vfx.update(dt,camera);if(sound)sound.update(dt,camera);},
+  onOpen:()=>{loop.pause(true);input.setEnabled(false);},onClose:()=>{loop.pause(false);input.setEnabled(started&&!paused);follow.initialized=false;}});}
 let started=false,paused=false,toastTimer=0,coyote=0,jumpBuffer=0,walkTime=0;
 const toast=message=>{const el=document.getElementById('toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),2800);};
 function progress(){const count=stones.filter(s=>s.collected).length;document.querySelectorAll('#track i').forEach((e,i)=>e.classList.toggle('on',i<count));document.getElementById('quest-title').textContent=count===5?'The island remembers you':`Spirit stones · ${count} / 5`;document.getElementById('quest-copy').textContent=count===5?'All five found. Keep exploring, or start a new run in Settings.':'Follow the golden trail through the island shrine.';}
@@ -203,7 +219,7 @@ document.getElementById('settings').append(KE.settingsPanel());
 const offSettings=KE.events.on('settings',(s,key)=>{applyQuality();if(['tex','terrain','aa'].includes(key))toast('This option fully applies when you reopen the game.');});
 const setRain=v=>{raining=!!v;document.getElementById('weather').textContent=raining?'☂ Rain':'☀ Clear';sky.setWeather({coverage:raining?.82:.42,density:raining?1.4:1});};
 document.getElementById('weather').onclick=()=>setRain(!raining);
-document.getElementById('start').onclick=()=>{started=true;input.setEnabled(true);document.getElementById('welcome').hidden=true;audio.unlock();toast('Your adventure begins. Find the glowing stones.');};
+document.getElementById('start').onclick=()=>{started=true;input.setEnabled(true);document.getElementById('welcome').hidden=true;audio.unlock();startSound();toast('Your adventure begins. Find the glowing stones.');};
 const resize=()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();};window.addEventListener('resize',resize);
 const keys=e=>{if(e.code==='Escape'&&started)togglePanel(panel.hidden);if(e.code==='KeyT'&&started&&!paused){day=(day+1/12)%1;sky.setTime(day);sky.refresh();toast('The hour turns.');}};window.addEventListener('keydown',keys);
 renderer.domElement.addEventListener('webglcontextlost',e=>{e.preventDefault();loop.pause();toast('Graphics paused. Waiting for the browser to recover…');});renderer.domElement.addEventListener('webglcontextrestored',()=>{applyQuality();sky.refresh();loop.pause(false);toast('Graphics restored.');});
@@ -212,8 +228,8 @@ const litMaterials=new Set();scene.traverse(o=>{for(const m of [o.material].flat
 /* ---------- frame loop ---------- */
 let frame=0;const target=new T.Vector3();
 const loop=new KE.Loop({onError:fail,update(dt,t){
- if(!paused){day=(day+dt/480)%1;sky.setTime(day);if(started){const motion=input.movement(),move=follow.movement(motion.x,motion.z);player.vx=KE.damp(player.vx,move.x*5.5,12,dt);player.vz=KE.damp(player.vz,move.z*5.5,12,dt);coyote=player.grounded?.12:Math.max(0,coyote-dt);jumpBuffer=input.consume('Space')?.12:Math.max(0,jumpBuffer-dt);if(coyote&&jumpBuffer){player.vy=8.3;player.grounded=false;coyote=jumpBuffer=0;audio.tone(300,.07);}KE.Physics.step([player],dt,collision,ground);if(Math.hypot(move.x,move.z)>.05){hero.rotation.y=Math.atan2(-move.x,-move.z);walkTime+=dt*11;}
- for(const stone of stones)if(!stone.collected&&Math.hypot(player.x-stone.x,player.z-stone.z)<1.15){stone.collected=true;stone.m.visible=stone.ring.visible=false;lights.set(stone.light,{enabled:false});particle.burst(stone.x,ground(stone.x,stone.z)+1,stone.z,30);if(collectFx)collectFx.burst(90,[stone.x,ground(stone.x,stone.z)+1,stone.z]);audio.tone(580+stone.id*120,.22);progress();toast(stones.every(s=>s.collected)?'All five spirits found. The island is yours.':'A spirit stone found.');}
+ if(!paused){day=(day+dt/480)%1;sky.setTime(day);if(started){const motion=input.movement(),move=follow.movement(motion.x,motion.z);player.vx=KE.damp(player.vx,move.x*5.5,12,dt);player.vz=KE.damp(player.vz,move.z*5.5,12,dt);coyote=player.grounded?.12:Math.max(0,coyote-dt);jumpBuffer=input.consume('Space')?.12:Math.max(0,jumpBuffer-dt);if(coyote&&jumpBuffer){player.vy=8.3;player.grounded=false;coyote=jumpBuffer=0;if(beds)sound.play('jump',{bus:'sfx',volume:.35,position:[player.x,player.y,player.z]});else audio.tone(300,.07);}KE.Physics.step([player],dt,collision,ground);if(Math.hypot(move.x,move.z)>.05){hero.rotation.y=Math.atan2(-move.x,-move.z);walkTime+=dt*11;}
+ for(const stone of stones)if(!stone.collected&&Math.hypot(player.x-stone.x,player.z-stone.z)<1.15){stone.collected=true;stone.m.visible=stone.ring.visible=false;lights.set(stone.light,{enabled:false});particle.burst(stone.x,ground(stone.x,stone.z)+1,stone.z,30);if(collectFx)collectFx.burst(90,[stone.x,ground(stone.x,stone.z)+1,stone.z]);if(beds)sound.play(KE.Synth.chime({freq:580+stone.id*120,bell:.6}),{bus:'sfx',volume:.6,position:[stone.x,ground(stone.x,stone.z)+1,stone.z]});else audio.tone(580+stone.id*120,.22);progress();toast(stones.every(s=>s.collected)?'All five spirits found. The island is yours.':'A spirit stone found.');}
  }}particle.update(dt);for(const stone of stones){stone.m.rotation.y=t*.9;stone.m.position.y=ground(stone.x,stone.z)+1+Math.sin(t*2+stone.id)*.15;}
  },render(alpha,dt,t){
  hero.position.set(player.x,player.y-player.r,player.z);
@@ -230,6 +246,8 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
  renderer.toneMappingExposure=pipeline.enabled?1:1+night*1.6;
  contact.position.set(player.x,ground(player.x,player.z)+.018,player.z);contact.material.opacity=clamp(1-(player.y-player.r-ground(player.x,player.z))*.25,0,.75);if(grass)grass.update(player.x,player.z);
  if(vfx){const ff=night>.35;if(ff!==firefliesOn){firefliesOn=ff;fireflies.forEach(f=>ff?f.play():f.stop());}const rv=raining&&S.fx;if(rv!==vfxRain.playing){rv?vfxRain.play():vfxRain.stop();}vfx.update(dt,camera);}
+ if(beds){beds.day.intensity=(1-night)*.6*(1-wet*.6);beds.night.intensity=night*.75;beds.rain.intensity=wet*.85;beds.wind.intensity=.18+wet*.35;
+  const mood=stones.every(s=>s.collected)?'triumphant':night>.5?'night':'calm';if(mood!==musicMood){musicMood=mood;music.setMood(mood,5);}music.intensity=mood==='triumphant'?.7:.3+wet*.1;sound.update(dt,camera);}
  if(physics){heroBody.moveKinematic([player.x,player.y-player.r+.67,player.z]);physics.step(dt);}
  rain.visible=raining&&S.fx&&!vfx;if(rain.visible){for(let i=0;i<rainCount;i++){const d=rainData[i],y=player.y+((d.y-t*d.s)%16+16)%16;rainPos.set([player.x+d.x,y,player.z+d.z,player.x+d.x+.12,y-.6,player.z+d.z],i*6);}rainGeometry.attributes.position.needsUpdate=true;}
  pipeline.render(scene,camera,dt);
@@ -237,8 +255,8 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
  if(++frame%20===0){const st=KE.rendererStats(renderer);document.getElementById('stats').textContent=S.showFps?`${fps} FPS · ${S.preset}${pipeline.enabled?' · Tenko '+pipeline.stats.passes+' passes':''}\n${st.calls} draws · ${(st.triangles/1000).toFixed(0)}k tris`:'';}
  }});loop.start();
 /* Expose a small debug handle for automated checks and your own development tools. */
-window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
- dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
+window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,sound,world,editor,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
+ dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();if(editor)editor.dispose();if(world)world.dispose();if(sound)sound.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();
 </script>
