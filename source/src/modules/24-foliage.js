@@ -956,10 +956,10 @@ KE.FoliageSpawner=class{
       const dists=(type.lodDistances&&type.lodDistances.length?type.lodDistances:[Math.min(view,(o.maxDistance||view))*.9*lodScale]).map(d=>d*(type.lodDistances?lodScale:1));
       const levelParts=[parts];for(const l of type.lods||[])levelParts.push(typeParts(l.geometry,l.material));
       /* Optional hand-off to a shared instanced-LOD system (KE.InstancedLOD, when a later module provides
-         one and opts.instancedLOD !== false). Contract: new KE.InstancedLOD(THREE, scene, {name, matrices,
+         one, sets KE.InstancedLOD.foliageContract = 1, and opts.instancedLOD !== false). Contract: new KE.InstancedLOD(THREE, scene, {name, matrices,
          colors, count, levels:[{distance, parts:[{geometry, material, customDepthMaterial}]}], castShadow})
          returning an object with update(camera) and dispose(). Any failure falls back to the built-in path. */
-      if(o.instancedLOD!==false&&typeof KE.InstancedLOD==='function'&&n>0){
+      if(o.instancedLOD!==false&&typeof KE.InstancedLOD==='function'&&KE.InstancedLOD.foliageContract===1&&n>0){
         try{const lod=new KE.InstancedLOD(THREE,scene,{name:type.name||'type'+ti,matrices:mats,colors:cols,count:n,castShadow:type.castShadow!==false,
             levels:dists.map((distance,li)=>({distance,parts:levelParts[Math.min(li,levelParts.length-1)].map(p=>({geometry:p.geometry,material:p.material,customDepthMaterial:p.material&&p.material.userData&&p.material.userData.keFoliage?KE.foliageDepthMaterial(p.material):null}))}))});
           if(lod&&typeof lod.update==='function'){this.groups.push({name:type.name||'type'+ti,count:n,height:hgt,matrices:mats,colors:cols,start,cnt,levels:[{distance:dists[dists.length-1],meshes:[]}],meshes:[],external:lod});this.count+=n;return;}}
