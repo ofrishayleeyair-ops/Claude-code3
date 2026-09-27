@@ -28,7 +28,7 @@ class BuildTests(unittest.TestCase):
         self.assertIn('window.KitsuneEngine=KE', text)
         self.assertIn('THREE.TransformControls', text)
         self.assertIn('window.RAPIER=module.exports', text)
-        self.assertLess(text.index('three-addons') if 'three-addons' in text else text.index('THREE.TransformControls'), text.index('window.KitsuneEngine=KE'))
+        self.assertLess(text.index('examples/js add-ons bundled for kitsune engine'), text.index('window.KitsuneEngine=KE'))
         self.assertEqual(self.source.read_text(), '<html><!--THREE--><!--KITSUNE--></html>')
 
     def test_missing_or_duplicate_markers(self):
