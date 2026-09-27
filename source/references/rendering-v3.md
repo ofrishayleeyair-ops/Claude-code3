@@ -85,7 +85,9 @@ Clouds do not shadow the ground, and the sun is not dimmed by clouds automatical
 
 ## 4. KE.CascadedShadows
 
-`new KE.CascadedShadows(THREE, scene, {sun, cascades, mapSize, maxFar, lambda:.72, overlap:.12, margin:60, bias:-.0004, normalBias:1.2 (texels), fadeStart:.85})`.
+`new KE.CascadedShadows(THREE, scene, {sun, cascades, mapSize, maxFar, lambda:.72, overlap:.12, margin:60, bias:-.0004, normalBias:1.2 (texels), fadeStart:.85, soft, lightAngle:1.2 (degrees), maxPenumbra:.9 (world units), searchDistance:6})`.
+
+With `soft` (default on High and above) cascades use percentage-closer soft shadows: a 12-tap blocker search, then a 16-tap filter whose radius is the receiver–blocker distance (linear in the orthographic cascade) times `tan(lightAngle)`, clamped to `maxPenumbra`, with per-pixel rotated spiral taps that TAA resolves. Contact points stay sharp and long shadows soften. Otherwise Three's PCF soft shadows are used.
 
 The sun becomes cascade 0; extra cascades are shadow-only directional lights with zero intensity. Splits use the practical log/uniform blend up to `maxFar` (default `KE.settings.view`). Each cascade fits a bounding sphere of its frustum slice (so the projection size never changes with camera rotation) and snaps to whole texels. `setupMaterial(m)` / `setupScene()` patch Standard, Physical, Phong and Toon materials (composing with existing `onBeforeCompile` hooks) to evaluate the sun once and blend cascade shadows across overlap bands, fading out beyond the shadow distance. Unpatched materials still light correctly and receive cascade-0 shadows; Lambert materials multiply cascade shadows. Call `update(camera)` after anything that moves the sun. Cascade count and resolution follow `KE.settings.cascades`/`shadowRes`. Keep the sun and cascade lights as the only shadow-casting directional lights. `dispose()` restores material hooks.
 

@@ -24,7 +24,11 @@ function buildChunk(THREE){
 		keCsmWeight = smoothstep( keCsmCascade.x, keCsmCascade.y, keCsmZ ) * ( 1.0 - smoothstep( keCsmCascade.z, keCsmCascade.w, keCsmZ ) );
 		if ( keCsmWeight > 0.0 ) {
 			directionalLightShadow = directionalLightShadows[ i ];
+			#ifdef USE_KE_PCSS
+			keCsmShadow += keCsmWeight * ( receiveShadow ? keShadowPCSS( directionalShadowMap[ i ], directionalLightShadow.shadowBias, vDirectionalShadowCoord[ i ], kePcss[ i ] ) : 1.0 );
+			#else
 			keCsmShadow += keCsmWeight * ( receiveShadow ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0 );
+			#endif
 			keCsmW += keCsmWeight;
 		}
 		#endif
@@ -52,11 +56,25 @@ function buildChunk(THREE){
   return src.slice(0,start)+'vec4 keCsmCascade; float keCsmWeight;\n'+block+src.slice(end);
 }
 
+/* Percentage-closer soft shadows: blocker search, then a filter whose radius grows with the receiver-blocker
+   distance in world units (orthographic cascades store linear depth), giving contact-hardening penumbrae. */
+const PCSS_GLSL=`
+#ifdef USE_KE_PCSS
+uniform vec4 kePcss[${MAX}];
+float keIgn(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))));}
+vec2 keSpiral(int i,float n,float rot){float r=sqrt((float(i)+.5)/n);float a=float(i)*2.39996323+rot;return vec2(cos(a),sin(a))*r;}
+float keShadowPCSS(sampler2D map,float bias,vec4 coord,vec4 P){coord.xyz/=coord.w;coord.z+=bias;
+ if(coord.x<0.||coord.y<0.||coord.x>1.||coord.y>1.||coord.z>1.)return 1.;float rot=keIgn(gl_FragCoord.xy)*6.2831853;
+ float blockers=0.,sum=0.;for(int i=0;i<12;i++){float d=unpackRGBAToDepth(texture2D(map,coord.xy+keSpiral(i,12.,rot)*P.z));if(d<coord.z){sum+=d;blockers+=1.;}}
+ if(blockers<.5)return 1.;float pen=clamp((coord.z-sum/blockers)*P.x,P.w*1.5,P.y);float lit=0.;
+ for(int i=0;i<16;i++)lit+=step(coord.z,unpackRGBAToDepth(texture2D(map,coord.xy+keSpiral(i,16.,rot+1.7)*pen)));return lit/16.;}
+#endif
+`;
 KE.CascadedShadows=class{
-  constructor(THREE,scene,{sun,cascades=KE.settings.cascades||3,mapSize=KE.settings.shadowRes||2048,maxFar=null,lambda:splitLambda=.72,overlap=.12,margin=60,bias=-.0004,normalBias=1.2,fadeStart=.85}={}){
+  constructor(THREE,scene,{sun,cascades=KE.settings.cascades||3,mapSize=KE.settings.shadowRes||2048,maxFar=null,lambda:splitLambda=.72,overlap=.12,margin=60,bias=-.0004,normalBias=1.2,fadeStart=.85,soft=KE.settings.preset!=='low'&&KE.settings.preset!=='medium',lightAngle=1.2,maxPenumbra=.9,searchDistance=6}={}){
     if(!sun||!sun.isDirectionalLight)throw new TypeError('KE.CascadedShadows requires {sun: DirectionalLight}');
-    Object.assign(this,{THREE,scene,sun,lambda:splitLambda,overlap,margin,bias,normalBias,fadeStart,maxFar});
-    this.chunk=buildChunk(THREE);this.uniforms={keCascades:{value:Array.from({length:MAX},()=>new THREE.Vector4(-2,-1,1e9,1e9+1))}};
+    Object.assign(this,{THREE,scene,sun,lambda:splitLambda,overlap,margin,bias,normalBias,fadeStart,maxFar,soft:!!soft,lightAngle,maxPenumbra,searchDistance});
+    this.chunk=buildChunk(THREE);this.uniforms={keCascades:{value:Array.from({length:MAX},()=>new THREE.Vector4(-2,-1,1e9,1e9+1))},kePcss:{value:Array.from({length:MAX},()=>new THREE.Vector4(1,.01,.005,.001))}};
     this.materials=new Set();this.restore=new Map();this.lights=[];this.splits=[];this.direction=new THREE.Vector3(0,-1,0);this.enabled=true;
     this._m=new THREE.Matrix4();this._mi=new THREE.Matrix4();this._v=new THREE.Vector3();this._c=new THREE.Vector3();this._up=new THREE.Vector3(0,1,0);
     this.configure(cascades,mapSize);
@@ -70,8 +88,8 @@ KE.CascadedShadows=class{
     this.count=count;this.mapSize=mapSize;for(const m of this.materials){m.defines.KE_CSM_CASCADES=count;m.needsUpdate=true;}return this;}
   /* Patch a lit material (Standard, Physical, Phong, Toon). Composes with existing onBeforeCompile hooks. */
   setupMaterial(m){if(!m||this.materials.has(m)||m.userData.keNoCSM)return m;if(!(m.isMeshStandardMaterial||m.isMeshPhongMaterial||m.isMeshToonMaterial))return m;
-    const prev=m.onBeforeCompile,ownKey=Object.prototype.hasOwnProperty.call(m,'customProgramCacheKey')?m.customProgramCacheKey:null,prevKey=m.customProgramCacheKey.bind(m),chunk=this.chunk,U=this.uniforms;this.restore.set(m,{prev,ownKey});m.defines=m.defines||{};m.defines.USE_KE_CSM='';m.defines.KE_CSM_CASCADES=this.count;
-    m.onBeforeCompile=(sh,r)=>{if(prev)prev.call(m,sh,r);sh.uniforms.keCascades=U.keCascades;sh.fragmentShader='uniform vec4 keCascades['+MAX+'];\n'+sh.fragmentShader.replace('#include <lights_fragment_begin>',chunk);};
+    const prev=m.onBeforeCompile,ownKey=Object.prototype.hasOwnProperty.call(m,'customProgramCacheKey')?m.customProgramCacheKey:null,prevKey=m.customProgramCacheKey.bind(m),chunk=this.chunk,U=this.uniforms;this.restore.set(m,{prev,ownKey});m.defines=m.defines||{};m.defines.USE_KE_CSM='';m.defines.KE_CSM_CASCADES=this.count;if(this.soft)m.defines.USE_KE_PCSS='';
+    m.onBeforeCompile=(sh,r)=>{if(prev)prev.call(m,sh,r);sh.uniforms.keCascades=U.keCascades;sh.uniforms.kePcss=U.kePcss;sh.fragmentShader='uniform vec4 keCascades['+MAX+'];\n'+sh.fragmentShader.replace('#include <shadowmap_pars_fragment>','#include <shadowmap_pars_fragment>\n'+PCSS_GLSL).replace('#include <lights_fragment_begin>',chunk);};
     m.customProgramCacheKey=()=>prevKey()+':ke-csm';
     m.needsUpdate=true;this.materials.add(m);return m;}
   setupScene(root=this.scene){root.traverse(o=>{if(!o.material)return;for(const m of [o.material].flat())this.setupMaterial(m);});return this;}
@@ -89,12 +107,13 @@ KE.CascadedShadows=class{
       const l=this.lights[i],cam=l.shadow.camera;Object.assign(cam,{left:-r,right:r,top:r,bottom:-r,near:.5,far:2*r+2*this.margin});cam.updateProjectionMatrix();
       l.position.copy(center).addScaledVector(this.direction,-(r+this.margin));l.target.position.copy(center);l.target.updateMatrixWorld();l.updateMatrixWorld();
       l.shadow.normalBias=texel*this.normalBias;l.shadow.bias=this.bias*(1+i*.5);
+      {const uvPerWorld=1/(2*r),tanA=Math.tan(this.lightAngle*Math.PI/180),range=cam.far-cam.near;this.uniforms.kePcss.value[i].set(range*tanA*uvPerWorld,this.maxPenumbra*uvPerWorld,Math.max(this.searchDistance*tanA*uvPerWorld,2/this.mapSize),1/this.mapSize);}
       if(i>0){l.color.copy(this.sun.color);l.intensity=0;}
       const nb=i+1<N?(s[i+1]-s[i])*this.overlap:(far-s[i])*(1-this.fadeStart),v=this.uniforms.keCascades.value[i];
       v.set(i===0?-2:s[i]-b,i===0?-1:s[i]+1e-4,s[i+1]-nb,s[i+1]+1e-4);}
     for(let i=N;i<MAX;i++)this.uniforms.keCascades.value[i].set(-2,-1,1e9,1e9+1);}
   dispose(){this.enabled=false;this.onSettings&&this.onSettings();for(const l of this.lights.slice(1)){l.parent&&l.parent.remove(l);l.target.parent&&l.target.parent.remove(l.target);if(l.shadow.map)l.shadow.map.dispose();}this.lights=[this.sun];
-    for(const m of this.materials){const r=this.restore.get(m);delete m.defines.USE_KE_CSM;delete m.defines.KE_CSM_CASCADES;m.onBeforeCompile=r.prev;if(r.ownKey)m.customProgramCacheKey=r.ownKey;else delete m.customProgramCacheKey;m.needsUpdate=true;}this.materials.clear();this.restore.clear();}
+    for(const m of this.materials){const r=this.restore.get(m);delete m.defines.USE_KE_CSM;delete m.defines.KE_CSM_CASCADES;delete m.defines.USE_KE_PCSS;m.onBeforeCompile=r.prev;if(r.ownKey)m.customProgramCacheKey=r.ownKey;else delete m.customProgramCacheKey;m.needsUpdate=true;}this.materials.clear();this.restore.clear();}
 };
 KE.registerModule('shadows',{provides:['CascadedShadows']});
 })();
