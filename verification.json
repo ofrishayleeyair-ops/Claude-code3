@@ -1,58 +1,193 @@
 {
-  "product": "kitsune enginev2",
-  "runtime_version": "2.1.0",
-  "visual_edition": "Verdant",
+  "product": "kitsune enginev3",
+  "codename": "Tenko",
+  "runtime_version": "3.0.0",
   "three_revision": "128",
-  "core_checks": 22,
-  "build_checks": 5,
-  "navigation_example_checks": 13,
-  "visual_resource_checks": 17,
-  "native_shader_programs": 8,
-  "shader_environment": "Mesa llvmpipe OpenGL ES through native EGL; full browser renderer not exercised",
-  "cpu_resource_checks": "Passed textures, material hooks, sky, water, grass, particles, camera, input and lifecycle checks",
-  "demo_cpu_checks": [
-    "Complete scene construction",
-    "Fixed-step keyboard movement",
-    "All quality presets",
-    "Night and rain state",
-    "Finite geometry",
-    "Static batch reduction",
-    "Scene disposal"
+  "date": "2026-09-27T22:55:07.053Z",
+  "environment": "Headless Chromium (Playwright) with SwiftShader software WebGL2 on a 4-CPU Linux container; Node v22.22.2",
+  "modules": [
+    "00-core-v3.js",
+    "10-pipeline.js",
+    "12-sky.js",
+    "14-shadows.js",
+    "16-lights.js",
+    "18-gi.js",
+    "20-materials.js",
+    "22-water.js",
+    "24-foliage.js",
+    "26-weather.js",
+    "30-geometry.js",
+    "32-world.js",
+    "40-physics.js",
+    "50-vfx.js",
+    "60-animation.js",
+    "70-ai.js",
+    "80-audio.js",
+    "85-gameplay.js",
+    "90-editor.js"
   ],
-  "static_scenery_batching": {
-    "source_meshes": 217,
-    "batches": 24,
-    "draw_calls_saved": 193
+  "suites": {
+    "core": {
+      "status": "pass",
+      "checks": 22,
+      "seconds": 0.3,
+      "kind": "node"
+    },
+    "build": {
+      "status": "pass",
+      "checks": 5,
+      "seconds": 0.3,
+      "kind": "node"
+    },
+    "pipeline": {
+      "status": "pass",
+      "checks": 17,
+      "seconds": 91.2,
+      "kind": "browser"
+    },
+    "sky": {
+      "status": "pass",
+      "checks": 8,
+      "seconds": 37.5,
+      "kind": "browser"
+    },
+    "shadows": {
+      "status": "pass",
+      "checks": 6,
+      "seconds": 11.6,
+      "kind": "browser"
+    },
+    "gi": {
+      "status": "pass",
+      "checks": 5,
+      "seconds": 15.8,
+      "kind": "browser"
+    },
+    "water": {
+      "status": "pass",
+      "checks": 6,
+      "seconds": 27.6,
+      "kind": "browser"
+    },
+    "weather": {
+      "status": "pass",
+      "checks": 7,
+      "seconds": 7,
+      "kind": "browser"
+    },
+    "foliage": {
+      "status": "pass",
+      "checks": 13,
+      "seconds": 24.4,
+      "kind": "browser"
+    },
+    "materials": {
+      "status": "pass",
+      "checks": 12,
+      "seconds": 21,
+      "kind": "browser"
+    },
+    "geometry": {
+      "status": "pass",
+      "checks": 14,
+      "seconds": 7.2,
+      "kind": "browser"
+    },
+    "world": {
+      "status": "pass",
+      "checks": 40,
+      "seconds": 20.8,
+      "kind": "browser"
+    },
+    "physics": {
+      "status": "pass",
+      "checks": 52,
+      "seconds": 1.9,
+      "kind": "browser"
+    },
+    "vfx": {
+      "status": "pass",
+      "checks": 29,
+      "seconds": 10.6,
+      "kind": "browser"
+    },
+    "animation": {
+      "status": "pass",
+      "checks": 40,
+      "seconds": 3.1,
+      "kind": "browser"
+    },
+    "ai": {
+      "status": "pass",
+      "checks": 22,
+      "seconds": 3.6,
+      "kind": "browser"
+    },
+    "audio": {
+      "status": "pass",
+      "checks": 92,
+      "seconds": 9.2,
+      "kind": "browser"
+    },
+    "editor": {
+      "status": "pass",
+      "checks": 24,
+      "seconds": 10.1,
+      "kind": "browser"
+    },
+    "game": {
+      "status": "pass",
+      "checks": 0,
+      "seconds": 202.9,
+      "kind": "browser"
+    },
+    "visuals": {
+      "status": "pass",
+      "checks": 17,
+      "seconds": 3,
+      "kind": "node"
+    },
+    "resources": {
+      "status": "pass",
+      "checks": 4,
+      "seconds": 1.7,
+      "kind": "node"
+    }
   },
-  "browser_status": "Not run; full rendered scene, mobile controls and FPS remain unverified",
-  "limitations": [
-    "UE5 feature or visual equivalence has not been established",
-    "No measured performance multiplier",
-    "Upright actor and height-field physics",
-    "Static grid navigation",
-    "Baked terrain-depth water and static sky IBL",
-    "HDR and depth effects depend on GPU extensions"
+  "not_verified": [
+    "Frame rate or frame time on any physical GPU, phone or tablet",
+    "Touch input on real devices",
+    "Audio output on real speakers (audio tests render the graph offline)",
+    "Visual parity with Unreal Engine 5 (no side-by-side comparison exists)"
   ],
   "sha256": {
-    "SKILL.md": "9c548e6bc28466d7f0d71a9c2807a17f607a9a278b84fa67fde0336a4a6efd13",
-    "assets/starter.html": "8e1b81fc64e9a4baaea0f9094dcd03905790203901f7813ed81b239279f1ab65",
-    "assets/icon.svg": "8936b24f674a1250d999e2c2b5901374fb4240426f32bd1ae340c352a90d617d",
-    "assets/surface-atlas.png": "9173b0355619d0cc049fe017335113f99dd1e2e2e38b0f2ff9c373ef524d6b7e",
-    "assets/kitsune-engine.js": "547be6633279426af20fae21fd10984d00073276a0a0d33f315f96bcc619382a",
-    "assets/THIRD_PARTY_LICENSES.txt": "b398918bcfa0ed20be5628b88c174abbb1a35c4fd9557298ea2bc0f7a6eca8e1",
+    "SKILL.md": "78e8ac4a30bff4e832e3fb33689109e360053b7eb19f4d53a662a22da3af4094",
+    "assets/starter.html": "2c0e5b61c80b6c17c67cce924871a68880eca4b8783164d26e8e3a87b11531d5",
+    "assets/kitsune-engine.js": "c2f9a015bde9fca1ce01fa5def386aebbb412a3a26507ab1dedffa38d5f6b65f",
     "assets/three.min.js": "9274bbcec8d96168626c732b5d31c775aa8cfb7eaa0599bec0c175908a2c1ce2",
-    "agents/openai.yaml": "ae37966048031e154a71b21a9f4816faa6225188bcbe63f75cbd8cebb93c3a84",
-    "references/runtime-api.md": "3eaa4ba9a195e01a3870e75ba1648d804e3196d7c3ea4f2c3afaf41e1889865e",
-    "references/rendering.md": "ce7396b35d2ae000d442748b8c93d275a2b596404d519c2ff0cdfa18340c3d6e",
-    "references/legacy-rendering.md": "33e027555e285089941ca40f951c87686dbe67f10165fc72b03e73c7a0fc0812",
-    "references/integration.md": "286bc5d4a8e9d0fc2232da9e9b7cdd1096afc96faee994763861ab0fc353d4db",
-    "references/visual-edition.md": "ae92fb5c6e8250d0d66a1aaddf43cdf26302b114e4b1dd11b883408f4bafbf96",
-    "scripts/test_resources.cjs": "7c5256d3733a5fea18966bd110130093e9946f44118747b61c37c87c9c217a2f",
-    "scripts/test_browser.cjs": "311d8e5bfdba05ef0b168d6a28469bd3793e4718a98324bf5d2720d9d872a80d",
-    "scripts/test_core.cjs": "118342ec36215413a99742a2bbbda0c41c9fcab210cb201f762e6603430bb9f6",
-    "scripts/test_demo.cjs": "ee28c8221970ed5dc591cd12db397a07036c2d57b59badd5f00e45c51d17e59d",
-    "scripts/test_visuals.cjs": "632dc3f7d4fbbdaa71a5eb172a1c8e68144fae1b46540ce2e6fe9ba1da625ffc",
-    "scripts/test_build.py": "548089fee2bed3b3c0bf3259329b03f4b50dccf623086394907f9a0528df378c",
-    "scripts/build.py": "eb214b277e0092701f0258b60b5450e9c8fda4caec3b1d2c14f9a3a834abc35a"
+    "assets/three-addons.js": "f542cb89c3fc2ce32d78e8083f3e1ebd852165e0d832893976a7244d98be30ba",
+    "assets/kitsune-libs.js": "029b7ad8cf3abc50663a3a2c54b82177a0c308435b6db4dd7edafdcd3e093262",
+    "scripts/build.py": "b1052f342bcd42766c8c1d9e8ba85a411e61e44eb41e0d84f84e88d3a09ea2bf",
+    "scripts/build_engine.py": "38d96e4d516e58037923a4e2b6020590c0b9578f6518bbba688834ff581bc48e",
+    "src/modules/00-core-v3.js": "6525e060d9905c09e206c3b245690b63825f54e27608937af5fc07851fc9a6b6",
+    "src/modules/10-pipeline.js": "c8c7ad14dc9126bc43f2b495c8d1a876a2b3404b8a32334ed884d3cdb39b6331",
+    "src/modules/12-sky.js": "cf4aa624ea912b4d74f8f2cfc83c890c38afbe11cd7559f9f734ffb5dfbbfbe7",
+    "src/modules/14-shadows.js": "4ac4d87fbcff7cc2acd03426d452366b1770d478694eee21f7c8eaa8d2feb2a0",
+    "src/modules/16-lights.js": "01ef712c2ced7e694f2f7d3996e6e0a153e9a2c13679dfcd4b6e59a54a6c8a73",
+    "src/modules/18-gi.js": "eb3937c690f55ce39dd73383ae97111b7fbd1eb7f88b8ea15a885a66f8defe9a",
+    "src/modules/20-materials.js": "c0321ebfbb607e857276bba3b261c491b2df30b49c1a2552a91728e6cb193f0d",
+    "src/modules/22-water.js": "54d6a6472d4f8e986c7bbdd04eb19945e000248cbbab70edf9f41abcb12b530f",
+    "src/modules/24-foliage.js": "36cd57c9c576b480a93dc3ad74d62f7354c7004930495c067f2f257fa7da41ea",
+    "src/modules/26-weather.js": "e20817f1b28301951ace2240e1de98ea86e7de9a6c6bbfac2c04a4520244eec1",
+    "src/modules/30-geometry.js": "f7d2d27fcb25d918d17c0794483a43cd930b08be62fd2a3035b2ca05025dff64",
+    "src/modules/32-world.js": "42ce1eab9a1ad049a710dd56ac01fa5e347fadc8e5359a69c52af3717f40b9cb",
+    "src/modules/40-physics.js": "8af044d0baf3b3604b32580782a86987f35634a987c6361bdd7bebeccdb7ac8d",
+    "src/modules/50-vfx.js": "ec3f35339ea9737fe0b2b1fea7a0abfc9bf7c4c0d9f956517b1db953cbef6f7d",
+    "src/modules/60-animation.js": "a7a19bd1003c9d3cc0b0220c0325a234d056dac489c0c1df076b91927a56b67b",
+    "src/modules/70-ai.js": "6887f8e3827669856666db5267e61ada10fbcbd8f4f5e40803a07d4ac33dd643",
+    "src/modules/80-audio.js": "5d68fcf60cf2d37419202685aef81e09b136a368d5e2fa4a070317c0e806e6f6",
+    "src/modules/85-gameplay.js": "65ebe012500e268100386b1830572355490d693f6b371047d2f774b885b08f24",
+    "src/modules/90-editor.js": "26d4cb51d0448f6b17c274779f8ea4cd6f596aa048f1e01d8f1f0995760dc47d",
+    "../spirit-isle.html": "bfa482c3514a3d788954b3c2ddc39f7a53cce8904174a99370b5eaec238ac0dd"
   }
 }
