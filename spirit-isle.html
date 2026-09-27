@@ -16616,7 +16616,7 @@ KE.cvars={
     const cv={name,help,type:type||typeof value,min,max,options,onChange,getter:get,setter:set,value};this.map.set(name.toLowerCase(),cv);return cv;},
   find(name){return this.map.get(String(name).toLowerCase())||null;},
   get(name){const cv=this.find(name);if(!cv)return undefined;return cv.getter?cv.getter():cv.value;},
-  parse(cv,raw){if(cv.type==='boolean')return raw===true||raw===1||/^(1|true|on|yes)$/i.test(String(raw));if(cv.type==='number'){const n=Number(raw);if(!Number.isFinite(n))throw new TypeError(cv.name+' expects a number');return clamp(n,cv.min,cv.max);}
+  parse(cv,raw){if(cv.type==='boolean'){if(typeof raw==='boolean')return raw;const t=String(raw).trim();if(/^(1|true|on|yes)$/i.test(t))return true;if(/^(0|false|off|no)$/i.test(t))return false;throw new TypeError(cv.name+' expects 0/1, true/false or on/off');}if(cv.type==='number'){const n=Number(raw);if(!Number.isFinite(n))throw new TypeError(cv.name+' expects a number');return clamp(n,cv.min,cv.max);}
     const s=String(raw);if(cv.options&&!cv.options.includes(s))throw new RangeError(cv.name+' must be one of '+cv.options.join(', '));return s;},
   set(name,raw){const cv=this.find(name);if(!cv)throw new Error('Unknown console variable: '+name);const v=this.parse(cv,raw);if(cv.setter)cv.setter(v);else cv.value=v;if(cv.onChange)cv.onChange(v);return this.get(name);},
   list(prefix=''){return [...this.map.values()].filter(c=>c.name.toLowerCase().startsWith(prefix.toLowerCase())).map(c=>({name:c.name,value:this.get(c.name),help:c.help}));}
@@ -24605,8 +24605,10 @@ reg('ParticleEmitter',{label:'Particle Emitter',category:'Effects',icon:'fx',
   play(inst){fxStart(inst);},stop(inst){fxStop(inst);}});
 function fxPos(inst){const o=inst.props.offset;inst.actor.object.updateWorldMatrix(true,false);return inst.pos.set(o[0],o[1],o[2]).applyMatrix4(inst.actor.object.matrixWorld);}
 function vfxConfig(vfx,preset,overrides,scale){let cfg=null;const pr=safeMember(vfx.presets,preset);
-  if(typeof pr==='function')cfg=pr.call(vfx.presets,overrides||{});else if(isObj(pr))cfg=Object.assign({},pr);if(!isObj(cfg))return null;
-  cfg=Object.assign({},cfg,overrides||{});if(scale!==1&&typeof cfg.scale!=='number')cfg.scale=scale;return cfg;}
+  /* Presets take scale as an option (it multiplies sizes, speeds, shapes and forces); emitter configs ignore a scale key. */
+  const opts=Object.assign({},overrides||{});if(scale!==1&&typeof opts.scale!=='number')opts.scale=scale;
+  if(typeof pr==='function')cfg=pr.call(vfx.presets,opts);else if(isObj(pr))cfg=Object.assign({},pr,overrides||{});if(!isObj(cfg))return null;
+  return cfg;}
 function fxStart(inst){if(inst.playing)return;const w=inst.world,p=inst.props,pos=fxPos(inst);inst.playing=true;
   if(w.vfx&&typeof w.vfx.emitter==='function'){try{const cfg=vfxConfig(w.vfx,p.preset,p.overrides,p.scale);if(!cfg){w.warn(inst.actor.name+': unknown VFX preset "'+p.preset+'"');}else{inst.emitter=w.vfx.emitter(cfg);if(inst.emitter.setPosition)inst.emitter.setPosition(pos);if(inst.emitter.play)inst.emitter.play();return;}}catch(e){w.warn(inst.actor.name+': VFX emitter failed: '+e.message);}}
   if(!w.vfx)w.warnOnce('novfx','ParticleEmitter: no KE.VFX system in the world; using simple fallback particles');
@@ -25046,7 +25048,7 @@ KE.registerModule('gameplay',{provides:['GameWorld','Components','ActorClasses',
 const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
 const clamp=KE.clamp||((v,a,b)=>Math.min(b,Math.max(a,v)));
 const DEG=Math.PI/180,RAD=180/Math.PI;
-const hasDOM=typeof document!=='undefined';
+const hasDOM=typeof document!=='undefined'&&typeof document.createElement==='function'&&typeof window.addEventListener==='function';
 
 /* ---------- scoped stylesheet (reference counted: removed when neither editor nor console needs it) ---------- */
 const CSS=`

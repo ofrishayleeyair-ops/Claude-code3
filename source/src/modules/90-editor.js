@@ -9,7 +9,7 @@
 const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
 const clamp=KE.clamp||((v,a,b)=>Math.min(b,Math.max(a,v)));
 const DEG=Math.PI/180,RAD=180/Math.PI;
-const hasDOM=typeof document!=='undefined';
+const hasDOM=typeof document!=='undefined'&&typeof document.createElement==='function'&&typeof window.addEventListener==='function';
 
 /* ---------- scoped stylesheet (reference counted: removed when neither editor nor console needs it) ---------- */
 const CSS=`

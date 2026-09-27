@@ -625,8 +625,10 @@ reg('ParticleEmitter',{label:'Particle Emitter',category:'Effects',icon:'fx',
   play(inst){fxStart(inst);},stop(inst){fxStop(inst);}});
 function fxPos(inst){const o=inst.props.offset;inst.actor.object.updateWorldMatrix(true,false);return inst.pos.set(o[0],o[1],o[2]).applyMatrix4(inst.actor.object.matrixWorld);}
 function vfxConfig(vfx,preset,overrides,scale){let cfg=null;const pr=safeMember(vfx.presets,preset);
-  if(typeof pr==='function')cfg=pr.call(vfx.presets,overrides||{});else if(isObj(pr))cfg=Object.assign({},pr);if(!isObj(cfg))return null;
-  cfg=Object.assign({},cfg,overrides||{});if(scale!==1&&typeof cfg.scale!=='number')cfg.scale=scale;return cfg;}
+  /* Presets take scale as an option (it multiplies sizes, speeds, shapes and forces); emitter configs ignore a scale key. */
+  const opts=Object.assign({},overrides||{});if(scale!==1&&typeof opts.scale!=='number')opts.scale=scale;
+  if(typeof pr==='function')cfg=pr.call(vfx.presets,opts);else if(isObj(pr))cfg=Object.assign({},pr,overrides||{});if(!isObj(cfg))return null;
+  return cfg;}
 function fxStart(inst){if(inst.playing)return;const w=inst.world,p=inst.props,pos=fxPos(inst);inst.playing=true;
   if(w.vfx&&typeof w.vfx.emitter==='function'){try{const cfg=vfxConfig(w.vfx,p.preset,p.overrides,p.scale);if(!cfg){w.warn(inst.actor.name+': unknown VFX preset "'+p.preset+'"');}else{inst.emitter=w.vfx.emitter(cfg);if(inst.emitter.setPosition)inst.emitter.setPosition(pos);if(inst.emitter.play)inst.emitter.play();return;}}catch(e){w.warn(inst.actor.name+': VFX emitter failed: '+e.message);}}
   if(!w.vfx)w.warnOnce('novfx','ParticleEmitter: no KE.VFX system in the world; using simple fallback particles');

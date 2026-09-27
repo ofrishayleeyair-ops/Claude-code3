@@ -84,7 +84,7 @@ KE.cvars={
     const cv={name,help,type:type||typeof value,min,max,options,onChange,getter:get,setter:set,value};this.map.set(name.toLowerCase(),cv);return cv;},
   find(name){return this.map.get(String(name).toLowerCase())||null;},
   get(name){const cv=this.find(name);if(!cv)return undefined;return cv.getter?cv.getter():cv.value;},
-  parse(cv,raw){if(cv.type==='boolean')return raw===true||raw===1||/^(1|true|on|yes)$/i.test(String(raw));if(cv.type==='number'){const n=Number(raw);if(!Number.isFinite(n))throw new TypeError(cv.name+' expects a number');return clamp(n,cv.min,cv.max);}
+  parse(cv,raw){if(cv.type==='boolean'){if(typeof raw==='boolean')return raw;const t=String(raw).trim();if(/^(1|true|on|yes)$/i.test(t))return true;if(/^(0|false|off|no)$/i.test(t))return false;throw new TypeError(cv.name+' expects 0/1, true/false or on/off');}if(cv.type==='number'){const n=Number(raw);if(!Number.isFinite(n))throw new TypeError(cv.name+' expects a number');return clamp(n,cv.min,cv.max);}
     const s=String(raw);if(cv.options&&!cv.options.includes(s))throw new RangeError(cv.name+' must be one of '+cv.options.join(', '));return s;},
   set(name,raw){const cv=this.find(name);if(!cv)throw new Error('Unknown console variable: '+name);const v=this.parse(cv,raw);if(cv.setter)cv.setter(v);else cv.value=v;if(cv.onChange)cv.onChange(v);return this.get(name);},
   list(prefix=''){return [...this.map.values()].filter(c=>c.name.toLowerCase().startsWith(prefix.toLowerCase())).map(c=>({name:c.name,value:this.get(c.name),help:c.help}));}
