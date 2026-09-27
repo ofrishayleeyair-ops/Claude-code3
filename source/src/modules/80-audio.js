@@ -32,11 +32,16 @@ const smooth01=x=>x<=0?0:x>=1?1:x*x*(3-2*x);
 const nowSec=()=>(typeof performance!=='undefined'?performance.now():Date.now())/1000;
 function hashStr(s){let h=2166136261>>>0;s=String(s);for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)>>>0;}return h;}
 function stableKey(o){return Object.keys(o).sort().map(k=>k+'='+(typeof o[k]==='number'?+o[k].toFixed(5):String(o[k]))).join('&');}
-/* Cancel automation after t and hold the value the param has at t (falls back to reading .value). */
-function holdAt(p,t){if(p.cancelAndHoldAtTime){try{p.cancelAndHoldAtTime(t);return;}catch(e){}}const v=p.value;p.cancelScheduledValues(t);p.setValueAtTime(v,t);}
+/* Cancel automation after t and hold the value the param has at t. An explicit event is always written at t:
+   a linear ramp with no preceding event would otherwise start from time 0 and jump (Chrome). */
+function holdAt(p,t){const v=p.value;if(p.cancelAndHoldAtTime){try{p.cancelAndHoldAtTime(t);}catch(e){p.cancelScheduledValues(t);}}else p.cancelScheduledValues(t);p.setValueAtTime(v,t);}
 /* Click-free linear move from the current value to v. */
 function rampTo(p,v,t,dur){holdAt(p,t);if(dur>1e-4)p.linearRampToValueAtTime(v,t+dur);else p.setValueAtTime(v,t);}
 function disconnect(n){if(n){try{n.disconnect();}catch(e){}}}
+/* Per-frame parameter writes: snap (first write, or the audio clock is not running so events would pile up at
+   one frozen time), otherwise glide with a first-order time constant. */
+function glide(p,v,t,tau,snap){if(snap){p.cancelScheduledValues(t);p.value=v;}else p.setTargetAtTime(v,t,tau);}
+function setP(p,v,t,snap){glide(p,v,t,SMOOTH_POS,snap);}
 function makeBuffer(ctx,channels,length,sampleRate){
   if(ctx&&ctx.createBuffer)return ctx.createBuffer(channels,length,sampleRate);
   return new AudioBuffer({numberOfChannels:channels,length,sampleRate});
@@ -110,7 +115,8 @@ const bellShape=(u,peak)=>u<peak?Math.pow(Math.sin(Math.PI/2*u/peak),2):Math.pow
 /* MetaSounds-style patch builder: creates nodes on any BaseAudioContext, tracks them for disposal and offers
    envelope primitives. Every envelope starts and ends at exactly 0, so patches are click-free by design. */
 class Patch{
-  constructor(ctx,out,seed=1){this.ctx=ctx;this.out=out;this.sr=ctx.sampleRate;this.rng=KE.random(seed>>>0||1);this.nodes=new Set();this.sources=new Set();this.end=0;this.waves=null;}
+  /* live=true for long-running patches (ambience, music): ephemeral node groups are released when they end. */
+  constructor(ctx,out,seed=1,live=false){this.ctx=ctx;this.out=out;this.sr=ctx.sampleRate;this.rng=KE.random(seed>>>0||1);this.nodes=new Set();this.sources=new Set();this.end=0;this.live=live;}
   r(a=0,b=1){return a+(b-a)*this.rng();}
   ri(a,b){return Math.floor(this.r(a,b+1));}
   pick(a){return a[Math.floor(this.rng()*a.length)];}
@@ -185,43 +191,61 @@ function renderRecipe(def,p,sr){
   const dur=Math.max(.02,def.duration(p)),ctx=new C(def.channels,Math.ceil(dur*sr),sr);
   const out=ctx.createBiquadFilter();out.type='highpass';out.frequency.value=def.highpass;out.Q.value=.7071;out.connect(ctx.destination);
   const P=new Patch(ctx,out,hashStr(def.name)^(p.seed||0)*2654435761);def.build(P,p);
-  return startRendering(ctx).then(buf=>finishBuffer(buf,def,p));
+  /* Watchdog: a render that never completes must not block the queue for every later sound. */
+  let timer=0;const limit=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('KE.Synth: offline render of "'+def.name+'" timed out')),Math.max(10,dur*20)*1000);});
+  return Promise.race([startRendering(ctx),limit]).then(buf=>{clearTimeout(timer);return finishBuffer(buf,def,p);},e=>{clearTimeout(timer);throw e;});
 }
-const Synth={
-  sampleRate:44100,
-  /* Register a recipe: {defaults, duration(p), level (peak, number or fn), build(P,p), variants, channels, highpass}. */
-  define(name,def){if(typeof def.build!=='function'||typeof def.duration!=='function')throw new TypeError('Synth.define needs build() and duration()');
-    RECIPES.set(name,{name,defaults:{},level:.7,channels:2,variants:1,highpass:25,...def});
-    if(!(name in Synth)||Synth[name]._synth)Synth[name]=Object.assign((params,opts)=>Synth.render(name,params,opts),{_synth:true});return Synth;},
-  has:name=>RECIPES.has(name),
-  names:()=>[...RECIPES.keys()],
-  params(name,params){const def=RECIPES.get(name);if(!def)throw new RangeError('Unknown synth "'+name+'"');return normalizeParams(def,params);},
-  key(name,params,sampleRate=Synth.sampleRate){return synthKey(name,Synth.params(name,params),sampleRate);},
-  /* Cached buffer or null; never renders. */
-  get(name,params,sampleRate=Synth.sampleRate){const def=RECIPES.get(name);return def?cacheGet(synthKey(name,normalizeParams(def,params),sampleRate)):null;},
-  /* Promise<AudioBuffer>; renders with OfflineAudioContext on first use and caches by (name, params, sampleRate). */
-  render(name,params={},{sampleRate=Synth.sampleRate}={}){
-    const def=RECIPES.get(name);if(!def)return Promise.reject(new RangeError('Unknown synth "'+name+'"'));
-    const p=normalizeParams(def,params),key=synthKey(name,p,sampleRate),hit=cacheGet(key);if(hit)return Promise.resolve(hit);
-    let pending=synthPending.get(key);if(pending)return pending;
-    pending=enqueue(()=>renderRecipe(def,p,sampleRate)).then(b=>{cachePut(key,b);synthPending.delete(key);return b;},e=>{synthPending.delete(key);throw e;});
-    synthPending.set(key,pending);return pending;
-  },
-  clearCache(){synthCache.clear();cacheSeconds=0;},
-  cacheStats:()=>({entries:synthCache.size,seconds:cacheSeconds,pending:synthPending.size,limit:{...CACHE_LIMIT}}),
-  setCacheLimit({entries,seconds}={}){if(entries>0)CACHE_LIMIT.entries=entries|0;if(seconds>0)CACHE_LIMIT.seconds=+seconds;},
-  /* Signal metrics used by tests and tooling. headPeak/tailPeak: max |x| in the first/last millisecond. */
-  analyze(buf){let peak=0,sum=0,sq=0,nan=0,head=0,tail=0;const n=buf.length,ms=Math.max(1,Math.round(buf.sampleRate/1000));
-    for(let c=0;c<buf.numberOfChannels;c++){const d=buf.getChannelData(c);for(let i=0;i<n;i++){const v=d[i];if(v!==v){nan++;continue;}const a=Math.abs(v);if(a>peak)peak=a;sum+=v;sq+=v*v;if(i<ms&&a>head)head=a;if(i>=n-ms&&a>tail)tail=a;}}
-    const m=n*buf.numberOfChannels;return {peak,rms:Math.sqrt(sq/m),dc:sum/m,nan,headPeak:head,tailPeak:tail,duration:buf.duration,channels:buf.numberOfChannels};},
-  noteToHz,noteToMidi,midiToHz,Patch,noiseBuffer
-};
+/* A synth call such as KE.Synth.footstep({surface:'stone'}) returns a SynthSound: a lightweight descriptor that
+   audio.play() accepts directly (rendering happens at the engine's sample rate, cached) and that is also
+   thenable, so `await KE.Synth.chime({note:'E5'})` yields the rendered AudioBuffer. */
+class SynthSound{
+  constructor(synth,params={}){this.synth=synth;this.params=params&&typeof params==='object'?{...params}:{};}
+  /* Promise<AudioBuffer> rendered with OfflineAudioContext (cached by name, params and sample rate). */
+  render(opts){return Synth.render(this.synth,this.params,opts);}
+  then(resolve,reject){return this.render().then(resolve,reject);}
+  catch(reject){return this.render().catch(reject);}
+  with(params){return new SynthSound(this.synth,{...this.params,...params});}
+}
+const Synth={sampleRate:44100};
+/* Library utilities are non-enumerable so Object.keys(KE.Synth) lists only the sound recipes. */
+const hidden=(name,value)=>Object.defineProperty(Synth,name,{value,enumerable:false,writable:true,configurable:true});
+hidden('define',(name,def)=>{if(typeof def.build!=='function'||typeof def.duration!=='function')throw new TypeError('Synth.define needs build() and duration()');
+  /* {defaults, duration(p), level (peak, number or fn), build(P,p), variants, channels, highpass} */
+  if(Object.prototype.hasOwnProperty.call(Synth,name)&&!(Synth[name]&&Synth[name]._synth))throw new RangeError('Synth name "'+name+'" is reserved');
+  RECIPES.set(name,{name,defaults:{},level:.7,channels:2,variants:1,highpass:25,...def});for(const [k,b] of [...synthCache])if(k.startsWith(name+'|')){synthCache.delete(k);cacheSeconds-=b.duration;}
+  Synth[name]=Object.assign(params=>new SynthSound(name,params),{_synth:true});return Synth;});
+hidden('has',name=>RECIPES.has(name));
+hidden('names',()=>[...RECIPES.keys()]);
+hidden('defaults',name=>{const def=RECIPES.get(name);if(!def)throw new RangeError('Unknown synth "'+name+'"');return {...def.defaults};});
+hidden('params',(name,params)=>{const def=RECIPES.get(name);if(!def)throw new RangeError('Unknown synth "'+name+'"');return normalizeParams(def,params);});
+hidden('key',(name,params,sampleRate=Synth.sampleRate)=>synthKey(name,Synth.params(name,params),sampleRate));
+/* Cached buffer or null; never renders. */
+hidden('get',(name,params,sampleRate=Synth.sampleRate)=>{const def=RECIPES.get(name);return def?cacheGet(synthKey(name,normalizeParams(def,params),sampleRate)):null;});
+/* Promise<AudioBuffer>; renders with OfflineAudioContext on first use and caches by (name, params, sampleRate). */
+hidden('render',(name,params={},{sampleRate=Synth.sampleRate}={})=>{
+  const def=RECIPES.get(name);if(!def)return Promise.reject(new RangeError('Unknown synth "'+name+'"'));
+  const p=normalizeParams(def,params),key=synthKey(name,p,sampleRate),hit=cacheGet(key);if(hit)return Promise.resolve(hit);
+  let pending=synthPending.get(key);if(pending)return pending;
+  pending=enqueue(()=>renderRecipe(def,p,sampleRate)).then(b=>{cachePut(key,b);synthPending.delete(key);return b;},e=>{synthPending.delete(key);throw e;});
+  synthPending.set(key,pending);return pending;});
+hidden('sound',(name,params)=>{if(!RECIPES.has(name))throw new RangeError('Unknown synth "'+name+'"');return new SynthSound(name,params);});
+hidden('clearCache',()=>{synthCache.clear();cacheSeconds=0;});
+hidden('cacheStats',()=>({entries:synthCache.size,seconds:cacheSeconds,pending:synthPending.size,limit:{...CACHE_LIMIT}}));
+hidden('setCacheLimit',({entries,seconds}={})=>{if(entries>0)CACHE_LIMIT.entries=entries|0;if(seconds>0)CACHE_LIMIT.seconds=+seconds;});
+/* Signal metrics used by tests and tooling. headPeak/tailPeak: max |x| in the first/last millisecond;
+   maxStep: largest sample-to-sample jump (clicks show up as isolated large steps). */
+hidden('analyze',buf=>{let peak=0,sum=0,sq=0,nan=0,head=0,tail=0,step=0;const n=buf.length,ms=Math.max(1,Math.round(buf.sampleRate/1000));
+  for(let c=0;c<buf.numberOfChannels;c++){const d=buf.getChannelData(c);let prev=0;for(let i=0;i<n;i++){const v=d[i];if(v!==v){nan++;continue;}const a=Math.abs(v);if(a>peak)peak=a;sum+=v;sq+=v*v;
+    const st=Math.abs(v-prev);if(st>step)step=st;prev=v;if(i<ms&&a>head)head=a;if(i>=n-ms&&a>tail)tail=a;}}
+  const m=n*buf.numberOfChannels;return {peak,rms:Math.sqrt(sq/m),dc:sum/m,nan,headPeak:head,tailPeak:tail,maxStep:step,duration:buf.duration,channels:buf.numberOfChannels};});
+for(const [k,v] of Object.entries({noteToHz,noteToMidi,midiToHz,Patch,noiseBuffer,SynthSound}))hidden(k,v);
 
 /* ---------- shared recipe parts ---------- */
 function thump(P,hits,f0,f1,amp,t60){for(const [t,a] of hits){const o=P.osc('sine',f0,t,t60+.06),g=P.gain(0);P.sweep(o.frequency,t,f0,f1,t60*.6);P.chain(o,g,P.out);P.perc(g.gain,t,amp*a,.003,t60);}}
 function noiseHit(P,kind,t,{type='bandpass',freq=2000,Q=1,attack=.001,t60=.05,amp=1,to=null,sweep=0,pan=null,dur=null}={}){
   const n=P.noise(kind,t,dur||attack+t60+.03),f=P.filter(type,freq,Q),g=P.gain(0);if(sweep)P.sweep(f.frequency,t,freq,sweep,t60*.7);
-  if(pan!=null){const pn=P.pan(pan);P.chain(n,f,g,pn,to||P.out);}else P.chain(n,f,g,to||P.out);P.perc(g.gain,t,amp,attack,t60);return g;}
+  const nodes=[n,f,g];if(pan!=null){const pn=P.pan(pan);nodes.push(pn);P.chain(n,f,g,pn,to||P.out);}else P.chain(n,f,g,to||P.out);P.perc(g.gain,t,amp,attack,t60);
+  if(P.live)P.once(n,nodes);return g;}
 /* Rising sine bubble (Minnaert resonance whose pitch rises as the bubble surfaces). */
 function bubble(P,t,f0,rise,d,amp,pan=0){const o=P.osc('sine',f0,t,d*2.2+.02),g=P.gain(0),pn=P.pan(pan);P.sweep(o.frequency,t,f0,f0*rise,d*1.6);P.chain(o,g,pn,P.out);P.perc(g.gain,t,amp,.0012,d);}
 function modal(P,t,f,parts,{decay=1,amp=1,width=.45,detune=2,attack=.0015}={}){
@@ -273,9 +297,9 @@ Synth.define('footstep',{defaults:{surface:'grass',intensity:.7,seed:1},variants
   build(P,p){const I=clamp(+p.intensity||0,0,1),b=.7+.6*I,t0=.003,fn=STEP[p.surface]||STEP.grass;
     fn(P,[[t0,1],[t0+P.r(.045,.085),P.r(.45,.75)]],I,b);}});
 
-Synth.define('chime',{defaults:{note:'C5',bell:true,decay:2.4,brightness:.6,seed:1},
+Synth.define('chime',{defaults:{note:'C5',freq:0,bell:true,decay:2.4,brightness:.6,seed:1},
   duration:p=>clamp(+p.decay||2.4,.3,8)*1.05+.06,level:.5,
-  build(P,p){const f=noteToHz(p.note),D=clamp(+p.decay||2.4,.3,8),br=clamp(+p.brightness,0,1),t=.002;
+  build(P,p){const f=+p.freq>0?noteToHz(+p.freq):noteToHz(p.note),D=clamp(+p.decay||2.4,.3,8),br=clamp(+p.brightness,0,1),t=.002;
     const parts=(p.bell?BELL:BAR).map(([r,a,d])=>[r,r>1.2?a*(.4+.9*br):a,d]);
     modal(P,t,f,parts,{decay:D,amp:1,width:.45,detune:2.5});
     noiseHit(P,'white',t,{type:'bandpass',freq:Math.min(f*3,P.sr*.4),Q:1.5,attack:.0005,t60:.02,amp:.12*br});}});
@@ -379,61 +403,70 @@ function impulseResponse(ctx,name,maxSeconds){
     let e=0;for(let i=0;i<len;i++)e+=d[i]*d[i];const late=Math.sqrt(e/len)||1e-6;
     for(let r=0;r<P.erCount;r++){const u=Math.pow((r+rand())/P.erCount,1.4),at=Math.round((P.preDelay+.001+u*P.erTime)*sr);if(at+3>=len)continue;
       const a=P.erLevel*(1-.6*u)*(rand()<.5?-1:1)*(.5+.5*rand())*late*40;d[at]+=a*.6;d[at+1]+=a;d[at+2]+=a*.4;}}
-  const M=[],S=[];for(let i=0;i<len;i++){const m=(ch[0][i]+ch[1][i])/2,s=(ch[0][i]-ch[1][i])/2*P.width;ch[0][i]=m+s;ch[1][i]=m-s;}
+  for(let i=0;i<len;i++){const m=(ch[0][i]+ch[1][i])/2,s=(ch[0][i]-ch[1][i])/2*P.width;ch[0][i]=m+s;ch[1][i]=m-s;}
   let E=0;for(const d of ch)for(let i=0;i<len;i++)E+=d[i]*d[i];const target=(.25+.2*P.decay)*2,g=Math.sqrt(target/(E||1)),fo=Math.round(len*.05);
   for(const d of ch)for(let i=0;i<len;i++){let v=d[i]*g;const q=len-1-i;if(q<fo)v*=Math.pow(Math.sin(Math.PI/2*q/fo),2);d[i]=v;}
-  b=makeBuffer(ctx,2,len,sr);putChannel(b,ch[0],0);putChannel(b,ch[1],1);irCache.set(key,b);M.length=S.length=0;return b;
+  b=makeBuffer(ctx,2,len,sr);putChannel(b,ch[0],0);putChannel(b,ch[1],1);irCache.set(key,b);return b;
 }
 
 /* Reverb with N convolver slots. The desired mix (base preset from setReverb blended with reverb zones by
    listener position) is a weight per preset; each weighted preset gets a slot and slot gains glide to
-   weight*wet. A preset switch therefore crossfades two convolvers; zones blend continuously. */
+   weight*wet. A preset switch therefore crossfades two convolvers; zones blend continuously. Slot levels are
+   evaluated analytically on the audio clock (setTargetAtTime is a first-order approach), so a slot is reused
+   only once it is inaudible and a convolver buffer is never swapped under a sounding tail. Idle slots are
+   disconnected from the send bus after their tail has died, which lets the browser skip the convolution. */
 class ReverbSystem{
   constructor(engine,input,output){
     const ctx=engine.ctx;this.engine=engine;this.input=input;this.output=ctx.createGain();this.output.connect(output);
     this.pre=ctx.createBiquadFilter();this.pre.type='highpass';this.pre.frequency.value=90;input.connect(this.pre);
-    this.slots=[];for(let i=0;i<Math.max(2,quality().reverbSlots);i++){const g=ctx.createGain();g.gain.value=0;g.connect(this.output);this.slots.push({conv:null,gain:g,preset:null,target:0,level:0,tau:.5,silent:0,connected:false});}
-    this.base={preset:'none',wet:.3};this.transition=1.5;this.zones=[];this.zoneSmoothing=.25;
+    this.slots=[];for(let i=0;i<Math.max(2,quality().reverbSlots);i++){const g=ctx.createGain();g.gain.value=0;g.connect(this.output);
+      this.slots.push({conv:null,gain:g,preset:null,target:0,from:0,t0:0,tau:.5,next:0,silentSince:-1,connected:false});}
+    this.base={preset:'none',wet:.3};this.transition=1.5;this.zones=[];this.zoneSmoothing=.25;this.dirty=false;
     this.want={};this.wet={};for(const k of Object.keys(REVERB_PRESETS)){this.want[k]=0;this.wet[k]=0;}
-    this.names=Object.keys(REVERB_PRESETS).filter(k=>REVERB_PRESETS[k]);this.dryLowpass=20000;this.dryGain=1;this.envFilter=null;this.envGain=null;
+    this.names=Object.keys(REVERB_PRESETS).filter(k=>REVERB_PRESETS[k]);this.dryLowpass=20000;this.dryGain=1;this._lp=20000;this._dg=1;
   }
   set(preset,wet,transition){if(!(preset in REVERB_PRESETS))throw new RangeError('Unknown reverb preset "'+preset+'"');this.base.preset=preset;if(wet!=null)this.base.wet=clamp(+wet,0,2);
     if(transition!=null)this.transition=Math.max(0,+transition);this.evaluate(this.engine.listener);this.apply(Math.max(.005,this.transition/3));}
+  /* 1 inside the zone, smoothstep falloff to 0 over z.fade metres outside it. */
   zoneWeight(z,L){let d;
     if(z.box){const dx=Math.max(z.min[0]-L.x,0,L.x-z.max[0]),dy=Math.max(z.min[1]-L.y,0,L.y-z.max[1]),dz=Math.max(z.min[2]-L.z,0,L.z-z.max[2]);d=Math.sqrt(dx*dx+dy*dy+dz*dz);}
     else{const dx=L.x-z.center[0],dy=L.y-z.center[1],dz=L.z-z.center[2];d=Math.sqrt(dx*dx+dy*dy+dz*dz)-z.radius;}
     return d<=0?1:d>=z.fade?0:1-smooth01(d/z.fade);}
+  /* Zones are sorted by priority (smaller volume first); each takes its weight of what remains, the base preset gets the rest. */
   evaluate(L){const want=this.want,wet=this.wet;for(const k in want){want[k]=0;wet[k]=0;}let rem=1;
     for(let i=0;i<this.zones.length;i++){const z=this.zones[i];if(!z.enabled){z.weight=0;continue;}const w=this.zoneWeight(z,L);z.weight=w;if(w<=0||rem<=0)continue;const take=rem*w;want[z.preset]+=take;wet[z.preset]+=take*z.wet;rem-=take;}
     want[this.base.preset]+=rem;wet[this.base.preset]+=rem*this.base.wet;
     let lpw=0,gw=0;for(const k of this.names){const P=REVERB_PRESETS[k];if(P.dryLowpass){lpw+=want[k]*Math.log(P.dryLowpass/20000);gw+=want[k]*((P.dryGain||1)-1);}}
     this.dryLowpass=20000*Math.exp(lpw);this.dryGain=1+gw;}
+  level(s,t){return s.target+(s.from-s.target)*Math.exp(-Math.max(0,t-s.t0)/Math.max(1e-3,s.tau));}
   /* Push desired levels into slots; only params whose target moved are rescheduled (idle frames touch nothing). */
-  apply(tau){const ctx=this.engine.ctx,t=ctx.currentTime,slots=this.slots;
+  apply(tau){const ctx=this.engine.ctx,t=ctx.currentTime,slots=this.slots;this.dirty=false;
     for(const s of slots)s.next=s.preset&&this.want[s.preset]>1e-4?this.wet[s.preset]:0;
     for(const k of this.names){const lvl=this.wet[k];if(lvl<=1e-4)continue;let has=false;for(const s of slots)if(s.preset===k){has=true;break;}if(has)continue;
-      let free=null;for(const s of slots)if(s.next===0&&s.level<.02&&(!free||s.level<free.level))free=s;
-      if(!free){for(const s of slots)if(s.next===0&&(!free||s.level<free.level))free=s;}
-      if(!free)continue;this.load(free,k);free.next=lvl;}
-    for(const s of slots){if(Math.abs(s.next-s.target)>2e-3||(s.next===0&&s.target!==0)){s.target=s.next;s.tau=tau;s.gain.gain.setTargetAtTime(s.next,t,tau);if(s.next>0)this.connect(s);}}
-    const E=this.engine.world;if(E&&E.filter){if(Math.abs(Math.log(this.dryLowpass/(this._lp||20000)))>.02){this._lp=this.dryLowpass;E.filter.frequency.setTargetAtTime(Math.min(this.dryLowpass,ctx.sampleRate*.45),t,Math.max(.03,tau));}
-      if(Math.abs(this.dryGain-(this._dg||1))>.005){this._dg=this.dryGain;E.envGain.gain.setTargetAtTime(this.dryGain,t,Math.max(.03,tau));}}}
+      let free=null,fl=Infinity;for(const s of slots){if(s.next!==0)continue;const l=s.preset?this.level(s,t):0;if(l<.004&&l<fl){free=s;fl=l;}}
+      if(!free){this.dirty=true;continue;}this.load(free,k);free.next=lvl;}
+    for(const s of slots){if(Math.abs(s.next-s.target)>2e-3||(s.next===0&&s.target!==0)){s.from=this.level(s,t);s.t0=t;s.target=s.next;s.tau=tau;
+      s.gain.gain.setTargetAtTime(s.next,t,tau);if(s.next>0)this.connect(s);}}
+    const E=this.engine.world;if(E&&E.filter){if(Math.abs(Math.log(this.dryLowpass/this._lp))>.02){this._lp=this.dryLowpass;E.filter.frequency.setTargetAtTime(Math.min(this.dryLowpass,ctx.sampleRate*.45),t,Math.max(.03,tau));}
+      if(Math.abs(this.dryGain-this._dg)>.005){this._dg=this.dryGain;E.envGain.gain.setTargetAtTime(this.dryGain,t,Math.max(.03,tau));}}}
   load(s,preset){const ctx=this.engine.ctx;if(s.conv){if(s.connected)try{this.pre.disconnect(s.conv);}catch(e){}disconnect(s.conv);}
-    const c=ctx.createConvolver();c.normalize=false;c.buffer=impulseResponse(ctx,preset,this.engine.irSeconds);c.connect(s.gain);s.conv=c;s.preset=preset;s.connected=false;s.silent=0;}
-  connect(s){if(s.conv&&!s.connected){this.pre.connect(s.conv);s.connected=true;}s.silent=0;}
-  update(dt,L){if(this.zones.length){this.evaluate(L);this.apply(this.zoneSmoothing);}
-    for(const s of this.slots){if(dt>0)s.level+=(s.target-s.level)*(1-Math.exp(-dt/Math.max(.001,s.tau)));
-      if(s.connected&&s.target===0&&s.level<1e-3){s.silent+=dt;if(s.silent>(s.conv&&s.conv.buffer?s.conv.buffer.duration:0)+.5){try{this.pre.disconnect(s.conv);}catch(e){}s.connected=false;}}}}
+    const c=ctx.createConvolver();c.normalize=false;c.buffer=impulseResponse(ctx,preset,this.engine.irSeconds);c.connect(s.gain);s.conv=c;s.preset=preset;s.connected=false;s.silentSince=-1;}
+  connect(s){if(s.conv&&!s.connected){this.pre.connect(s.conv);s.connected=true;}s.silentSince=-1;}
+  update(dt,L){const t=this.engine.ctx.currentTime;
+    if(this.zones.length){this.evaluate(L);this.apply(this.zoneSmoothing);}else if(this.dirty)this.apply(Math.max(.005,this.transition/3));
+    for(const s of this.slots){if(!s.connected||s.target!==0)continue;if(this.level(s,t)>1e-3){s.silentSince=-1;continue;}if(s.silentSince<0){s.silentSince=t;continue;}
+      if(t-s.silentSince>(s.conv&&s.conv.buffer?s.conv.buffer.duration:0)+.5){try{this.pre.disconnect(s.conv);}catch(e){}s.connected=false;}}}
   dispose(){for(const s of this.slots){disconnect(s.conv);disconnect(s.gain);}disconnect(this.pre);disconnect(this.output);}
 }
 
 /* ============================================================ buses ============================================================ */
+const ANY={};
 /* A bus has a dry chain (input -> [env filter] -> fader -> ducker -> parent) and a mirrored reverb-send chain
    (sendIn -> sendLevel -> sendFader -> sendDucker -> parent.sendIn) so volume, mute and ducking also scale the
    reverb a bus feeds. Ducking is scheduled sample-accurately on the audio clock from a list of holds. */
 class AudioBus{
   constructor(engine,name,parent,{volume=1,reverbSend=1,priority=0,envFilter=false}={}){
-    this.engine=engine;this.name=name;this.parent=parent;this._volume=Math.max(0,volume);this._mute=false;this._send=reverbSend;this.priority=priority;this._holds=[];this._duckTarget=1;
+    this.engine=engine;this.name=name;this.parent=parent;this._volume=Math.max(0,volume);this._mute=false;this._send=reverbSend;this.priority=priority;this._holds=[];
     const ctx=engine&&engine.ctx;this.inert=!ctx;if(!ctx)return;
     const G=v=>{const g=ctx.createGain();g.gain.value=v;return g;};
     this.input=G(1);this.fader=G(this._volume);this.ducker=G(1);this.filter=null;this.envGain=null;let head=this.input;
@@ -449,24 +482,29 @@ class AudioBus{
   set mute(m){this._mute=!!m;this.fadeTo(this._volume,.03);}
   get reverbSend(){return this._send;}
   set reverbSend(v){this._send=Math.max(0,+v||0);if(!this.inert&&this.sendLevel)rampTo(this.sendLevel.gain,this._send,this.engine.ctx.currentTime,.05);}
-  /* Current duck multiplier the automation is heading to (1 = not ducked). */
-  get duckLevel(){return this._duckTarget;}
   fadeTo(v,seconds=.05){this._volume=Math.max(0,+v||0);if(this.inert)return this;const t=this.engine.ctx.currentTime,g=this._mute?0:this._volume;
     rampTo(this.fader.gain,g,t,seconds);if(this.sendFader)rampTo(this.sendFader.gain,g,t,seconds);return this;}
-  /* Duck by `amount` (0..1 reduction) over `attack`, hold `hold` seconds (Infinity = until released by holder), release over `release`. */
-  duck(amount=.5,attack=.05,release=.5,hold=0,holder=null){if(this.inert)return this;const t=this.engine.ctx.currentTime;
-    this._holds.push({amount:clamp(+amount||0,0,1),until:hold===Infinity?Infinity:t+Math.max(0,attack)+Math.max(0,hold),release:Math.max(.005,release),holder});
-    this._schedule(t,Math.max(.005,attack));return this;}
-  _unhold(holder){if(this.inert)return;const t=this.engine.ctx.currentTime;let hit=false;for(const h of this._holds)if(h.holder===holder&&h.until>t){h.until=t;hit=true;}if(hit)this._schedule(t,.005);}
-  _schedule(t,attack){
-    this._holds=this._holds.filter(h=>h.until+h.release>t);
-    const level=at=>{let a=0;for(const h of this._holds)if(h.until>at&&h.amount>a)a=h.amount;return 1-a;};
-    const params=[this.ducker.gain];if(this.sendDucker)params.push(this.sendDucker.gain);
-    let lv=level(t),time=t+attack;this._duckTarget=lv;for(const p of params){holdAt(p,t);p.linearRampToValueAtTime(lv,time);}
-    const ends=this._holds.filter(h=>isFinite(h.until)&&h.until>t).sort((a,b)=>a.until-b.until);
-    for(const e of ends){const start=Math.max(e.until,time),next=level(e.until+1e-6);if(next<=lv+1e-6)continue;
-      for(const p of params){p.setValueAtTime(lv,start);p.linearRampToValueAtTime(next,start+e.release);}lv=next;time=start+e.release;}
+  /* Duck by `amount` (0..1 reduction) over `attack`, hold `hold` seconds (Infinity = until released by its holder,
+     e.g. a looping dialogue voice), then release over `release`. Overlapping ducks combine by maximum. */
+  duck(amount=.5,attack=.05,release=.5,hold=0,holder=null){if(this.inert)return this;const t=this.engine.ctx.currentTime,a=Math.max(.005,+attack||0);
+    this._holds.push({amount:clamp(+amount||0,0,1),start:t,attack:a,until:hold===Infinity?Infinity:t+a+Math.max(0,+hold||0),release:Math.max(.005,+release||0),holder});
+    this._schedule(t);return this;}
+  /* Release every duck held by `holder` (or all ducks when holder is omitted) with their release times. */
+  release(holder){this._unhold(holder===undefined?ANY:holder);return this;}
+  _unhold(holder){if(this.inert||!this._holds.length)return;const t=this.engine.ctx.currentTime;let hit=false;
+    for(const h of this._holds)if((holder===ANY||h.holder===holder)&&h.until>t){h.until=t;hit=true;}if(hit)this._schedule(t);}
+  /* Each hold contributes a(t)=min(attack ramp, release ramp) - continuous and piecewise linear. The ducker gain is
+     1-max(a) sampled at every breakpoint and scheduled as linear ramps from the value it holds now. */
+  _level(t){let a=0;for(const h of this._holds){const up=h.amount*clamp((t-h.start)/h.attack,0,1),down=h.until===Infinity?h.amount:h.amount*clamp(1-(t-h.until)/h.release,0,1),v=up<down?up:down;if(v>a)a=v;}return 1-a;}
+  _schedule(t){
+    this._holds=this._holds.filter(h=>h.until+h.release>t);const pts=[];
+    for(const h of this._holds)for(const x of [h.start+h.attack,h.until,h.until+h.release])if(x>t+1e-4&&isFinite(x))pts.push(x);
+    pts.sort((x,y)=>x-y);const params=[this.ducker.gain];if(this.sendDucker)params.push(this.sendDucker.gain);
+    for(const p of params){holdAt(p,t);let last=t;for(const x of pts){if(x-last<1e-4)continue;p.linearRampToValueAtTime(this._level(x),x);last=x;}
+      if(!pts.length)p.linearRampToValueAtTime(this._level(t),t+.005);}
   }
+  /* Duck multiplier right now (1 = not ducked). */
+  get duckLevel(){return this.inert?1:this._level(this.engine.ctx.currentTime);}
   dispose(){for(const n of [this.input,this.filter,this.envGain,this.fader,this.ducker])disconnect(n);if(this.parent)for(const n of [this.sendIn,this.sendLevel,this.sendFader,this.sendDucker])disconnect(n);this._holds.length=0;}
 }
 
@@ -475,18 +513,19 @@ let voiceSeq=0;
 const Vec=THREE_=>THREE_&&THREE_.Vector3?new THREE_.Vector3():{x:0,y:0,z:0,set(x,y,z){this.x=x;this.y=y;this.z=z;return this;}};
 function readVec(v,out){if(!v)return false;if(Array.isArray(v)){out.x=+v[0]||0;out.y=+v[1]||0;out.z=+v[2]||0;}else{out.x=+v.x||0;out.y=+v.y||0;out.z=+v.z||0;}return true;}
 /* A playing sound. Chain: source -> amp (volume/fades) -> [spatial: occlusion lowpass -> mod (distance fade *
-   occlusion gain) -> panner] -> bus; plus a per-voice reverb send tapped before the panner. Inert voices (no
+   occlusion gain, mono downmix) -> panner] -> bus; plus a per-voice reverb send tapped before `mod` (its gain
+   carries distance/occlusion so distant or occluded sources keep relatively more reverb). Inert voices (no
    context, locked, rejected by limits or cooldowns) keep the same API and do nothing. */
 class AudioVoice{
   constructor(engine,o={}){
     this.engine=engine;this.id=++voiceSeq;this.seq=this.id;this.reason=o.reason||null;this.state=engine?'pending':'inert';this.name=o.name||'';
-    this.bus=o.bus||null;this.priority=o.priority||0;this.loop=!!o.loop;this.volume=o.volume!=null?Math.max(0,+o.volume):1;this.pitch=o.pitch>0?+o.pitch:1;
+    this.bus=o.bus||null;this.priority=o.priority||0;this.loop=!!o.loop;this.volume=o.volume!=null?Math.max(0,+o.volume||0):1;this.pitch=o.pitch>0?+o.pitch:1;
     this.spatial=!!o.spatial;this.position=o.position||{x:0,y:0,z:0};this.velocity={x:0,y:0,z:0};this.follow=o.follow||null;this.offset=o.offset||null;
     this.refDistance=o.refDistance||2;this.maxDistance=o.maxDistance||60;this.rolloff=o.rolloff!=null?o.rolloff:1;this.distanceModel=o.distanceModel||'inverse';
     this.occlusion=o.occlusion!==false;this.occ=0;this.occTarget=0;this.fadeIn=Math.max(0,+o.fadeIn||0);this.startAt=Math.max(0,+o.startAt||0);this.delay=Math.max(0,+o.delay||0);
-    this.duck=o.duck;this.cue=null;this.stolen=false;this.virtual=false;this.buffer=null;this.source=null;this.live=null;this.patch=null;this.sentinel=null;
-    this.startTime=0;this.endTime=Infinity;this.duration=0;this.onended=null;this._index=-1;this._phase=0;this._rate=this.pitch;this._doppler=1;
-    this._px=NaN;this._py=NaN;this._pz=NaN;this._modSet=-1;this._cutSet=-1;this._sendSet=-1;this._rateSet=this.pitch;this._dx=0;this._dy=0;this._dz=-1;
+    this.reverbSend=o.reverbSend!=null?Math.max(0,+o.reverbSend||0):1;this.duck=o.duck;this.cue=null;this.stolen=false;this.virtual=false;this.buffer=null;this.source=null;this.live=null;this.patch=null;this.sentinel=null;
+    this.startTime=0;this.endTime=Infinity;this.duration=0;this.onended=null;this._index=-1;this._pos=0;this._posT=0;this._rate=this.pitch;this._doppler=1;this._requested=0;
+    this._px=NaN;this._py=NaN;this._pz=NaN;this._modSet=-1;this._cutSet=-1;this._sendSet=-1;this._rateSet=this.pitch;this._dx=0;this._dy=0;this._dz=-1;this.cone=false;
     this.amp=this.filter=this.mod=this.panner=this.send=this.stereo=null;this.distance=0;
     this.ready=engine?new Promise(r=>{this._ready=r;}):Promise.resolve(false);
   }
@@ -494,30 +533,42 @@ class AudioVoice{
   get inert(){return this.state==='inert';}
   /* Seconds since the voice started (0 while pending). */
   get time(){return this.engine&&this.engine.ctx&&this.state==='playing'?Math.max(0,this.engine.ctx.currentTime-this.startTime):0;}
+  /* Live generator parameters (ambience), e.g. {intensity:.5}; null for buffer voices. */
   get params(){return this.live&&this.live.params?this.live.params:null;}
-  /* Modulate a live generator parameter (ambience intensity etc.). */
+  get intensity(){const p=this.params;return p&&'intensity' in p?p.intensity:undefined;}
+  set intensity(v){this.set('intensity',v);}
+  /* Modulate a live generator parameter (ambience intensity etc.) over `ramp` seconds. */
   set(name,value,ramp=.5){if(this.live&&this.live.set&&this.state!=='inert'&&this.state!=='ended')this.live.set(name,value,ramp);return this;}
-  setVolume(v,ramp=.05){this.volume=Math.max(0,+v||0);if(this.amp&&(this.state==='playing'))rampTo(this.amp.gain,this.volume,this.engine.ctx.currentTime,ramp);return this;}
-  setPitch(p,ramp=.05){this.pitch=p>0?+p:1;if(this.source&&this.state==='playing'){const r=this.pitch*this._doppler,t=this.engine.ctx.currentTime;rampTo(this.source.playbackRate,r,t,ramp);this._rateSet=r;
-      if(!this.loop&&this.buffer){const played=(t-this.startTime)*this._rate;this._rate=r;this.endTime=t+Math.max(0,this.buffer.duration-this.startAt-played)/r;}}return this;}
+  setVolume(v,ramp=.05){this.volume=Math.max(0,+v||0);if(this.amp&&this.state==='playing'){const t=this.engine.ctx.currentTime;rampTo(this.amp.gain,this.volume,t,ramp);this._tail(t+ramp);}return this;}
+  setPitch(p,ramp=.05){this.pitch=p>0?+p:1;if(this.source&&this.state==='playing'){const r=this.pitch*this._doppler,t=this.engine.ctx.currentTime;rampTo(this.source.playbackRate,r,t,ramp);this._rateSet=r;this._retime(t,r,true);}return this;}
   setPosition(x,y,z){if(typeof x==='object'&&x)readVec(x,this.position);else{this.position.x=+x||0;this.position.y=+y||0;this.position.z=+z||0;}return this;}
-  stop({fade=.04}={}){const e=this.engine;if(!e||!e.ctx||this.state==='inert'||this.state==='ended'||this.state==='stopping')return this;
+  /* Fade out and stop. stop(), stop({fade:.5}) or stop(.5). */
+  stop(opts){const e=this.engine;if(!e||!e.ctx||this.state==='inert'||this.state==='ended'||this.state==='stopping')return this;
     if(this.state==='pending'){this._release();return this;}
-    const t=e.ctx.currentTime,f=Math.max(.004,+fade||0);rampTo(this.amp.gain,0,t,f);this.state='stopping';e._releaseDucks(this);
+    const fade=typeof opts==='number'?opts:opts&&opts.fade!=null?+opts.fade:.04;
+    const t=e.ctx.currentTime,f=Math.max(.004,fade||0);rampTo(this.amp.gain,0,t,f);this.state='stopping';e._releaseDucks(this);
     const end=t+f+.01;if(this.source)try{this.source.stop(end);}catch(err){}if(this.patch)this.patch.stop(end);if(this.sentinel)try{this.sentinel.stop(end);}catch(err){}
     if(!this.source&&!this.sentinel)this._release();return this;}
   dispose(){if(this.state!=='inert')this._release();return this;}
+  /* Buffer seconds played at audio time t (tracks pitch/doppler changes). */
+  _played(t){return this._pos+Math.max(0,t-this._posT)*this._rate;}
+  _retime(t,r,tail){if(!this.buffer){this._rate=r;return;}this._pos=this._played(t);this._posT=t;this._rate=r;
+    if(!this.loop){this.endTime=t+Math.max(0,this.buffer.duration-this._pos)/r;if(tail&&this._needsTail){rampTo(this.amp.gain,this.volume,t,.01);this._tail(t+.01);}}}
+  /* User buffers may not end at zero: fade the last 5 ms (synth buffers are already edge-faded). */
+  _tail(from){if(!this._needsTail||this.loop||!isFinite(this.endTime))return;const ts=this.endTime-.005;if(ts<=from)return;const g=this.amp.gain;g.setValueAtTime(this.volume,ts);g.linearRampToValueAtTime(0,this.endTime);}
   _startBuffer(buffer){const e=this.engine,ctx=e.ctx;if(this.state!=='pending')return;
     const s=ctx.createBufferSource();s.buffer=buffer;s.loop=this.loop;this._rate=this.pitch*this._doppler;s.playbackRate.value=this._rate;this._rateSet=this._rate;s.connect(this.amp);
     const off=this.loop?this.startAt%buffer.duration:Math.min(this.startAt,Math.max(0,buffer.duration-.001)),when=Math.max(ctx.currentTime,this._requested+this.delay);
-    s.onended=()=>{if(this.source===s&&!this.virtual)this._release();};s.start(when,off);this.source=s;this.buffer=buffer;
-    this._attack(when,off>0||!buffer.keSynth);this.startTime=when;this.duration=this.loop?Infinity:(buffer.duration-off)/this._rate;this.endTime=when+this.duration;
+    s.onended=()=>{if(this.source===s&&!this.virtual)this._release();};s.start(when,off);this.source=s;this.buffer=buffer;this._pos=off;this._posT=when;this._needsTail=!buffer.keSynth;
+    this.startTime=when;this.duration=this.loop?Infinity:(buffer.duration-off)/this._rate;this.endTime=when+this.duration;
+    this._attack(when,off>0||!buffer.keSynth);this._tail(when+Math.max(this.fadeIn,.004));
     this.state='playing';e._voiceStarted(this);this._ready(true);}
   _attack(when,needsFade){const f=Math.max(this.fadeIn,needsFade?.004:0),g=this.amp.gain;if(f>0){g.setValueAtTime(0,when);g.linearRampToValueAtTime(this.volume,when+f);}else g.setValueAtTime(this.volume,when);}
-  /* Loop virtualisation: out-of-range buffer loops stop their source and remember the phase. */
-  _virtualize(t){if(this.virtual||!this.source)return;this.virtual=true;this._phase=((t-this.startTime)*this._rate+this.startAt)%this.buffer.duration;try{this.source.onended=null;this.source.stop(t+.05);}catch(e){}const s=this.source;setTimeout(()=>disconnect(s),120);this.source=null;}
+  /* Loop virtualisation: out-of-range buffer loops stop their source (inaudible: the distance fade is 0 there) and remember the phase. */
+  _virtualize(t){if(this.virtual||!this.source)return;this.virtual=true;this._pos=this._played(t)%this.buffer.duration;this._posT=t;
+    const s=this.source;s.onended=null;try{s.stop(t+.05);}catch(e){}setTimeout(()=>disconnect(s),200);this.source=null;}
   _devirtualize(t){if(!this.virtual)return;this.virtual=false;const s=this.engine.ctx.createBufferSource();s.buffer=this.buffer;s.loop=true;s.playbackRate.value=this._rate;s.connect(this.amp);
-    s.onended=()=>{if(this.source===s&&!this.virtual)this._release();};s.start(t,this._phase%this.buffer.duration);this.startTime=t;this.startAt=this._phase;this.source=s;}
+    s.onended=()=>{if(this.source===s&&!this.virtual)this._release();};s.start(t,this._pos%this.buffer.duration);this._posT=t;this.source=s;}
   _release(){if(this.state==='ended'||this.state==='inert')return;const e=this.engine,was=this.state;this.state='ended';
     if(this.source){this.source.onended=null;if(was==='playing'){try{this.source.stop();}catch(err){}}}
     if(this.sentinel){this.sentinel.onended=null;try{this.sentinel.stop();}catch(err){}}
@@ -531,23 +582,29 @@ const inertVoice=reason=>new AudioVoice(null,{reason});
 /* ============================================================ SoundCue ============================================================ */
 /* Randomised container in the spirit of UE sound cues: variations (buffers, synth names, {synth,params}),
    pitch/volume randomisation, shuffle-bag selection without immediate repeats, cooldown and instance limits. */
+/* [min,max] multipliers; a single number x means [1-x, 1+x]. */
+const cueRange=(r,min)=>{if(typeof r==='number'&&isFinite(r))return [Math.max(min,1-Math.abs(r)),1+Math.abs(r)];if(Array.isArray(r)&&r.length){const a=+r[0],b=r[1]!=null?+r[1]:a;
+  return [Math.max(min,isFinite(a)?a:1),Math.max(min,isFinite(b)?b:1)];}return [1,1];};
 class SoundCue{
   constructor({variations=[],randomPitch=[1,1],randomVolume=[1,1],cooldown=0,maxInstances=Infinity,order='shuffle',limit='steal',volume=1,pitch=1,seed=null,name='',...defaults}={}){
     if(!Array.isArray(variations)||!variations.length)throw new RangeError('SoundCue needs at least one variation');
-    this.variations=variations.slice();this.randomPitch=[+randomPitch[0]||1,+(randomPitch[1]!=null?randomPitch[1]:randomPitch[0])||1];
-    this.randomVolume=[+randomVolume[0],+(randomVolume[1]!=null?randomVolume[1]:randomVolume[0])];this.cooldown=Math.max(0,+cooldown||0);
+    this.variations=variations.slice();this.randomPitch=cueRange(randomPitch,.01);this.randomVolume=cueRange(randomVolume,0);this.cooldown=Math.max(0,+cooldown||0);
     this.maxInstances=maxInstances>0?maxInstances:Infinity;this.order=order;this.limit=limit;this.volume=volume;this.pitch=pitch;this.name=name;this.defaults=defaults;
     this._rng=KE.random(seed!=null?seed:hashStr(JSON.stringify(variations.map(v=>typeof v==='string'?v:v&&v.synth||'buffer')))+variations.length);
     this._bag=[];this._last=-1;this._seq=0;this._lastPlay=-Infinity;this._instances=[];
   }
-  get instances(){return this._instances.length;}
+  get instances(){this._instances=this._instances.filter(v=>v.playing);return this._instances.length;}
+  /* cue.play(audio, options) is the same as audio.play(cue, options). */
+  play(engine,o={}){return engine&&engine.play?engine.play(this,o):inertVoice('unavailable');}
   next(){const n=this.variations.length;if(n===1)return 0;if(this.order==='sequential')return this._last=(this._last+1)%n;
     if(this.order==='random'){let i;do{i=Math.floor(this._rng()*n);}while(i===this._last);return this._last=i;}
     if(!this._bag.length){for(let i=0;i<n;i++)this._bag.push(i);for(let i=n-1;i>0;i--){const j=Math.floor(this._rng()*(i+1));[this._bag[i],this._bag[j]]=[this._bag[j],this._bag[i]];}
       if(this._bag[this._bag.length-1]===this._last){const k=Math.floor(this._rng()*(n-1));[this._bag[this._bag.length-1],this._bag[k]]=[this._bag[k],this._bag[this._bag.length-1]];}}
     return this._last=this._bag.pop();}
   preload(engine){return engine&&engine.preload?engine.preload(this.variations):Promise.all(this.variations.map(v=>isBuffer(v)?v:typeof v==='string'?Synth.render(v):Synth.render(v.synth,v.params)));}
-  _play(engine,o){
+  /* Stop every playing instance of this cue. */
+  stopAll(fade=.05){for(const v of this._instances.slice())v.stop({fade});return this;}
+  _play(engine,o){o=o||{};
     const t=nowSec();if(t-this._lastPlay<this.cooldown)return inertVoice('cooldown');
     this._instances=this._instances.filter(v=>v.playing);
     if(this._instances.length>=this.maxInstances){if(this.limit==='reject')return inertVoice('cue-limit');this._instances.shift().stop({fade:.03});}
@@ -565,6 +622,8 @@ class SoundCue{
    schedule(horizon)}. schedule() queues randomised events (gusts, birds, waves...) up to `horizon` on the
    audio clock; it is driven by AudioEngine.update() and an internal timer. */
 const AMBIENCE={};
+/* Output trims so every bed sits near -22 dBFS RMS at intensity .8 before the voice volume and bus faders. */
+const AMBIENCE_LEVEL={wind:.5,rain:.55,water:.75,fire:.8,'forest-day':.9,night:2.2,stream:.55};
 const ambParams=(o,defs)=>{const p={};for(const k in defs)p[k]=o[k]!=null?clamp(+o[k],0,defs[k][1]):defs[k][0];return p;};
 function levelGain(P,v){const g=P.gain(v);g.connect(P.out);return g;}
 
@@ -577,8 +636,9 @@ AMBIENCE.wind=(P,o)=>{
   const apply=(g,time,tau)=>{const I=params.intensity;bLP.frequency.setTargetAtTime((180+520*I)*(.55+.9*g),time,tau);bG.gain.setTargetAtTime((.3+.9*I)*(.35+.65*g),time,tau);
     wBP.frequency.setTargetAtTime((450+700*I)*(.7+.8*g),time,tau*.8);wG.gain.setTargetAtTime(1.6*I*g*g,time,tau);hG.gain.setTargetAtTime(.25*I*I*(.3+.7*g),time,tau);};
   apply(gust,t,.05);
-  return {params,set(k,v,ramp=.5){if(!(k in params))return;params[k]=clamp(+v,0,1);apply(gust,P.ctx.currentTime,Math.max(.02,ramp/3));},
-    schedule(h){while(next<h){const G=params.gustiness,dur=P.r(.7,2.6)*(1.2-.5*G);gust=clamp((1-G)*.45+G*Math.pow(P.rng(),1.5)*1.1,0,1);apply(gust,next,dur*.4);next+=dur;}}};
+  return {params,set(k,v,ramp=.5){if(!(k in params))return;params[k]=clamp(+v,0,1);const n=P.ctx.currentTime;
+      for(const q of [bLP.frequency,bG.gain,wBP.frequency,wG.gain,hG.gain])holdAt(q,n);apply(gust,n,Math.max(.02,ramp/3));next=n+Math.max(.05,ramp*.6);},
+    schedule(h,now){if(next<now)next=now;while(next<h){const G=params.gustiness,dur=P.r(.7,2.6)*(1.2-.5*G);gust=clamp((1-G)*.45+G*Math.pow(P.rng(),1.5)*1.1,0,1);apply(gust,next,dur*.4);next+=dur;}}};
 };
 
 function rainTexture(ctx,dense,variant){return texture(ctx,dense?'rain-heavy':'rain-light',dense?3.7:5.3,variant,(L,R,sr,rand,n)=>{
@@ -594,7 +654,7 @@ AMBIENCE.rain=(P,o)=>{
     sG.gain.setTargetAtTime(.45*Math.pow(I,1.3),now,tau);sLP.frequency.setTargetAtTime(3500+5000*I,now,tau);rG.gain.setTargetAtTime(.7*I*I,now,tau);};
   apply(.05);let next=t+P.r(.1,.5);
   return {params,set(k,v,ramp=.5){if(k in params){params[k]=clamp(+v,0,1);apply(Math.max(.02,ramp/3));}},
-    schedule(h){while(next<h){const I=params.intensity;if(I>.02){const f=P.r(900,2600),d=P.r(.03,.08),o=P.osc('sine',f,next,d*2+.02),g=P.gain(0),pn=P.pan(P.r(-.8,.8));
+    schedule(h,now){if(next<now)next=now+P.r(0,.3);while(next<h){const I=params.intensity;if(I>.02){const f=P.r(900,2600),d=P.r(.03,.08),o=P.osc('sine',f,next,d*2+.02),g=P.gain(0),pn=P.pan(P.r(-.8,.8));
         P.sweep(o.frequency,next,f,f*.72,d);P.chain(o,g,pn,P.out);P.perc(g.gain,next,P.r(.05,.18),.001,d);P.once(o,[o,g,pn]);}
       next+=P.r(.2,1.4)/(.5+3*I);}}};
 };
@@ -606,7 +666,7 @@ AMBIENCE.water=(P,o)=>{
   const under=P.noise('brown',t,Infinity,{rate:.9}),uLP=P.filter('lowpass',150);P.chain(under,uLP,P.gain(.35),lvl);
   let next=t+.1;
   return {params,set(k,v,ramp=.5){if(!(k in params))return;params[k]=clamp(+v,0,k==='period'?20:1);if(k==='intensity')lvl.gain.setTargetAtTime(.4+.6*params.intensity,P.ctx.currentTime,Math.max(.02,ramp/3));},
-    schedule(h){while(next<h){const T=Math.max(1.5,params.period)*P.r(.7,1.3),A=(.45+.55*P.rng())*(.35+.65*params.intensity),tb=next+.42*T;
+    schedule(h,now){if(next<now)next=now;while(next<h){const T=Math.max(1.5,params.period)*P.r(.7,1.3),A=(.45+.55*P.rng())*(.35+.65*params.intensity),tb=next+.42*T;
       wLP.frequency.setTargetAtTime(260+1000*A,next,.2*T);wG.gain.setTargetAtTime(.9*A,next,.18*T);
       fG.gain.setTargetAtTime(.55*A,tb,.05*T);wG.gain.setTargetAtTime(.12*A,tb,.3*T);wLP.frequency.setTargetAtTime(220,tb,.3*T);fG.gain.setTargetAtTime(0,tb+.12*T,.3*T);
       next+=T;}}};
@@ -625,10 +685,9 @@ AMBIENCE.fire=(P,o)=>{
   const cr=P.buffer(crackleTexture(P.ctx,0),t),cHP=P.filter('highpass',500),cG=P.gain(.8*params.intensity+.2);P.chain(cr,cHP,cG,lvl);
   let next=t,pop=t+P.r(.3,1.5);
   return {params,set(k,v,ramp=.5){if(!(k in params))return;params[k]=clamp(+v,0,1);const n=P.ctx.currentTime,tau=Math.max(.02,ramp/3);lvl.gain.setTargetAtTime(.5+.5*params.intensity,n,tau);cG.gain.setTargetAtTime(.8*params.intensity+.2,n,tau);},
-    schedule(h){while(next<h){const d=P.r(.12,.35);rG.gain.setTargetAtTime(.25+.3*P.rng(),next,d*.4);rLP.frequency.setTargetAtTime(250+300*P.rng(),next,d*.5);hG.gain.setTargetAtTime(.02+.05*P.rng(),next,d*.3);next+=d;}
+    schedule(h,now){if(next<now)next=now;if(pop<now)pop=now+P.r(.1,.8);while(next<h){const d=P.r(.12,.35);rG.gain.setTargetAtTime(.25+.3*P.rng(),next,d*.4);rLP.frequency.setTargetAtTime(250+300*P.rng(),next,d*.5);hG.gain.setTargetAtTime(.02+.05*P.rng(),next,d*.3);next+=d;}
       while(pop<h){noiseHit(P,'white',pop,{type:'bandpass',freq:P.r(1200,3500),Q:3,attack:.0005,t60:P.r(.01,.04),amp:P.r(.3,1),to:lvl,pan:P.r(-.6,.6)});pop+=P.r(.4,2.5)/(.5+params.intensity);}}};
 };
-/* Registers ephemeral node groups created by noiseHit for cleanup (noiseHit tracks its nodes on the patch). */
 
 /* Birds: a few individual singers, each with a species, a position and a repeated song (seeded, with small
    variations) sung every few seconds; notes are FM-modulated sine whistles with pitch sweeps. */
@@ -657,7 +716,7 @@ AMBIENCE['forest-day']=(P,o)=>{
   for(let i=0;i<5;i++){const sp=species[(i*3+Math.floor(P.rng()*species.length))%species.length];birds.push({sp,pan:P.r(-.9,.9),dist:P.r(0,.9),song:P.ri(1,1e6),rest:sp==='dove'?P.r(6,12):P.r(2.5,7),next:t+P.r(.3,5)});}
   let rustle=t;
   return {params,set(k,v){if(k in params)params[k]=clamp(+v,0,1);},
-    schedule(h){while(rustle<h){const d=P.r(1,3);lG.gain.setTargetAtTime(.02+.12*params.wind*P.rng(),rustle,d*.4);rustle+=d;}
+    schedule(h,now){if(rustle<now)rustle=now;for(const b of birds)if(b.next<now)b.next=now+P.r(.2,3);while(rustle<h){const d=P.r(1,3);lG.gain.setTargetAtTime(.02+.12*params.wind*P.rng(),rustle,d*.4);rustle+=d;}
       const I=params.intensity,active=Math.max(1,Math.round(1+4*I));
       for(let i=0;i<birds.length;i++){const b=birds[i];while(b.next<h){if(i<active&&I>.01){const r=KE.random(b.song+(P.rng()<.3?P.ri(1,3):0)),notes=BIRDS[b.sp](r);
             b.next=singPhrase(P,P.out,b.next,notes,{pan:b.pan,dist:b.dist,level:b.sp==='dove'?.5:.35});}
@@ -673,7 +732,7 @@ AMBIENCE.night=(P,o)=>{
     crickets.push({g,period:P.r(.4,.9),pulses:P.ri(3,5),len:P.r(.012,.018),gap:P.r(.012,.018),amp:P.r(.05,.14),next:t+P.r(0,1)});}
   let frog=t+P.r(1,4),owl=t+P.r(8,20);
   return {params,set(k,v,ramp=.5){if(!(k in params))return;params[k]=clamp(+v,0,1);lvl.gain.setTargetAtTime(.12*params.intensity+.02,P.ctx.currentTime,Math.max(.02,ramp/3));},
-    schedule(h){const I=params.intensity,active=Math.round(1+4*I);
+    schedule(h,now){for(const c of crickets)if(c.next<now)c.next=now+P.r(0,.5);if(frog<now)frog=now+P.r(.5,3);if(owl<now)owl=now+P.r(4,15);const I=params.intensity,active=Math.round(1+4*I);
       for(let i=0;i<crickets.length;i++){const c=crickets[i];while(c.next<h){if(i<active){let tp=c.next;for(let k=0;k<c.pulses;k++){const g=c.g.gain;g.setValueAtTime(0,tp);g.linearRampToValueAtTime(c.amp,tp+.003);g.setValueAtTime(c.amp,tp+c.len-.004);g.linearRampToValueAtTime(0,tp+c.len);tp+=c.len+c.gap;}}
           c.next+=c.period*P.r(.96,1.04)+(P.rng()<.06?P.r(2,6):0);}}
       while(frog<h){if(I>.25){const d=P.r(.25,.45),f=P.r(110,170),o=P.osc('sawtooth',f,frog,d+.05),bp=P.filter('bandpass',700,2.5),g=P.gain(0),lp=P.filter('lowpass',2500),pn=P.pan(P.r(-.9,.9));
@@ -721,6 +780,9 @@ const MOODS={
     bass:{pattern:[1,0,0,0,0,0,0,0],len:7.5,level:.45},bells:{prob:.22,decay:4.5,level:.2},perc:null}
 };
 const LAYER_THRESHOLD={pad:0,bass:.18,pluck:.35,bells:.5,perc:.68};
+/* Layer trims so the full mix sits around -20 dBFS RMS on the music bus (sustained pads/bass carry far more
+   energy per note than plucks and bells). */
+const MIX={pad:.25,bass:.15,pluck:1,bells:1,perc:.7};
 const SENDS={pad:[.5,0],bass:[.08,0],pluck:[.35,.3],bells:[.6,.35],perc:[.15,0]};
 const euclid=(k,n,i,rot=0)=>k>0&&(((i+rot)*k)%n)<k;
 function periodicWave(ctx,cache,kind){let w=cache.get(kind);if(w)return w;const N=24,re=new Float32Array(N),im=new Float32Array(N);
@@ -758,8 +820,10 @@ class MusicSection{
     for(const m of this.melodyNotes){if(Math.abs(m-last)>7){W.push(0);continue;}let w=Math.exp(-Math.abs(m-last)/2.5);if(tones.includes(m%12))w*=strong?3:1.6;if(m===last)w*=.25;if(m<60||m>84)w*=.3;W.push(w);tot+=w;}
     let r=this.rng()*tot;for(let i=0;i<W.length;i++){r-=W[i];if(r<=0){this.last=this.melodyNotes[i];return this.last;}}return last;}
   arpNext(){const a=this.arp;if(!a.length)return this.last;let i=this.arpIndex+this.arpDir;if(i>=a.length||i<0){this.arpDir*=-1;i=clamp(this.arpIndex+this.arpDir,0,a.length-1);}this.arpIndex=i;return this.last=a[i];}
-  schedule(h){const cfg=this.cfg;while(true){const stepDur=30/this.tempo,t=this.baseTime+(this.step%2?cfg.swing*stepDur:0);if(t>=h)break;
-      if(this.endAt!=null&&t>=this.endAt){this.done=true;break;}this.playStep(this.step,t,stepDur);this.step++;this.baseTime+=stepDur;}}
+  schedule(h,now=-Infinity){const cfg=this.cfg;while(true){const stepDur=30/this.tempo,t=this.baseTime+(this.step%2?cfg.swing*stepDur:0);if(t>=h)break;
+      if(this.endAt!=null&&t>=this.endAt){this.done=true;break;}
+      if(t<now-.03){if(this.step%8===0&&Math.floor(this.step/8)%cfg.barsPerChord===0)this.nextChord();}   // late (stalled timer): skip, keep harmony moving
+      else this.playStep(this.step,t,stepDur);this.step++;this.baseTime+=stepDur;}}
   playStep(s,t,sd){const cfg=this.cfg,m=this.music,bs=s%8,bar=Math.floor(s/8),I=m._intensity,r=this.rng;
     if(bs===0&&bar%cfg.barsPerChord===0){this.nextChord();if(this.on('pad'))m._pad(this,t,sd*8*cfg.barsPerChord,this.voicing);}
     if(bs%2===0&&m.onBeat){try{m.onBeat(s/2,t,this.mood);}catch(e){console.error(e);}}
@@ -776,7 +840,7 @@ class Music{
   constructor(engine,o={}){
     this.engine=engine;this._intensity=clamp(o.intensity!=null?+o.intensity:.5,0,1);this._volume=o.volume!=null?Math.max(0,+o.volume):1;this.sections=[];this.onBeat=null;this.notes=0;this.counts={pad:0,bass:0,pluck:0,bells:0,perc:0};this._w=[];
     const ctx=engine&&engine.ctx;this.state=ctx?'playing':'inert';this._mood=MOODS[o.mood]?o.mood:'calm';if(!ctx)return;
-    const P=this.patch=new Patch(ctx,null,o.seed!=null?o.seed:hashStr(this._mood)+voiceSeq);this._waves=new Map();
+    const P=this.patch=new Patch(ctx,null,o.seed!=null?o.seed:hashStr(this._mood)+voiceSeq,true);this._waves=new Map();
     this.input=P.gain(this._volume);this.input.connect(engine._bus(o.bus||'music').input);
     this.verbIn=P.gain(1);const conv=P.add(ctx.createConvolver());conv.normalize=false;conv.buffer=impulseResponse(ctx,'hall',Math.min(3,engine.irSeconds));P.chain(this.verbIn,conv,P.gain(.6),this.input);
     this.echoIn=P.gain(1);this.echo=P.delay(.5,2);const fl=P.filter('lowpass',2800,.5),fb=P.gain(.36),ret=P.gain(.55);P.chain(this.echoIn,this.echo,fl,fb,this.echo);this.echo.connect(ret);ret.connect(this.input);
@@ -801,7 +865,7 @@ class Music{
   stop(fade=2){if(this.state!=='playing')return this;const t=this.engine.ctx.currentTime,f=Math.max(.02,+fade||0);rampTo(this.input.gain,0,t,f);for(const s of this.sections)if(s.endAt==null){s.endAt=t+f;s.disposeAt=t+f+.2;}
     this.state='stopping';this._stopAt=t+f+.25;return this;}
   _schedule(h,t){if(this.state==='inert'||this.state==='ended')return;
-    for(let i=this.sections.length-1;i>=0;i--){const s=this.sections[i];if(!s.done)s.schedule(h);if(t>s.disposeAt){s.dispose();this.sections.splice(i,1);}}
+    for(let i=this.sections.length-1;i>=0;i--){const s=this.sections[i];if(!s.done)s.schedule(h,t);if(t>s.disposeAt){s.dispose();this.sections.splice(i,1);}}
     if(this.state==='stopping'&&t>=this._stopAt)this.dispose();}
   _wave(kind){return kind==='sawtooth'||kind==='triangle'||kind==='sine'||kind==='square'?kind:periodicWave(this.engine.ctx,this._waves,kind);}
   _budget(){return this.patch.sources.size<this.engine.quality.musicNotes*3;}
@@ -809,27 +873,29 @@ class Music{
     const stop=t+dur+cfg.release+.05,w=this._wave(cfg.wave);let first=null;
     for(const m of notes){const hz=midiToHz(m);for(const side of [-1,1]){const o=P.osc(w,hz,t,stop-t,side*cfg.detune*(.7+.3*sec.rng()));o.connect(side<0?pl:pr);nodes.push(o);first=first||o;}}
     pl.connect(f);pr.connect(f);P.chain(f,env,L.gain);f.frequency.setValueAtTime(cfg.cutoff*.35,t);f.frequency.setTargetAtTime(cfg.cutoff*(.7+.6*I),t,cfg.attack*.6);
-    P.asr(env.gain,t,cfg.level/Math.sqrt(notes.length*2),cfg.attack,dur,cfg.release);P.once(first,nodes);this.notes++;this.counts.pad++;}
+    P.asr(env.gain,t,MIX.pad*cfg.level/Math.sqrt(notes.length*2),cfg.attack,dur,cfg.release);P.once(first,nodes);this.notes++;this.counts.pad++;}
   _pluck(sec,t,m,vel){if(!this._budget())return;const P=this.patch,cfg=sec.cfg.pluck,L=sec.layers.pluck,hz=midiToHz(m),o=P.osc(this._wave('pluck'),hz,t,cfg.decay+.1),f=P.filter('lowpass',cfg.cutoff,1.2),g=P.gain(0),pn=P.pan(sec.rng()*.9-.45);
     f.frequency.setValueAtTime(cfg.cutoff*(.7+.5*vel)*(.8+.4*this._intensity),t);f.frequency.exponentialRampToValueAtTime(Math.max(hz*1.5,300),t+.35);P.chain(o,f,g,pn,L.gain);P.perc(g.gain,t,cfg.level*vel,.004,cfg.decay);P.once(o,[o,f,g,pn]);this.notes++;this.counts.pluck++;}
   _bass(sec,t,m,dur,vel){if(!this._budget())return;const P=this.patch,cfg=sec.cfg.bass,L=sec.layers.bass,hz=midiToHz(m),o=P.osc('sine',hz,t,dur+.4),o2=P.osc('triangle',hz,t,dur+.4),g2=P.gain(.35),f=P.filter('lowpass',520,.8),g=P.gain(0);
-    o.connect(f);P.chain(o2,g2,f);P.chain(f,g,L.gain);P.asr(g.gain,t,cfg.level*vel,.015,dur*.85,.25);P.once(o,[o,o2,g2,f,g]);this.notes++;this.counts.bass++;}
+    o.connect(f);P.chain(o2,g2,f);P.chain(f,g,L.gain);P.asr(g.gain,t,MIX.bass*cfg.level*vel,.015,dur*.85,.25);P.once(o,[o,o2,g2,f,g]);this.notes++;this.counts.bass++;}
   _bell(sec,t,m,vel){if(!this._budget())return;const P=this.patch,cfg=sec.cfg.bells,L=sec.layers.bells,hz=midiToHz(m),pn=P.pan(sec.rng()*1.2-.6),nodes=[pn];let first=null;
     for(const [r,a,d] of [[1,1,1],[2,.3,.6],[2.756,.22,.45],[5.404,.07,.25]]){const fr=hz*r;if(fr>P.sr*.42)continue;const o=P.osc('sine',fr,t,cfg.decay*d+.1),g=P.gain(0);P.chain(o,g,pn);P.perc(g.gain,t,cfg.level*vel*a,.002,cfg.decay*d);nodes.push(o,g);first=first||o;}
     pn.connect(L.gain);P.once(first,nodes);this.notes++;this.counts.bells++;}
-  _kick(sec,t,vel){const P=this.patch,L=sec.layers.perc,o=P.osc('sine',150,t,.45),g=P.gain(0);P.sweep(o.frequency,t,150,46,.09);P.chain(o,g,L.gain);P.perc(g.gain,t,sec.cfg.perc.level*vel,.002,.32);P.once(o,[o,g]);this.counts.perc++;}
+  _kick(sec,t,vel){const P=this.patch,L=sec.layers.perc,o=P.osc('sine',150,t,.45),g=P.gain(0);P.sweep(o.frequency,t,150,46,.09);P.chain(o,g,L.gain);P.perc(g.gain,t,MIX.perc*sec.cfg.perc.level*vel,.002,.32);P.once(o,[o,g]);this.counts.perc++;}
   _snare(sec,t,vel){const P=this.patch,L=sec.layers.perc,n=P.noise('white',t,.25),f=P.filter('bandpass',1900,.8),g=P.gain(0),o=P.osc('sine',190,t,.15),og=P.gain(0);
-    P.chain(n,f,g,L.gain);P.chain(o,og,L.gain);P.perc(g.gain,t,sec.cfg.perc.level*vel*.6,.001,.16);P.perc(og.gain,t,sec.cfg.perc.level*vel*.3,.001,.08);P.once(n,[n,f,g]);P.once(o,[o,og]);this.counts.perc++;}
-  _hat(sec,t,vel,open){const P=this.patch,L=sec.layers.perc,n=P.noise('white',t,open?.3:.08),f=P.filter('highpass',7500),g=P.gain(0),pn=P.pan(.25);P.chain(n,f,g,pn,L.gain);P.perc(g.gain,t,sec.cfg.perc.level*vel*.35,.001,open?.25:.05);P.once(n,[n,f,g,pn]);this.counts.perc++;}
+    P.chain(n,f,g,L.gain);P.chain(o,og,L.gain);P.perc(g.gain,t,MIX.perc*sec.cfg.perc.level*vel*.6,.001,.16);P.perc(og.gain,t,MIX.perc*sec.cfg.perc.level*vel*.3,.001,.08);P.once(n,[n,f,g]);P.once(o,[o,og]);this.counts.perc++;}
+  _hat(sec,t,vel,open){const P=this.patch,L=sec.layers.perc,n=P.noise('white',t,open?.3:.08),f=P.filter('highpass',7500),g=P.gain(0),pn=P.pan(.25);P.chain(n,f,g,pn,L.gain);P.perc(g.gain,t,MIX.perc*sec.cfg.perc.level*vel*.35,.001,open?.25:.05);P.once(n,[n,f,g,pn]);this.counts.perc++;}
   dispose(){if(this.state==='inert'||this.state==='ended')return;this.state='ended';for(const s of this.sections)s.dispose();this.sections.length=0;if(this.patch)this.patch.dispose();
     const a=this.engine._musics,i=a.indexOf(this);if(i>=0)a.splice(i,1);}
 }
 
 /* ============================================================ AudioEngine ============================================================ */
+/* Auto-ducking rules keyed by the bus a voice plays on (inherited by sub-buses): dialogue ducks music, ambience
+   and effects while it plays. Per-voice `duck` options add ad-hoc ducking (see play()). */
 const DEFAULT_DUCKING={
-  voice:{targets:{music:.55,ambience:.35,sfx:.15},attack:.08,release:.6,threshold:0},
-  sfx:{targets:{music:.2},attack:.01,release:.35,threshold:.7}
+  voice:{targets:{music:.55,ambience:.35,sfx:.15},attack:.08,release:.6,threshold:0}
 };
+const SMOOTH_POS=.015;   // time constant for panner/listener motion (removes zipper noise from per-frame steps)
 const BUS_DEFAULTS={master:{},world:{},music:{reverbSend:0,priority:10},ui:{reverbSend:0,priority:3},sfx:{reverbSend:.5,priority:1},ambience:{reverbSend:.2,priority:8},voice:{reverbSend:.35,priority:6}};
 
 class AudioEngine{
@@ -838,16 +904,17 @@ class AudioEngine{
     this.THREE=THREE_;this.options={volume:1,context:null,maxVoices:null,panningModel:null,distanceModel:'inverse',refDistance:2,maxDistance:60,rolloff:1,
       doppler:0,speedOfSound:343,autoUnlock:true,busSmoothing:.05,ducking:DEFAULT_DUCKING,latencyHint:'interactive',sampleRate:undefined,limiter:'softclip',suspendWhenHidden:false,...o};
     this.ctx=null;this._disposed=false;this._unlocked=false;this.voices=[];this._dying=new Set();this._musics=[];this._live=[];this.buses={};this._timer=0;this._lastTick=0;
-    this._stolen=0;this._rejected=0;this._variant={};this._occluder=null;this._occCursor=0;this.occlusionCutoff=650;this.occlusionAttenuation=.65;this.occlusionRate=8;
+    this._stolen=0;this._rejected=0;this._variant={};this._warnedBus={};this._occluder=null;this._occCursor=0;this.occlusionCutoff=650;this.occlusionAttenuation=.65;this.occlusionRate=8;
     this.listener={x:0,y:0,z:0,fx:0,fy:0,fz:-1,ux:0,uy:1,uz:0,vx:0,vy:0,vz:0,_init:false};this._from=Vec(THREE_);this._to=Vec(THREE_);this.ducking={};this.setDucking(this.options.ducking);
     this._applyQuality();
     try{
       if(this.options.context){this.ctx=this.options.context;this._ownsContext=false;}
       else{const C=ACtor();if(C){const opts={latencyHint:this.options.latencyHint};if(this.options.sampleRate)opts.sampleRate=this.options.sampleRate;this.ctx=new C(opts);this._ownsContext=true;}}
     }catch(e){this.ctx=null;}
-    if(!this.ctx){this.state0='unavailable';return;}
+    if(!this.ctx)return;
     this.offline=isOffline(this.ctx);if(this.ctx.state==='running'||this.offline)this._unlocked=true;
-    try{this._build();}catch(e){console.warn('KE.AudioEngine: audio graph construction failed',e);this._teardown();return;}
+    try{this._build();}catch(e){console.warn('KE.AudioEngine: audio graph construction failed; audio disabled',e);try{this._teardown();}catch(err){}
+      if(this._ownsContext&&this.ctx.close)this.ctx.close().catch(()=>{});this.ctx=null;return;}
     if(!this.offline&&this.options.autoUnlock&&!this._unlocked&&typeof window!=='undefined')this._installUnlock();
     if(!this.offline&&this.options.suspendWhenHidden&&typeof document!=='undefined'){this._onVis=()=>{if(document.hidden)this.ctx.suspend();else if(this._unlocked)this.ctx.resume();};document.addEventListener('visibilitychange',this._onVis);}
     if(KE.events&&KE.events.on)this._offSettings=KE.events.on('settings',()=>this._applyQuality());
@@ -856,7 +923,8 @@ class AudioEngine{
     // output: master -> soft-clip safety limiter (or compressor) -> destination
     this._out=ctx.createGain();this._limiter=null;
     if(this.options.limiter==='compressor'){const c=ctx.createDynamicsCompressor();c.threshold.value=-6;c.knee.value=4;c.ratio.value=12;c.attack.value=.003;c.release.value=.2;this._limiter=c;this._out.connect(c);c.connect(ctx.destination);}
-    else if(this.options.limiter){const H=4,pre=this._out,sh=ctx.createWaveShaper();pre.gain.value=1/H;sh.curve=softClipCurve(.85,H);sh.oversample='2x';pre.connect(sh);sh.connect(ctx.destination);this._limiter=sh;}
+    // no oversampling: the curve output is strictly within +-1 (oversampling filters can overshoot); the mix rarely reaches the knee
+    else if(this.options.limiter){const H=4,pre=this._out,sh=ctx.createWaveShaper();pre.gain.value=1/H;sh.curve=softClipCurve(.85,H);sh.oversample='none';pre.connect(sh);sh.connect(ctx.destination);this._limiter=sh;}
     else this._out.connect(ctx.destination);
     this._reverbIn=ctx.createGain();
     const mk=(name,parent,extra)=>this.buses[name]=new AudioBus(this,name,parent,{...BUS_DEFAULTS[name],...extra});
@@ -865,6 +933,8 @@ class AudioEngine{
     const world=mk('world',master,{envFilter:true});mk('music',master);mk('ui',master);mk('sfx',world);mk('ambience',world);mk('voice',world);
   }
   get world(){return this.buses.world;}
+  /* True while the audio clock advances (automation scheduled now will actually play out). */
+  _clock(){return !!this.ctx&&this.ctx.state==='running';}
   _applyQuality(){const q=this.quality=quality();this.maxVoices=this.options.maxVoices>0?this.options.maxVoices|0:q.maxVoices;this.panningModel=this.options.panningModel||(q.hrtf?'HRTF':'equalpower');
     this.occlusionChecks=q.occlusionChecks;this.irSeconds=q.irSeconds;}
   _installUnlock(){const h=()=>{this.unlock();};this._unlockHandler=h;for(const ev of ['pointerdown','keydown','touchend','mousedown'])window.addEventListener(ev,h,{capture:true,passive:true});}
@@ -881,7 +951,7 @@ class AudioEngine{
   suspend(){return this.ctx&&!this.offline&&this.ctx.state==='running'?this.ctx.suspend().then(()=>true,()=>false):Promise.resolve(false);}
   resume(){return this.unlock();}
   bus(name){const b=this.buses[name];if(b)return b;if(!this.ctx)return new AudioBus(null,name,null);throw new RangeError('Unknown audio bus "'+name+'"');}
-  _bus(name){return this.buses[name]||this.buses.sfx;}
+  _bus(name){const b=this.buses[name];if(b)return b;if(!this._warnedBus[name]){this._warnedBus[name]=true;console.warn('KE.AudioEngine: unknown bus "'+name+'", using "sfx"');}return this.buses.sfx;}
   /* Add a custom sub-bus, e.g. createBus('footsteps',{parent:'sfx',volume:.8}). */
   createBus(name,{parent='sfx',volume=1,reverbSend=1,priority}={}){if(!this.ctx)return new AudioBus(null,name,null);if(this.buses[name])throw new Error('Audio bus "'+name+'" exists');
     const p=this.bus(parent);return this.buses[name]=new AudioBus(this,name,p,{volume,reverbSend,priority:priority!=null?priority:p.priority});}
@@ -889,15 +959,17 @@ class AudioEngine{
   setDucking(rules){this.ducking={};if(rules)for(const k of Object.keys(rules)){const r=rules[k];if(r&&r.targets)this.ducking[k]={attack:.05,release:.5,threshold:0,...r,targets:{...r.targets}};}return this;}
 
   /* ---------- listener ---------- */
-  setListener(position,forward,up,dt=0){const L=this.listener,p=this._from;readVec(position,p);const f={x:0,y:0,z:-1},u={x:0,y:1,z:0};if(forward)readVec(forward,f);if(up)readVec(up,u);
+  /* Manual listener placement (when there is no camera): position, forward and up as vectors or [x,y,z]. */
+  setListener(position,forward,up,dt=0){const L=this.listener,p=this._from,f=this._lf||(this._lf={x:0,y:0,z:-1}),u=this._lu||(this._lu={x:0,y:1,z:0});readVec(position,p);
+    if(forward)readVec(forward,f);else{f.x=0;f.y=0;f.z=-1;}if(up)readVec(up,u);else{u.x=0;u.y=1;u.z=0;}
     this._setListener(p.x,p.y,p.z,f.x,f.y,f.z,u.x,u.y,u.z,dt);return L;}
   _setListener(px,py,pz,fx,fy,fz,ux,uy,uz,dt){const L=this.listener;
     if(dt>0&&L._init){const ivx=(px-L.x)/dt,ivy=(py-L.y)/dt,ivz=(pz-L.z)/dt,sp=Math.sqrt(ivx*ivx+ivy*ivy+ivz*ivz),k=1-Math.exp(-12*dt);
       if(sp<this.options.speedOfSound*.5){L.vx+=(ivx-L.vx)*k;L.vy+=(ivy-L.vy)*k;L.vz+=(ivz-L.vz)*k;}else{L.vx=L.vy=L.vz=0;}}
     const moved=!L._init||Math.abs(px-L.x)+Math.abs(py-L.y)+Math.abs(pz-L.z)>1e-5,turned=!L._init||Math.abs(fx-L.fx)+Math.abs(fy-L.fy)+Math.abs(fz-L.fz)+Math.abs(ux-L.ux)+Math.abs(uy-L.uy)+Math.abs(uz-L.uz)>1e-5;
-    L.x=px;L.y=py;L.z=pz;L.fx=fx;L.fy=fy;L.fz=fz;L.ux=ux;L.uy=uy;L.uz=uz;L._init=true;if(!this.ctx)return;const l=this.ctx.listener;
-    if(moved){if(l.positionX){l.positionX.value=px;l.positionY.value=py;l.positionZ.value=pz;}else if(l.setPosition)l.setPosition(px,py,pz);}
-    if(turned){if(l.forwardX){l.forwardX.value=fx;l.forwardY.value=fy;l.forwardZ.value=fz;l.upX.value=ux;l.upY.value=uy;l.upZ.value=uz;}else if(l.setOrientation)l.setOrientation(fx,fy,fz,ux,uy,uz);}}
+    const first=!L._init;L.x=px;L.y=py;L.z=pz;L.fx=fx;L.fy=fy;L.fz=fz;L.ux=ux;L.uy=uy;L.uz=uz;L._init=true;if(!this.ctx)return;const l=this.ctx.listener,t=this.ctx.currentTime,snap=first||dt<=0||!this._clock();
+    if(moved){if(l.positionX){setP(l.positionX,px,t,snap);setP(l.positionY,py,t,snap);setP(l.positionZ,pz,t,snap);}else if(l.setPosition)l.setPosition(px,py,pz);}
+    if(turned){if(l.forwardX){setP(l.forwardX,fx,t,snap);setP(l.forwardY,fy,t,snap);setP(l.forwardZ,fz,t,snap);setP(l.upX,ux,t,snap);setP(l.upY,uy,t,snap);setP(l.upZ,uz,t,snap);}else if(l.setOrientation)l.setOrientation(fx,fy,fz,ux,uy,uz);}}
   _updateListener(camera,dt){if(camera.updateWorldMatrix)camera.updateWorldMatrix(true,false);const e=camera.matrixWorld.elements;
     let fx=-e[8],fy=-e[9],fz=-e[10],ux=e[4],uy=e[5],uz=e[6];const fl=Math.sqrt(fx*fx+fy*fy+fz*fz)||1,ul=Math.sqrt(ux*ux+uy*uy+uz*uz)||1;
     this._setListener(e[12],e[13],e[14],fx/fl,fy/fl,fz/fl,ux/ul,uy/ul,uz/ul,dt);}
@@ -915,7 +987,7 @@ class AudioEngine{
         let o=0;try{o=+this._occluder(this._from,this._to,v);}catch(err){o=0;}v.occTarget=o>0?(o<1?o:1):0;}
       this._occCursor=(this._occCursor+k)%Math.max(1,n);}
     for(let i=V.length-1;i>=0;i--){const v=V[i];if(v.spatial&&v.state!=='pending')this._spatial(v,dt,t,false);
-      if(!v.loop&&v.state==='playing'&&v.source&&t>v.endTime+.5)v._release();}
+      if(!v.loop&&v.state==='playing'&&v.source&&t>v.endTime+1)v._release();}   // safety net if onended never fired
     this.reverb.update(dt,this.listener);this._tick();}
   _distanceGain(v,d){const ref=v.refDistance,r=v.rolloff;if(v.distanceModel==='linear')return 1-r*(clamp(d,ref,v.maxDistance)-ref)/Math.max(1e-3,v.maxDistance-ref);
     if(v.distanceModel==='exponential')return Math.pow(Math.max(d,ref)/ref,-r);return ref/(ref+r*(Math.max(d,ref)-ref));}
@@ -924,25 +996,25 @@ class AudioEngine{
       if(e){nx=e[12];ny=e[13];nz=e[14];if(v.offset){nx+=v.offset.x;ny+=v.offset.y;nz+=v.offset.z;}if(v.panner&&v.cone){const l=Math.sqrt(e[8]*e[8]+e[9]*e[9]+e[10]*e[10])||1;v._dx=e[8]/l;v._dy=e[9]/l;v._dz=e[10]/l;}}}
     if(dt>0&&this.options.doppler>0){const ivx=(nx-p.x)/dt,ivy=(ny-p.y)/dt,ivz=(nz-p.z)/dt,sp=Math.sqrt(ivx*ivx+ivy*ivy+ivz*ivz),k=1-Math.exp(-10*dt);
       if(sp<this.options.speedOfSound*.5){v.velocity.x+=(ivx-v.velocity.x)*k;v.velocity.y+=(ivy-v.velocity.y)*k;v.velocity.z+=(ivz-v.velocity.z)*k;}}
-    p.x=nx;p.y=ny;p.z=nz;
-    const pn=v.panner;if(pn&&(init||Math.abs(nx-v._px)+Math.abs(ny-v._py)+Math.abs(nz-v._pz)>1e-5)){v._px=nx;v._py=ny;v._pz=nz;
-      if(pn.positionX){pn.positionX.value=nx;pn.positionY.value=ny;pn.positionZ.value=nz;}else pn.setPosition(nx,ny,nz);
-      if(v.cone){if(pn.orientationX){pn.orientationX.value=v._dx;pn.orientationY.value=v._dy;pn.orientationZ.value=v._dz;}else pn.setOrientation(v._dx,v._dy,v._dz);}}
+    p.x=nx;p.y=ny;p.z=nz;const snap=init||!this._clock();
+    const pn=v.panner;if(pn&&(init||Math.abs(nx-v._px)+Math.abs(ny-v._py)+Math.abs(nz-v._pz)>1e-5)){v._px=nx;v._py=ny;v._pz=nz;const ps=snap||dt<=0;
+      if(pn.positionX){setP(pn.positionX,nx,t,ps);setP(pn.positionY,ny,t,ps);setP(pn.positionZ,nz,t,ps);}else pn.setPosition(nx,ny,nz);
+      if(v.cone){if(pn.orientationX){setP(pn.orientationX,v._dx,t,ps);setP(pn.orientationY,v._dy,t,ps);setP(pn.orientationZ,v._dz,t,ps);}else pn.setOrientation(v._dx,v._dy,v._dz);}}
     const dx=nx-L.x,dy=ny-L.y,dz=nz-L.z,d=Math.sqrt(dx*dx+dy*dy+dz*dz),max=v.maxDistance,fs=max*.85;v.distance=d;
     const fade=d<=fs?1:d>=max?0:1-smooth01((d-fs)/(max-fs));
     if(v.occlusion){if(init)v.occ=v.occTarget;else if(dt>0)v.occ+=(v.occTarget-v.occ)*(1-Math.exp(-this.occlusionRate*dt));}
     const occ=v.occ,mod=fade*(1-this.occlusionAttenuation*occ);
-    if(init){v.mod.gain.value=mod;v._modSet=mod;}else if(Math.abs(mod-v._modSet)>.004||(mod===0&&v._modSet!==0)){v.mod.gain.setTargetAtTime(mod,t,.04);v._modSet=mod;}
+    if(init||Math.abs(mod-v._modSet)>.004||(mod===0&&v._modSet!==0)){glide(v.mod.gain,mod,t,.04,snap);v._modSet=mod;}
     if(v.filter){const nyq=this.ctx.sampleRate*.45,cut=Math.min(nyq,20000*Math.pow(this.occlusionCutoff/20000,occ));
-      if(init){v.filter.frequency.value=cut;v._cutSet=cut;}else if(Math.abs(cut/v._cutSet-1)>.03){v.filter.frequency.setTargetAtTime(cut,t,.04);v._cutSet=cut;}}
-    if(v.send){const s=Math.sqrt(Math.max(0,this._distanceGain(v,d)))*mod;if(init){v.send.gain.value=s;v._sendSet=s;}else if(Math.abs(s-v._sendSet)>.004){v.send.gain.setTargetAtTime(s,t,.05);v._sendSet=s;}}
+      if(init||Math.abs(cut/v._cutSet-1)>.03){glide(v.filter.frequency,cut,t,.04,snap);v._cutSet=cut;}}
+    if(v.send){const s=v.reverbSend*fade*Math.sqrt(Math.max(0,this._distanceGain(v,d)))*(1-.5*this.occlusionAttenuation*occ);if(init||Math.abs(s-v._sendSet)>.004){glide(v.send.gain,s,t,.05,snap);v._sendSet=s;}}
     if(this.options.doppler>0&&v.source&&d>1e-3){const ux=-dx/d,uy=-dy/d,uz=-dz/d,c=this.options.speedOfSound,vs=v.velocity.x*ux+v.velocity.y*uy+v.velocity.z*uz,vl=L.vx*ux+L.vy*uy+L.vz*uz;
       const ratio=clamp((c-vl)/Math.max(1,c-vs),.5,2);v._doppler=1+(ratio-1)*this.options.doppler;const r=v.pitch*v._doppler;
-      if(Math.abs(r/v._rateSet-1)>.002){v.source.playbackRate.setTargetAtTime(r,t,.06);v._rateSet=r;v._rate=r;}}
+      if(Math.abs(r/v._rateSet-1)>.002){v.source.playbackRate.setTargetAtTime(r,t,.06);v._rateSet=r;v._retime(t,r,false);}}
     if(v.loop&&v.buffer&&!v.live&&v.state==='playing'){if(!v.virtual&&d>max*1.05)v._virtualize(t);else if(v.virtual&&d<max)v._devirtualize(t);}else v.virtual=d>max;}
   _tick(){if(!this.ctx||this._disposed)return;const t=this.ctx.currentTime,now=nowSec(),gap=this._lastTick?now-this._lastTick:0;this._lastTick=now;
     const h=t+Math.min(3,Math.max(LOOKAHEAD,gap*1.6));const A=this._live;
-    for(let i=0;i<A.length;i++){const v=A[i];if(v.live&&v.live.schedule&&v.state==='playing')v.live.schedule(h);}
+    for(let i=0;i<A.length;i++){const v=A[i];if(v.live&&v.live.schedule&&v.state==='playing')v.live.schedule(h,t);}
     const M=this._musics;for(let i=M.length-1;i>=0;i--)M[i]._schedule(h,t);
     if(this._timer&&!A.length&&!M.length){clearInterval(this._timer);this._timer=0;}}
   _ensureTimer(){if(this.offline||this._timer||!this.ctx||typeof setInterval==='undefined')return;this._timer=setInterval(()=>this._tick(),100);}
@@ -954,16 +1026,21 @@ class AudioEngine{
   _steal(v){this._stolen++;v.stolen=true;this._removeVoice(v);if(v.state==='pending'){v._release();return;}this._dying.add(v);const done=v.onended;v.onended=x=>{this._dying.delete(x);if(typeof done==='function')done(x);};v.stop({fade:.025});}
   _removeVoice(v){const i=v._index,V=this.voices;if(i>=0&&V[i]===v){const last=V.pop();if(last!==v){V[i]=last;last._index=i;}}v._index=-1;
     const j=this._live.indexOf(v);if(j>=0)this._live.splice(j,1);this._dying.delete(v);}
-  _voiceStarted(v){const rule=this._duckRule(v.bus);if(!rule||v.duck===false||v.volume<rule.threshold)return;const hold=v.loop||v.live?Infinity:Math.max(0,v.endTime-this.ctx.currentTime-rule.attack);
-    for(const name in rule.targets){const b=this.buses[name];if(!b||b===v.bus)continue;const amount=typeof v.duck==='number'?v.duck:rule.targets[name];if(amount>0)b.duck(amount,rule.attack,rule.release,hold,v);}}
+  /* Ducking for a starting voice: its bus rule, or the voice's own `duck` option (number = amount on the rule's
+     targets or on 'music'; object = {targets, attack, release}; false = never). Held for the voice's lifetime. */
+  _voiceStarted(v){const d=v.duck;if(d===false)return;let rule=this._duckRule(v.bus);
+    if(d&&typeof d==='object')rule={attack:.05,release:.5,threshold:0,...d,targets:d.targets||{music:.5}};else if(typeof d==='number'&&!rule)rule={targets:{music:d},attack:.05,release:.5,threshold:0};
+    if(!rule||v.volume<rule.threshold)return;const hold=v.loop||v.live?Infinity:Math.max(0,v.endTime-this.ctx.currentTime-rule.attack);
+    for(const name in rule.targets){const b=this.buses[name];if(!b)continue;let up=false;for(let p=v.bus;p;p=p.parent)if(p===b){up=true;break;}if(up)continue;
+      const amount=typeof d==='number'?d:rule.targets[name];if(amount>0)b.duck(amount,rule.attack,rule.release,hold,v);}}
   _releaseDucks(v){for(const k in this.buses)this.buses[k]._unhold(v);}
   _duckRule(bus){for(let b=bus;b;b=b.parent)if(this.ducking[b.name])return this.ducking[b.name];return null;}
   /* Build the node chain for a new voice and register it. */
   _voice(o,busName){const ctx=this.ctx,bus=this._bus(busName),priority=o.priority!=null?+o.priority:bus.priority;
     if(!this._admit(priority))return inertVoice('limit');
-    const pos=Vec(this.THREE),spatial=o.spatial!==false&&!!(o.position||o.follow);if(o.position)readVec(o.position,pos);
-    const v=new AudioVoice(this,{...o,bus,priority,spatial,position:pos,refDistance:o.refDistance||this.options.refDistance,maxDistance:o.maxDistance||this.options.maxDistance,
-      rolloff:o.rolloff!=null?o.rolloff:this.options.rolloff,distanceModel:o.distanceModel||this.options.distanceModel,offset:o.offset?readVec(o.offset,{x:0,y:0,z:0})&&(()=>{const q={x:0,y:0,z:0};readVec(o.offset,q);return q;})():null});
+    const pos=Vec(this.THREE),spatial=o.spatial!=null?!!o.spatial:!!(o.position||o.follow);if(o.position)readVec(o.position,pos);let offset=null;if(o.offset){offset={x:0,y:0,z:0};readVec(o.offset,offset);}
+    const v=new AudioVoice(this,{...o,bus,priority,spatial,position:pos,offset,refDistance:o.refDistance||this.options.refDistance,maxDistance:o.maxDistance||this.options.maxDistance,
+      rolloff:o.rolloff!=null?o.rolloff:this.options.rolloff,distanceModel:o.distanceModel||this.options.distanceModel});
     v._requested=ctx.currentTime;v.amp=ctx.createGain();v.amp.gain.value=0;let tail=v.amp;
     if(spatial){if(v.occlusion){v.filter=ctx.createBiquadFilter();v.filter.type='lowpass';v.filter.Q.value=.5;v.filter.frequency.value=Math.min(20000,ctx.sampleRate*.45);tail.connect(v.filter);tail=v.filter;}
       v.mod=ctx.createGain();v.mod.channelCount=1;v.mod.channelCountMode='explicit';v.mod.channelInterpretation='speakers';tail.connect(v.mod);tail=v.mod;
@@ -971,41 +1048,49 @@ class AudioEngine{
       if(o.cone){v.cone=true;pn.coneInnerAngle=o.cone.inner!=null?o.cone.inner:90;pn.coneOuterAngle=o.cone.outer!=null?o.cone.outer:220;pn.coneOuterGain=o.cone.outerGain!=null?o.cone.outerGain:.3;
         if(o.direction){const q={x:0,y:0,z:-1};readVec(o.direction,q);const l=Math.hypot(q.x,q.y,q.z)||1;v._dx=q.x/l;v._dy=q.y/l;v._dz=q.z/l;}}
       tail.connect(pn);pn.connect(bus.input);
-      if(bus.sendIn){v.send=ctx.createGain();v.send.gain.value=0;v.mod.connect(v.send);v.send.connect(bus.sendIn);}
+      if(bus.sendIn){v.send=ctx.createGain();v.send.gain.value=0;(v.filter||v.amp).connect(v.send);v.send.connect(bus.sendIn);}
       this._spatial(v,0,ctx.currentTime,true);
       if(this._occluder&&v.occlusion){this._from.x=this.listener.x;this._from.y=this.listener.y;this._from.z=this.listener.z;this._to.x=pos.x;this._to.y=pos.y;this._to.z=pos.z;
         let oc=0;try{oc=+this._occluder(this._from,this._to,v);}catch(e){}v.occTarget=v.occ=clamp(oc||0,0,1);this._spatial(v,0,ctx.currentTime,true);}}
     else{if(o.pan!=null&&ctx.createStereoPanner){v.stereo=ctx.createStereoPanner();v.stereo.pan.value=clamp(+o.pan,-1,1);tail.connect(v.stereo);tail=v.stereo;}
-      tail.connect(bus.input);if(bus.sendIn&&bus.reverbSend>0){v.send=ctx.createGain();v.send.gain.value=1;tail.connect(v.send);v.send.connect(bus.sendIn);}}
+      tail.connect(bus.input);if(bus.sendIn&&bus.reverbSend>0&&v.reverbSend>0){v.send=ctx.createGain();v.send.gain.value=v.reverbSend;tail.connect(v.send);v.send.connect(bus.sendIn);}}
     v._index=this.voices.length;this.voices.push(v);return v;}
   _synthParams(name,a,b){const def=RECIPES.get(name),p={};for(const k of Object.keys(def.defaults)){if(b&&b[k]!==undefined)p[k]=b[k];else if(a&&a[k]!==undefined)p[k]=a[k];}
     if(p.seed===undefined&&def.variants>1){const c=this._variant[name]=(this._variant[name]||0)+1;p.seed=1+(c-1)%def.variants;}return p;}
-  /* play(source, options) -> AudioVoice. source: AudioBuffer | synth name | {synth, params} | KE.SoundCue. */
+  /* play(source, options) -> AudioVoice. source: AudioBuffer | synth name | KE.Synth.<name>(params) / {synth,params} |
+     Promise<AudioBuffer> | KE.SoundCue. Synth sources render once per (params, sample rate) and are cached; while a
+     render is pending the voice is 'pending' and starts as soon as the buffer exists. */
   play(source,o={}){if(!this.ctx||this._disposed)return inertVoice('unavailable');o=o||{};
     if(source instanceof SoundCue)return source._play(this,o);
-    let buffer=null,name=null,params=null;
+    let buffer=null,name=null,params=null,promise=null;
     if(isBuffer(source))buffer=source;
     else if(typeof source==='string'){if(!RECIPES.has(source))throw new RangeError('Unknown synth "'+source+'"');name=source;params=this._synthParams(name,o,o.params);}
-    else if(source&&typeof source==='object'&&source.synth){if(!RECIPES.has(source.synth))throw new RangeError('Unknown synth "'+source.synth+'"');name=source.synth;params=this._synthParams(name,source.params,o.params);}
-    else throw new TypeError('AudioEngine.play: source must be an AudioBuffer, a synth name, {synth,params} or a KE.SoundCue');
-    if(this.state==='locked'&&!o.loop&&!o.force)return inertVoice('locked');
-    const v=this._voice({...o,name:name||'buffer'},o.bus||'sfx');if(v.inert)return v;
+    else if(source&&typeof source==='object'&&typeof source.synth==='string'){if(!RECIPES.has(source.synth))throw new RangeError('Unknown synth "'+source.synth+'"');name=source.synth;params=this._synthParams(name,source.params,o.params);}
+    else if(source&&typeof source.then==='function')promise=source;
+    else throw new TypeError('AudioEngine.play: source must be an AudioBuffer, a synth name, KE.Synth.<name>(params) / {synth,params}, a Promise<AudioBuffer> or a KE.SoundCue');
+    if(this.state==='locked'&&!o.loop&&!o.force)return inertVoice('locked');   // one-shots requested before unlock are dropped, not queued
+    const v=this._voice({...o,name:name||(promise?'promise':'buffer')},o.bus||'sfx');if(v.inert)return v;
     if(buffer){v._startBuffer(buffer);return v;}
-    const sr=this.ctx.sampleRate,hit=Synth.get(name,params,sr);if(hit){v._startBuffer(hit);return v;}
-    Synth.render(name,params,{sampleRate:sr}).then(b=>{if(v.state==='pending'&&!this._disposed)v._startBuffer(b);},err=>{console.warn('KE.AudioEngine: synth render failed',err);v._release();});
+    const sr=this.ctx.sampleRate,hit=name&&Synth.get(name,params,sr);if(hit){v._startBuffer(hit);return v;}
+    (promise||Synth.render(name,params,{sampleRate:sr})).then(b=>{if(v.state==='pending'&&!this._disposed&&isBuffer(b))v._startBuffer(b);else v._release();},
+      err=>{console.warn('KE.AudioEngine: sound failed to render',err);v._release();});
     return v;}
-  /* Render synth buffers ahead of time: items are names, {synth,params} or SoundCues. */
+  /* Render synth buffers ahead of time at this context's rate: names, KE.Synth.<name>(params), {synth,params},
+     SoundCues or buffers. Without an explicit seed every variation of the recipe is rendered (play() cycles them). */
   preload(items=[]){if(!this.ctx)return Promise.resolve([]);const sr=this.ctx.sampleRate,jobs=[];
-    for(const it of [].concat(items)){if(it instanceof SoundCue)jobs.push(this.preload(it.variations));else if(typeof it==='string')jobs.push(Synth.render(it,{},{sampleRate:sr}));
-      else if(it&&it.synth)jobs.push(Synth.render(it.synth,it.params||{},{sampleRate:sr}));else if(isBuffer(it))jobs.push(Promise.resolve(it));}
+    const add=(name,params={})=>{const def=RECIPES.get(name);if(!def){jobs.push(Promise.reject(new RangeError('Unknown synth "'+name+'"')));return;}
+      if(params.seed===undefined&&def.variants>1)for(let k=1;k<=def.variants;k++)jobs.push(Synth.render(name,{...params,seed:k},{sampleRate:sr}));else jobs.push(Synth.render(name,params,{sampleRate:sr}));};
+    for(const it of [].concat(items)){if(it instanceof SoundCue)jobs.push(this.preload(it.variations));else if(typeof it==='string')add(it);
+      else if(it&&typeof it.synth==='string')add(it.synth,it.params||{});else if(isBuffer(it))jobs.push(Promise.resolve(it));}
     return Promise.all(jobs);}
   /* Live generative ambience loop returned as a voice; voice.set('intensity', v) modulates it in real time. */
   ambience(name,o={}){if(!this.ctx||this._disposed)return inertVoice('unavailable');const build=AMBIENCE[name];if(!build)throw new RangeError('Unknown ambience "'+name+'"');
     const v=this._voice({priority:8,...o,loop:true,name},o.bus||'ambience');if(v.inert)return v;const ctx=this.ctx;
-    v.patch=new Patch(ctx,v.amp,o.seed!=null?o.seed:hashStr(name)+v.id*101);v.live=build(v.patch,o);
+    const trim=ctx.createGain();trim.gain.value=AMBIENCE_LEVEL[name]||1;trim.connect(v.amp);
+    v.patch=new Patch(ctx,trim,o.seed!=null?o.seed:hashStr(name)+v.id*101,true);v.patch.add(trim);v.live=build(v.patch,o);
     const s=ctx.createConstantSource?ctx.createConstantSource():ctx.createBufferSource();if(s.offset)s.offset.value=0;s.connect(v.amp);s.onended=()=>v._release();s.start();v.sentinel=s;
     v.fadeIn=o.fadeIn!=null?Math.max(0,+o.fadeIn):1.5;v._attack(ctx.currentTime,true);v.startTime=ctx.currentTime;v.duration=Infinity;v.state='playing';this._live.push(v);this._voiceStarted(v);v._ready(true);
-    v.live.schedule(ctx.currentTime+LOOKAHEAD);this._ensureTimer();return v;}
+    v.live.schedule(ctx.currentTime+LOOKAHEAD,ctx.currentTime);this._ensureTimer();return v;}
   /* Generative music player (see Music). */
   music(o={}){if(!this.ctx||this._disposed)return new Music(null,o);if(o.mood&&!MOODS[o.mood])throw new RangeError('Unknown music mood "'+o.mood+'"');const m=new Music(this,o);m._schedule(this.ctx.currentTime+LOOKAHEAD,this.ctx.currentTime);return m;}
   /* Occlusion callback (from, to, voice) -> 0..1 (e.g. a physics raycast). Evaluated round-robin for a
@@ -1023,13 +1108,17 @@ class AudioEngine{
     if(this.ctx){this.reverb.zones.push(z);this.reverb.zones.sort((a,b)=>b.priority-a.priority);}return z;}
   removeReverbZone(z){if(!this.ctx)return false;const a=this.reverb.zones,i=a.indexOf(z);if(i<0)return false;a.splice(i,1);this.reverb.evaluate(this.listener);this.reverb.apply(this.reverb.zoneSmoothing);return true;}
   stopAll({fade=.2,buses=null}={}){for(const v of this.voices.slice())if(!buses||buses.includes(v.bus.name))v.stop({fade});if(!buses||buses.includes('music'))for(const m of this._musics.slice())m.stop(fade);return this;}
+  /* Output level of the final mix: {peak, rms} (linear, 0..1) over the last ~46 ms. The analyser is created on first use. */
+  meter(){if(!this.ctx||this._disposed)return {peak:0,rms:0};if(!this._analyser){const a=this._analyser=this.ctx.createAnalyser();a.fftSize=2048;(this._limiter||this._out).connect(a);this._meterBuf=new Float32Array(a.fftSize);}
+    const d=this._meterBuf;this._analyser.getFloatTimeDomainData(d);let pk=0,sq=0;for(let i=0;i<d.length;i++){const v=d[i],a=v<0?-v:v;if(a>pk)pk=a;sq+=v*v;}return {peak:pk,rms:Math.sqrt(sq/d.length)};}
   stats(){const s={state:this.state,voices:0,virtual:0,pending:0,total:this.voices.length,maxVoices:this.maxVoices,stolen:this._stolen,rejected:this._rejected,cachedBuffers:synthCache.size,cachedSeconds:+cacheSeconds.toFixed(2),
       ambience:this._live.length,music:this._musics.length,musicNotes:0,reverb:this.ctx?this.reverb.base.preset:'none',reverbSlots:[],zones:this.ctx?this.reverb.zones.length:0,sampleRate:this.sampleRate,currentTime:this.currentTime,panningModel:this.panningModel};
     for(const v of this.voices){if(v.state==='pending')s.pending++;else if(v.virtual)s.virtual++;else s.voices++;}
     for(const m of this._musics)s.musicNotes+=m.patch?m.patch.sources.size:0;
-    if(this.ctx)for(const sl of this.reverb.slots)s.reverbSlots.push({preset:sl.preset,target:+sl.target.toFixed(3),active:sl.connected});return s;}
+    if(this.ctx){for(const sl of this.reverb.slots)s.reverbSlots.push({preset:sl.preset,target:+sl.target.toFixed(3),active:sl.connected});
+      s.buses={};for(const k in this.buses){const b=this.buses[k];s.buses[k]={volume:b.volume,mute:b.mute,duck:+b.duckLevel.toFixed(3)};}}return s;}
   _teardown(){for(const v of this.voices.slice())v._release();for(const v of [...this._dying])v._release();this._dying.clear();for(const m of this._musics.slice())m.dispose();
-    if(this.reverb)this.reverb.dispose();for(const k in this.buses)this.buses[k].dispose();disconnect(this._reverbIn);disconnect(this._out);disconnect(this._limiter);}
+    if(this.reverb)this.reverb.dispose();for(const k in this.buses)this.buses[k].dispose();disconnect(this._reverbIn);disconnect(this._out);disconnect(this._limiter);disconnect(this._analyser);this._analyser=null;}
   dispose(){if(this._disposed)return;this._disposed=true;if(this._timer){clearInterval(this._timer);this._timer=0;}this._removeUnlock();
     if(this._onVis)document.removeEventListener('visibilitychange',this._onVis);if(this._offSettings)this._offSettings();
     if(this.ctx){this._teardown();if(this._ownsContext&&this.ctx.close)this.ctx.close().catch(()=>{});}this.voices.length=0;this._live.length=0;this._musics.length=0;this.ctx=null;}

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kitsune Audio Demo</title>
+<style>
+  :root{--bg:#0e1116;--panel:#171b23e8;--line:#2a3140;--text:#e6eaf0;--muted:#98a2b3;--accent:#f0a24a;--accent2:#5fd1c6}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font:13px/1.4 system-ui,sans-serif}
+  canvas{display:block}
+  #ui{position:fixed;top:12px;left:12px;width:300px;max-height:calc(100% - 24px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;box-sizing:border-box}
+  #ui h1{font-size:15px;margin:0 0 4px}#ui p{margin:0 0 10px;color:var(--muted)}
+  #ui h2{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:12px 0 6px}
+  .row{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+  button,select{background:#222936;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font:inherit;cursor:pointer}
+  button:hover{border-color:var(--accent2)}button.on{background:#2d3a3a;border-color:var(--accent2)}
+  #start{width:100%;padding:9px;background:var(--accent);color:#1b1206;font-weight:700;border:none}
+  input[type=range]{flex:1}label{color:var(--muted);min-width:64px}
+  #meter{height:8px;background:#222936;border-radius:4px;overflow:hidden}#meter>div{height:100%;width:0;background:linear-gradient(90deg,var(--accent2),var(--accent))}
+  #stats{font:11px/1.35 ui-monospace,monospace;color:var(--muted);white-space:pre;margin-top:6px}
+  @media (max-width:700px){#ui{top:auto;bottom:8px;left:8px;width:calc(100% - 16px);max-height:42%}#ui p{display:none}}
+</style>
+</head>
+<body>
+<div id="ui">
+  <h1>Kitsune audio</h1>
+  <p>Every sound is synthesized. Drag to orbit, scroll to zoom; fly into the dark dome for cave reverb.</p>
+  <button id="start">Start audio</button>
+  <h2>One-shots</h2>
+  <div class="row"><select id="surface"><option>grass</option><option>stone</option><option>wood</option><option>water</option><option>sand</option></select><button data-s="footstep">Footstep</button></div>
+  <div class="row" style="margin-top:5px"><button data-s="chime">Chime</button><button data-s="impact">Impact</button><button data-s="whoosh">Whoosh</button><button data-s="pickup">Pickup</button>
+    <button data-s="jump">Jump</button><button data-s="splash">Splash</button><button data-s="explosion">Explosion</button><button data-s="thunder">Thunder</button><button data-s="click">Click</button></div>
+  <h2>Ambience</h2>
+  <div class="row"><button data-a="wind">Wind</button><button data-a="rain">Rain</button><button data-a="forest-day">Forest</button><button data-a="night">Night</button><button data-a="water">Shore</button></div>
+  <div class="row" style="margin-top:6px"><label>Intensity</label><input id="ai" type="range" min="0" max="1" step=".01" value=".6"></div>
+  <h2>Music</h2>
+  <div class="row"><button data-m="calm">Calm</button><button data-m="mysterious">Mysterious</button><button data-m="triumphant">Triumphant</button><button data-m="night">Night</button><button data-m="off">Off</button></div>
+  <div class="row" style="margin-top:6px"><label>Intensity</label><input id="mi" type="range" min="0" max="1" step=".01" value=".5"></div>
+  <h2>Mix</h2>
+  <div class="row"><label>Reverb</label><select id="verb"><option>none</option><option selected>forest</option><option>room</option><option>hall</option><option>cave</option><option>underwater</option></select></div>
+  <div class="row" style="margin-top:6px"><label>Master</label><input id="vol" type="range" min="0" max="1" step=".01" value=".8"></div>
+  <div class="row" style="margin-top:8px"><div id="meter" style="flex:1"><div></div></div></div>
+  <div id="stats"></div>
+</div>
+<!--THREE-->
+<!--KITSUNE-->
+<script>
+(function(){'use strict';
+const KE=window.KitsuneEngine,$=s=>document.querySelector(s),C=hex=>new THREE.Color(hex).convertSRGBToLinear();
+/* ---------- scene ---------- */
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(2,devicePixelRatio));renderer.outputEncoding=THREE.sRGBEncoding;document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x1b2733);scene.fog=new THREE.Fog(0x1b2733,40,120);
+const camera=new THREE.PerspectiveCamera(55,1,.1,300);camera.position.set(0,9,22);
+const controls=new THREE.OrbitControls(camera,renderer.domElement);controls.target.set(0,1,0);controls.enableDamping=true;controls.maxDistance=70;controls.maxPolarAngle=1.45;
+scene.add(new THREE.HemisphereLight(C(0xbfd8ff),C(0x3a4a2a),.7));const sun=new THREE.DirectionalLight(0xfff0d8,1.2);sun.position.set(20,30,10);scene.add(sun);
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(160,160),new THREE.MeshStandardMaterial({color:C(0x4d6b3a),roughness:1}));ground.rotation.x=-Math.PI/2;scene.add(ground);
+const stream=new THREE.Mesh(new THREE.PlaneGeometry(4,90),new THREE.MeshStandardMaterial({color:C(0x2f6690),roughness:.15,metalness:.1}));stream.rotation.x=-Math.PI/2;stream.position.set(-14,.02,0);scene.add(stream);
+const fire=new THREE.Group();fire.position.set(6,0,-2);const flame=new THREE.Mesh(new THREE.ConeGeometry(.7,1.8,10),new THREE.MeshBasicMaterial({color:C(0xff8a2a)}));flame.position.y=.9;fire.add(flame);
+for(let i=0;i<5;i++){const log=new THREE.Mesh(new THREE.CylinderGeometry(.12,.12,1.6,6),new THREE.MeshStandardMaterial({color:C(0x5a3a22)}));log.rotation.z=Math.PI/2;log.rotation.y=i*1.26;log.position.y=.12;fire.add(log);}
+const glow=new THREE.PointLight(0xff9a40,2,14);glow.position.y=1.4;fire.add(glow);scene.add(fire);
+const cave=new THREE.Mesh(new THREE.SphereGeometry(9,24,12,0,Math.PI*2,0,Math.PI/2),new THREE.MeshStandardMaterial({color:C(0x2a2a30),side:THREE.DoubleSide,transparent:true,opacity:.55}));cave.position.set(18,0,-26);scene.add(cave);
+const bird=new THREE.Mesh(new THREE.SphereGeometry(.35,12,8),new THREE.MeshStandardMaterial({color:C(0xf6d05a),emissive:C(0x3a2a00)}));scene.add(bird);
+const resize=()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();};addEventListener('resize',resize);resize();
+
+/* ---------- audio ---------- */
+const audio=new KE.AudioEngine(THREE,{volume:.8});
+audio.setReverb({preset:'forest',wet:.25});
+audio.addReverbZone({center:cave.position,radius:9,fade:5,preset:'cave',wet:.55});
+const birdCue=new KE.SoundCue({variations:[KE.Synth.chime({note:'E6',decay:.8}),KE.Synth.chime({note:'G6',decay:.7}),KE.Synth.chime({note:'B6',decay:.6})],randomPitch:[.97,1.04],randomVolume:.2,maxInstances:3});
+let started=false,beds={},music=null,birdTimer=0;
+const at=()=>({position:camera.position.clone().add(new THREE.Vector3(0,-1.5,0).add(camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(4)))});
+$('#start').onclick=async()=>{if(!(await audio.unlock()))return;$('#start').textContent=audio.state==='running'?'Audio running':'Audio '+audio.state;if(started)return;started=true;
+  audio.preload(['footstep','chime','impact','whoosh','pickup','jump','splash','click',birdCue]);
+  audio.ambience('fire',{follow:fire,refDistance:2,maxDistance:40,intensity:.7});
+  audio.ambience('stream',{follow:stream,refDistance:3,maxDistance:45,intensity:.6});
+  toggleBed('forest-day');};
+document.querySelectorAll('[data-s]').forEach(b=>b.onclick=()=>{const s=b.dataset.s,p=s==='footstep'?{surface:$('#surface').value,intensity:.8}:s==='impact'?{hardness:Math.random()}:s==='thunder'?{distance:Math.random()*.8}:{};
+  audio.play(KE.Synth[s](p),s==='thunder'||s==='click'||s==='pickup'?{bus:s==='thunder'?'ambience':'ui'}:at());});
+function toggleBed(name){const btn=document.querySelector('[data-a="'+name+'"]');if(beds[name]){beds[name].stop({fade:1.5});delete beds[name];btn.classList.remove('on');return;}
+  beds[name]=audio.ambience(name,{intensity:+$('#ai').value});btn.classList.add('on');}
+document.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>toggleBed(b.dataset.a));
+$('#ai').oninput=e=>{for(const k in beds)beds[k].set('intensity',+e.target.value,.3);};
+document.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{const m=b.dataset.m;document.querySelectorAll('[data-m]').forEach(x=>x.classList.toggle('on',x===b&&m!=='off'));
+  if(m==='off'){if(music){music.stop(3);music=null;}return;}if(music)music.setMood(m,4);else music=audio.music({mood:m,intensity:+$('#mi').value});});
+$('#mi').oninput=e=>{if(music)music.intensity=+e.target.value;};
+$('#verb').onchange=e=>audio.setReverb({preset:e.target.value,transition:1.2});
+$('#vol').oninput=e=>{audio.bus('master').volume=+e.target.value;};
+
+/* ---------- loop ---------- */
+const clock=new THREE.Clock();let statT=0;
+(function frame(){requestAnimationFrame(frame);const dt=Math.min(.1,clock.getDelta()),t=clock.elapsedTime;
+  controls.update();flame.scale.setScalar(.9+.15*Math.sin(t*11)*Math.sin(t*7.3));glow.intensity=1.8+.4*Math.sin(t*13);
+  bird.position.set(Math.cos(t*.4)*14,6+Math.sin(t*.9),Math.sin(t*.4)*14);
+  if(started&&(birdTimer-=dt)<=0){birdTimer=1.2+Math.random()*2.5;audio.play(birdCue,{follow:bird,maxDistance:50});}
+  audio.update(dt,camera);renderer.render(scene,camera);
+  if((statT-=dt)<=0){statT=.25;const m=audio.meter(),s=audio.stats();$('#meter>div').style.width=Math.min(100,m.peak*100).toFixed(0)+'%';
+    $('#stats').textContent=`state ${s.state}   voices ${s.voices}/${s.maxVoices} (+${s.virtual} virtual)\nambience ${s.ambience}   music notes ${s.musicNotes}   stolen ${s.stolen}\nreverb ${s.reverbSlots.filter(x=>x.target>0).map(x=>x.preset+' '+x.target.toFixed(2)).join(', ')||'dry'}\npanning ${s.panningModel}   ${s.sampleRate} Hz`;}
+})();
+})();
+</script>
+</body>
+</html>
