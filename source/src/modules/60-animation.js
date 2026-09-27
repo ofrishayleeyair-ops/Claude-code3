@@ -133,7 +133,9 @@ function parseValue(kind,input,out,o,size,current){
       if(typeof input==='number'||typeof input==='string'){const c=new current.constructor();c.set(input);out[o]=c.r;out[o+1]=c.g;out[o+2]=c.b;break;}
       fail();break;}
     case 'quaternion':{let q=input;if(input&&input.isEuler)q=new current.constructor().setFromEuler(input);
-      else if((Array.isArray(input)||ArrayBuffer.isView(input))&&input.length===3){const e={x:+input[0],y:+input[1],z:+input[2],order:'XYZ',isEuler:true};q=new current.constructor().setFromEuler(e);}
+      else if((Array.isArray(input)||ArrayBuffer.isView(input))&&input.length===3){// Euler angles, XYZ order
+        const cx=Math.cos(input[0]/2),cy=Math.cos(input[1]/2),cz=Math.cos(input[2]/2),sx=Math.sin(input[0]/2),sy=Math.sin(input[1]/2),sz=Math.sin(input[2]/2);
+        q=[sx*cy*cz+cx*sy*sz,cx*sy*cz-sx*cy*sz,cx*cy*sz+sx*sy*cz,cx*cy*cz-sx*sy*sz];}
       if(Array.isArray(q)||ArrayBuffer.isView(q)){out[o]=+q[0];out[o+1]=+q[1];out[o+2]=+q[2];out[o+3]=+q[3];}
       else if(q&&typeof q==='object'&&'w' in q){out[o]=+q.x;out[o+1]=+q.y;out[o+2]=+q.z;out[o+3]=+q.w;}else fail();
       const l=Math.hypot(out[o],out[o+1],out[o+2],out[o+3]);if(!(l>0))fail();for(let i=0;i<4;i++)out[o+i]/=l;break;}
@@ -215,7 +217,7 @@ class Tween{
   _advance(dt){
     if(this.paused||!this._active)return;
     this.elapsed+=dt;const t=this.elapsed-this.delay;if(t<0)return;
-    if(!this.started){this.started=true;this._build();if(this.onStart)this.onStart(this.target,this);}
+    if(!this.started){this.started=true;try{this._build();}catch(e){this._active=false;throw e;}if(this.onStart)this.onStart(this.target,this);}
     const d=this.duration,cycle=d+this.repeatDelay,total=this.repeat===Infinity?Infinity:(this.repeat+1)*d+this.repeat*this.repeatDelay;
     if(t>=total){this.iteration=this.repeat;this._apply(this.yoyo&&this.repeat%2===1?0:1);this._finish();return;}
     const it=cycle>0?Math.floor(t/cycle):0;
@@ -228,7 +230,8 @@ class Tween{
   resume(){this.paused=false;return this;}
   /* Jump to a time (seconds since start, delay included) and apply it. */
   seek(time){const p=this.paused;this.paused=false;this.elapsed=0;if(!this._active){this._active=true;(this.manager||KE.tweens).add(this);}this._advance(Math.max(0,time)+1e-12);this.paused=p;return this;}
-  chain(...tweens){this._next=(this._next||[]).concat(tweens);return this;}
+  /* Start the given tweens when this one completes (ones that have not begun yet are held back until then). */
+  chain(...tweens){for(const t of tweens)if(t._active&&!t.started&&t!==this)t._active=false;this._next=(this._next||[]).concat(tweens);return this;}
   get finished(){if(!this._promise)this._promise=this.done?Promise.resolve(true):new Promise(r=>{this._resolve=r;});return this._promise;}
 }
 
@@ -380,7 +383,9 @@ class IKChain{
     const j=this.joints,n=j.length;for(let i=0;i<n;i++)this.startQ[i].copy(j[i].quaternion);
     this._read();
     if(this.total<EPS)return this.error=this.wp[n-1].distanceTo(target);
-    if(this.method==='ccd')this._ccd(target);else this._fabrik(target,pole);
+    // FABRIK with joint limits can stall against a limit; finish with CCD sweeps, which respect limits per joint
+    if(this.method==='ccd')this._ccd(target);
+    else{this._fabrik(target,pole);if(this.hasConstraints&&this.wp[n-1].distanceTo(target)>this.tolerance){const u=this.iterationsUsed;this._ccd(target);this.iterationsUsed+=u;}}
     if(this.weight<1){const w=clamp(this.weight,0,1),tmp=this._q[0];for(let i=0;i<n;i++){tmp.copy(j[i].quaternion);j[i].quaternion.copy(this.startQ[i]).slerp(tmp,w);}}
     j[0].updateMatrixWorld(true);
     return this.error=this._v[0].setFromMatrixPosition(j[n-1].matrixWorld).distanceTo(target);
@@ -803,23 +808,28 @@ class AnimStateMachine{
 
 /* ---------- procedural locomotion ---------- */
 /* Reactive stepping with gait groups. Each foot has a home point (its rest point under the moving root,
-   projected onto heightAt). While moving, the next group in the cycle lifts once its feet have drifted a
-   full stepLength from "home + lead" (lead = half a step along the velocity), so each paw sweeps about
-   stepLength relative to the hips; the landing point is predicted from velocity and yaw rate. Swing
-   duration shortens with speed (cadence rises). Idle: groups settle feet back under the hips. The body
-   follows a least-squares plane through the home ground heights (pitch/roll), leans with acceleration,
-   bobs with the swing and is lowered whenever a planted foot would be out of reach (pelvis adjust). */
+   projected onto heightAt). Planted feet stay exactly on their contact point while the body moves; a
+   foot's drift is measured from its home predicted `leadTime` ahead (velocity and yaw rate
+   extrapolated, lead = half a step), so a stance sweeps symmetrically around the hip for straight
+   walking, curves and turning in place. Groups swing one at a time in cycle order: the next group lifts
+   after drifting `trigger` steps, or earlier when a waiting group would exceed `maxDrift` before its turn.
+   Landing points are re-predicted during the first 85% of the swing; the swing follows a raised arc that
+   clears the terrain. Swing time shortens with speed. At idle, groups settle feet back under the hips.
+   The body follows a least-squares plane through the footholds (pitch/roll), leans with acceleration,
+   bobs and sways with the swing, and its height is clamped into the window where every planted foot is
+   reachable (pelvis adjust). Legs are solved with IK.twoBone (hip > knee > foot) or, for knee-less legs,
+   by aiming the hip and stretching it slightly along the leg axis (legStretch). */
 class ProceduralGait{
   constructor(THREE,opts={}){
     const {body,legs,heightAt,root=body&&body.parent,stepLength=.45,stepHeight=.12,stepDuration=.18,bodyHeight=null,lean=.15,leanAccel=8,pelvisAdjust=true,
-      forward=[0,0,-1],slopeAlign=.85,maxTilt=.6,bob=null,sway=null,breathe=.004,idleSpeed=.05,settleDistance=null,smoothing=10,footAlign=.7,toeCurl=.5,
-      reach=.985,trigger=.95,legStretch=.12,onFootPlant=null,onFootLift=null,pivot=null}=opts;
+      forward=[0,0,-1],slopeAlign=null,maxTilt=.6,bob=null,sway=null,breathe=.004,idleSpeed=.05,settleDistance=null,smoothing=10,footAlign=.7,toeCurl=.5,
+      reach=.985,minReach=null,slopeFeet=null,trigger=.95,maxDrift=1,legStretch=.15,onFootPlant=null,onFootLift=null,pivot=null}=opts;
     if(!body||!body.isObject3D)throw new TypeError('ProceduralGait needs a body Object3D');
-    if(!root||!root.isObject3D||!isDescendant(body,root))throw new Error('ProceduralGait needs a root ancestor of the body (the object your game moves)');
+    if(!root||!root.isObject3D||!isDescendant(body,root))throw new Error('ProceduralGait needs a root ancestor of the body (the object your game moves); wrap the visual parts and legs in a child Group and pass it as body');
     if(typeof heightAt!=='function')throw new TypeError('ProceduralGait needs heightAt(x,z)');
     if(!Array.isArray(legs)||!legs.length)throw new TypeError('ProceduralGait needs at least one leg');
     if(!(stepLength>0)||!(stepDuration>0)||!(stepHeight>=0))throw new RangeError('stepLength and stepDuration must be positive');
-    Object.assign(this,{THREE,body,root,heightAt,stepLength,stepHeight,stepDuration,lean,leanAccel,pelvisAdjust,slopeAlign,maxTilt,breathe,idleSpeed,smoothing,footAlign,toeCurl,reach,trigger,legStretch,onFootPlant,onFootLift});
+    Object.assign(this,{THREE,body,root,heightAt,stepLength,stepHeight,stepDuration,lean,leanAccel,pelvisAdjust,slopeAlign,maxTilt,breathe,idleSpeed,smoothing,footAlign,toeCurl,reach,minReach,slopeFeet,trigger,maxDrift,legStretch,onFootPlant,onFootLift});
     this.bob=bob==null?stepHeight*.18:bob;this.sway=sway==null?stepLength*.03:sway;this.settleDistance=settleDistance==null?stepLength*.14:settleDistance;
     const V=()=>new THREE.Vector3(),Q=()=>new THREE.Quaternion(),M=()=>new THREE.Matrix4();
     this.forward=toVec3(THREE,forward);this.forward.y=0;if(this.forward.lengthSq()<EPS)this.forward.set(0,0,-1);this.forward.normalize();
@@ -848,13 +858,16 @@ class ProceduralGait{
         footRootQ:rootQInv.clone().multiply(footQW),stretchAxis:ax,
         planted:true,contact:V(),from:V(),to:V(),pos:V(),home:V(),swingT:0,swingDur:stepDuration,swingHeight:0,err:0,plantTime:0,liftTime:0,ground:0};
     });
+    // rigid (knee-less) legs can only stretch a little, so by default they tilt the body to the actual footholds
+    const rigid=this.legs.some(l=>!l.knee);if(this.slopeFeet==null)this.slopeFeet=rigid?1:0;if(this.slopeAlign==null)this.slopeAlign=rigid?1:.85;
     this.groupCount=Math.max(...this.legs.map(l=>l.group))+1;this.nextGroup=0;this.stepCount=0;this.history=[];
     this.pivot=pivot?toVec3(THREE,pivot):this.legs.reduce((a,l)=>a.add(l.hipBody),V()).divideScalar(this.legs.length);
     this.pivotRestRoot=this.pivot.clone().applyMatrix4(this.bodyRootMat);
     this.bodyHeight=bodyHeight==null?this.pivotRestRoot.y:bodyHeight;
     this.homeCenter=this.legs.reduce((a,l)=>a.add(l.restRoot),V()).divideScalar(this.legs.length);
-    Object.assign(this,{pitch:0,roll:0,height:0,speed:0,yawRate:0,time:0,moveBlend:0,initialized:false,velocity:V(),accel:V(),lastRootPos:V(),lastYaw:0,_bob:0,_sway:0});
-    this._s={rootPos:V(),rootQ:Q(),rootScale:V(),F:V(),R:V(),vel:V(),lead:V(),tmp:V(),tmp2:V(),ft:V(),pole:V(),hip:V(),n:V(),up:new THREE.Vector3(0,1,0),
+    this.hipRadius=Math.max(...this.legs.map(l=>Math.hypot(l.restRoot.x,l.restRoot.z)));
+    Object.assign(this,{pitch:0,roll:0,height:0,speed:0,drift:0,leadTime:0,yawRate:0,time:0,moveBlend:0,initialized:false,velocity:V(),accel:V(),lastRootPos:V(),lastYaw:0,_bob:0,_sway:0});
+    this._s={rootPos:V(),rootQ:Q(),rootScale:V(),F:V(),R:V(),vel:V(),tmp:V(),tmp2:V(),ft:V(),pole:V(),hip:V(),n:V(),up:new THREE.Vector3(0,1,0),
       tilt:Q(),q1:Q(),q2:Q(),q3:Q(),pw:Q(),bq:Q(),bp:V(),piv:V(),m:M(),m2:M(),tp:V(),ts:V(),pa:V(),ra:V()};
   }
   get legCount(){return this.legs.length;}
@@ -868,9 +881,12 @@ class ProceduralGait{
   }
   _homes(){for(const l of this.legs){l.home.copy(l.restRoot).applyMatrix4(this.root.matrixWorld);l.home.y=this.heightAt(l.home.x,l.home.z);}}
   /* Where the foot should land `ahead` seconds from now: home extrapolated by velocity and yaw rate, plus lead. */
-  _predict(l,ahead,out){
+  /* Where the home point will be `ahead` seconds from now, extrapolating velocity and yaw rate. The step
+     target is this point at landing time plus the lead time, so a planted foot sweeps symmetrically
+     around its home for straight walking, curves and turning in place alike. */
+  _predict(l,ahead,out,ground=true){
     const s=this._s,a=this.yawRate*ahead,c=Math.cos(a),sn=Math.sin(a),rx=l.home.x-s.rootPos.x,rz=l.home.z-s.rootPos.z;
-    out.set(s.rootPos.x+rx*c+rz*sn+s.vel.x*ahead+s.lead.x,0,s.rootPos.z-rx*sn+rz*c+s.vel.z*ahead+s.lead.z);out.y=this.heightAt(out.x,out.z);return out;
+    out.set(s.rootPos.x+rx*c+rz*sn+s.vel.x*ahead,0,s.rootPos.z-rx*sn+rz*c+s.vel.z*ahead);if(ground)out.y=this.heightAt(out.x,out.z);return out;
   }
   _snap(){
     for(const l of this.legs){l.contact.copy(l.home);l.pos.copy(l.home);l.to.copy(l.home);l.from.copy(l.home);l.planted=true;l.swingT=0;l.err=0;}
@@ -880,52 +896,64 @@ class ProceduralGait{
     if(!(dt>0))return this;
     const s=this._s,rs=this._frame(),F=s.F;
     const yaw=Math.atan2(F.x,F.z);
-    if(!this.initialized){this.lastRootPos.copy(s.rootPos);this.lastYaw=yaw;this.velocity.set(0,0,0);this.accel.set(0,0,0);this.yawRate=0;s.vel.set(0,0,0);s.lead.set(0,0,0);this._homes();this._snap();}
+    if(!this.initialized){this.lastRootPos.copy(s.rootPos);this.lastYaw=yaw;this.velocity.set(0,0,0);this.accel.set(0,0,0);this.yawRate=0;s.vel.set(0,0,0);this._homes();this._snap();}
     if(s.rootPos.distanceTo(this.lastRootPos)>Math.max(2,this.stepLength*8)*rs){this.initialized=false;return this.update(dt,velocity);}
     if(velocity)s.vel.set(velocity.x,0,velocity.z);else s.vel.subVectors(s.rootPos,this.lastRootPos).divideScalar(dt).setY(0);
     s.tmp.subVectors(s.vel,this.velocity).divideScalar(dt);this.accel.lerp(s.tmp,1-Math.exp(-8*dt));this.velocity.copy(s.vel);
     this.yawRate=damp(this.yawRate,wrapAngle(yaw-this.lastYaw)/dt,14,dt);this.lastYaw=yaw;this.lastRootPos.copy(s.rootPos);
     this.time+=dt;const speed=this.speed=Math.hypot(s.vel.x,s.vel.z),L=this.stepLength*rs,vRef=L/(2*this.stepDuration);
-    const moving=speed>this.idleSpeed*rs||Math.abs(this.yawRate)>.35;this.moveBlend=damp(this.moveBlend,moving?1:0,5,dt);
-    const leadLen=speed>1e-6?L*.5*smooth01((speed-this.idleSpeed*rs)/(vRef*.35)):0;
-    if(leadLen>0)s.lead.copy(s.vel).multiplyScalar(leadLen/speed);else s.lead.set(0,0,0);
-    const swingDur=moving?this.stepDuration*clamp(Math.sqrt(vRef/Math.max(speed,1e-4)),.55,1):this.stepDuration*1.25;
+    // drift: how fast planted feet slide away from their homes (translation plus rotation about the root)
+    const drift=this.drift=speed+Math.abs(this.yawRate)*this.hipRadius*rs,idle=this.idleSpeed*rs;
+    const moving=drift>idle;this.moveBlend=damp(this.moveBlend,moving?1:0,5,dt);
+    const leadLen=drift>idle?L*.5*smooth01((drift-idle)/(vRef*.35)):0,leadTime=this.leadTime=leadLen>0?leadLen/drift:0;
+    const swingDur=moving?this.stepDuration*clamp(Math.sqrt(vRef/Math.max(drift,1e-4)),.55,1):this.stepDuration*1.25;
     this._homes();
     // advance swings and land
     let swinging=false;
     for(const l of this.legs){
       if(l.planted){l.pos.copy(l.contact);continue;}
       l.swingT=Math.min(1,l.swingT+dt/l.swingDur);
-      if(l.swingT<.85)this._predict(l,(1-l.swingT)*l.swingDur,l.to);
+      if(l.swingT<.85)this._predict(l,(1-l.swingT)*l.swingDur+leadTime,l.to);
       if(l.swingT>=1){l.contact.copy(l.to);l.contact.y=this.heightAt(l.to.x,l.to.z);l.planted=true;l.plantTime=this.time;l.pos.copy(l.contact);if(this.onFootPlant)this.onFootPlant(l,l.index,l.contact,this);continue;}
       swinging=true;const t=l.swingT,e=.5-.5*Math.cos(Math.PI*t),arc=l.swingHeight*Math.sin(Math.PI*Math.pow(t,.8));
       l.pos.set(l.from.x+(l.to.x-l.from.x)*e,0,l.from.z+(l.to.z-l.from.z)*e);
       const g=this.heightAt(l.pos.x,l.pos.z);l.pos.y=Math.max(l.from.y+(l.to.y-l.from.y)*e+arc,g+arc*.6);
     }
-    // step scheduling
-    const gErr=this._gErr||(this._gErr=new Float64Array(this.groupCount));gErr.fill(0);
-    for(const l of this.legs){s.tmp.copy(l.home).add(s.lead);l.err=l.planted?Math.hypot(l.contact.x-s.tmp.x,l.contact.z-s.tmp.z):0;if(l.err>gErr[l.group])gErr[l.group]=l.err;}
-    if(!swinging){let g=-1;
-      if(moving){if(gErr[this.nextGroup]>L*this.trigger)g=this.nextGroup;else for(let k=0;k<this.groupCount;k++)if(gErr[k]>L*1.8){g=k;break;}}
-      else{let best=this.settleDistance*rs;for(let k=0;k<this.groupCount;k++){const kk=(this.nextGroup+k)%this.groupCount;if(gErr[kk]>best+1e-9){best=gErr[kk];g=kk;}}}
-      if(g>=0)this._lift(g,moving,swingDur,L);}
+    // step scheduling: one group swings at a time, in cycle order. The next group lifts once it has
+    // drifted `trigger` steps, or earlier when a group further back in the queue would otherwise
+    // overstretch (drift + speed * swings still to wait > maxDrift) - this makes starts and speed-ups
+    // take short catch-up steps instead of dragging feet.
+    const G=this.groupCount,gErr=this._gErr||(this._gErr=new Float64Array(G));gErr.fill(0);
+    for(const l of this.legs){if(l.planted){this._predict(l,leadTime,s.tmp,false);l.err=Math.hypot(l.contact.x-s.tmp.x,l.contact.z-s.tmp.z);}else l.err=0;if(l.err>gErr[l.group])gErr[l.group]=l.err;}
+    if(!swinging){let g=-1;const nx=this.nextGroup;
+      if(moving){
+        if(gErr[nx]>L*this.trigger)g=nx;
+        else if(gErr[nx]>L*.2)for(let j=1;j<G;j++){const k=(nx+j)%G;if(gErr[k]+drift*swingDur*j>L*this.maxDrift){g=nx;break;}}
+        if(g<0)for(let k=0;k<G;k++)if(gErr[k]>L*1.8){g=k;break;}}
+      else{let best=this.settleDistance*rs;for(let k=0;k<G;k++){const kk=(nx+k)%G;if(gErr[kk]>best+1e-9){best=gErr[kk];g=kk;}}}
+      if(g>=0)this._lift(g,moving,swingDur+leadTime,swingDur,L);}
     this._body(dt,rs,L,vRef);
     this._legs(rs);
     return this;
   }
-  _lift(g,moving,swingDur,L){
+  _lift(g,moving,ahead,swingDur,L){
     const minErr=moving?-1:this.settleDistance*.4;
     for(const l of this.legs){if(l.group!==g||!l.planted||l.err<=minErr)continue;
-      l.planted=false;l.from.copy(l.contact);l.swingT=0;l.swingDur=swingDur;l.liftTime=this.time;this._predict(l,swingDur,l.to);
+      l.planted=false;l.from.copy(l.contact);l.swingT=0;l.swingDur=swingDur;l.liftTime=this.time;this._predict(l,ahead,l.to);
       const dist=Math.hypot(l.to.x-l.from.x,l.to.z-l.from.z);l.swingHeight=this.stepHeight*(L/this.stepLength)*clamp(dist/L,moving?.35:.25,1.25);
       if(this.onFootLift)this.onFootLift(l,l.index,l.from,this);}
     this.nextGroup=(g+1)%this.groupCount;this.stepCount++;this.history.push(g);if(this.history.length>64)this.history.shift();
   }
   _body(dt,rs,L,vRef){
     const s=this._s,F=s.F,R=s.R;
-    // least-squares plane y = a*u + b*w + c through home ground heights (u along right, w along forward)
-    let n=0,su=0,sw=0,sy=0,suu=0,sww=0,suw=0,suy=0,swy=0;
-    for(const l of this.legs){const dx=l.home.x-s.rootPos.x,dz=l.home.z-s.rootPos.z,u=dx*R.x+dz*R.z,w=dx*F.x+dz*F.z,y=l.home.y;n++;su+=u;sw+=w;sy+=y;suu+=u*u;sww+=w*w;suw+=u*w;suy+=u*y;swy+=w*y;}
+    // support points: planted contacts, swinging feet interpolated toward their landing point
+    let sup=0;for(const l of this.legs){if(l.planted)l.ground=l.contact.y;else{const e=smooth01(l.swingT);l.ground=l.from.y+(l.to.y-l.from.y)*e;}sup+=l.ground;}sup/=this.legs.length;
+    // least-squares plane y = a*u + b*w + c (u along right, w along forward) through points blended
+    // between the home ground points (smooth, anticipates slopes) and the support points (slopeFeet)
+    let n=0,su=0,sw=0,sy=0,suu=0,sww=0,suw=0,suy=0,swy=0;const kf=clamp(this.slopeFeet,0,1);
+    for(const l of this.legs){let px=l.home.x,pz=l.home.z,y=l.home.y;
+      if(kf>0){const e=l.planted?1:smooth01(l.swingT),fx=l.planted?l.contact.x:l.from.x+(l.to.x-l.from.x)*e,fz=l.planted?l.contact.z:l.from.z+(l.to.z-l.from.z)*e;px+=(fx-px)*kf;pz+=(fz-pz)*kf;y+=(l.ground-y)*kf;}
+      const dx=px-s.rootPos.x,dz=pz-s.rootPos.z,u=dx*R.x+dz*R.z,w=dx*F.x+dz*F.z;n++;su+=u;sw+=w;sy+=y;suu+=u*u;sww+=w*w;suw+=u*w;suy+=u*y;swy+=w*y;}
     const cu=suu-su*su/n,cw=sww-sw*sw/n,cuw=suw-su*sw/n,cuy=suy-su*sy/n,cwy=swy-sw*sy/n,det=cu*cw-cuw*cuw;
     let a=0,b=0;if(Math.abs(det)>1e-10*(cu*cw+1e-12)&&det>1e-12){a=(cuy*cw-cwy*cuw)/det;b=(cwy*cu-cuy*cuw)/det;}else if(cw>cu&&cw>1e-9)b=cwy/cw;else if(cu>1e-9)a=cuy/cu;
     const pitchT=clamp(Math.atan(b)*this.slopeAlign,-this.maxTilt,this.maxTilt),rollT=clamp(Math.atan(a)*this.slopeAlign,-this.maxTilt,this.maxTilt);
@@ -933,26 +961,31 @@ class ProceduralGait{
     const leanP=-this.lean*Math.tanh(aF/this.leanAccel)*mb,leanR=-this.lean*Math.tanh(aR/this.leanAccel)*mb;
     // swing bob (body dips at mid-swing, i.e. mid-stance of the supporting group) and lateral sway
     let bob=0,sway=0,cnt=0;for(const l of this.legs){if(l.planted)continue;const k=Math.sin(Math.PI*l.swingT);bob+=k;sway-=Math.sign(l.restRoot.x-this.homeCenter.x)*k;cnt++;}
-    const amp=smooth01(this.speed/(vRef*.6));if(cnt){bob/=cnt;sway/=cnt;}
+    const amp=smooth01(this.drift/(vRef*.6));if(cnt){bob/=cnt;sway/=cnt;}
     this._bob=damp(this._bob,-bob*this.bob*rs*amp,30,dt);this._sway=damp(this._sway,sway*this.sway*amp,12,dt);
-    // support height: average ground under the feet (swinging feet interpolate toward their landing height)
-    let sup=0;for(const l of this.legs){if(l.planted)l.ground=l.contact.y;else{const e=smooth01(l.swingT);l.ground=l.from.y+(l.to.y-l.from.y)*e;}sup+=l.ground;}sup/=this.legs.length;
     const breath=this.breathe*rs*Math.sin(this.time*Math.PI*2*.3)*(1-mb);
     let target=sup+this.bodyHeight*rs+this._bob+breath;
     const snap=this._snapBody;this._snapBody=false;
     if(snap){this.pitch=pitchT;this.roll=rollT;this.height=target;}
     else{this.pitch=damp(this.pitch,pitchT+leanP,this.smoothing,dt);this.roll=damp(this.roll,rollT+leanR,this.smoothing,dt);this.height=damp(this.height,target,this.smoothing*1.6,dt);}
     const tilt=s.tilt.setFromAxisAngle(this.pitchAxis,this.pitch).multiply(s.q1.setFromAxisAngle(this.forward,-this.roll));
-    // pelvis adjust: lower the pivot until every planted (or landing) foot is within reach
+    // pelvis adjust: keep the pivot inside the height window where every planted (or landing) foot is
+    // reachable: not farther than the leg's reach (lower the body) and, for legs that cannot fold much,
+    // not closer than their shortest length (raise the body). Conflicting limits meet half-way.
     const pivR=this.pivotRestRoot;
-    if(this.pelvisAdjust){let limit=Infinity;
+    if(this.pelvisAdjust){const bs=Math.max(this.bodyRootScale.x,1e-6)*rs;let hi=Infinity,lo=-Infinity,hiL=Infinity,loL=-Infinity;
       for(const l of this.legs){if(!l.planted&&l.swingT<.7)continue;
         const hr=s.hip.subVectors(l.hipBody,this.pivot).multiply(this.bodyRootScale).applyQuaternion(this.bodyRootQ).applyQuaternion(tilt);// hip offset from pivot, root space
-        const off=hr.y*rs;hr.add(pivR).applyMatrix4(this.root.matrixWorld);// approx world hip (height corrected below)
+        const off=hr.y*rs;hr.add(pivR).applyMatrix4(this.root.matrixWorld);// world hip at rest height (only x/z are used)
         const fx=l.planted?l.contact.x:l.to.x,fz=l.planted?l.contact.z:l.to.z,fy=(l.planted?l.contact.y:l.to.y)+l.footOffset*rs;
-        const hd2=(hr.x-fx)**2+(hr.z-fz)**2,reach=l.len*rs*this.reach*Math.max(this.bodyRootScale.x,1e-6),lim=fy+Math.sqrt(Math.max(0,reach*reach-hd2))-off;
-        if(lim<limit)limit=lim;}
-      if(this.height>limit)this.height=limit;}
+        const hd2=(hr.x-fx)**2+(hr.z-fz)**2,st=l.knee?0:clamp(this.legStretch,0,.9);
+        const maxR=l.len*bs*this.reach*(1+st),minR=l.len*bs*(l.knee?(this.minReach==null?.35:this.minReach):(this.minReach==null?(1-st)/this.reach:this.minReach));
+        const top=fy+Math.sqrt(Math.max(0,maxR*maxR-hd2))-off,bottom=minR*minR>hd2?fy+Math.sqrt(minR*minR-hd2)-off:-Infinity;
+        if(l.planted){if(top<hi)hi=top;if(bottom>lo)lo=bottom;}else{if(top<hiL)hiL=top;if(bottom>loL)loL=bottom;}}
+      // planted feet are hard limits; feet about to land only narrow the window the planted ones leave
+      if(lo>hi)lo=hi=(lo+hi)/2;
+      else{const l2=clamp(loL,lo,hi),h2=clamp(hiL,lo,hi);if(l2<=h2){lo=l2;hi=h2;}else lo=hi=(l2+h2)/2;}
+      this.heightMin=lo;this.heightMax=hi;if(this.height>hi)this.height=hi;else if(this.height<lo)this.height=lo;}
     // compose body transform in root space: rotate about the pivot, then place the pivot at the target height
     const dyRoot=(this.height-(s.rootPos.y+pivR.y*rs))/rs;
     const bq=s.bq.copy(tilt).multiply(this.bodyRootQ),piv=s.piv.copy(pivR);piv.y+=dyRoot;piv.addScaledVector(this.pitchAxis,this._sway);
@@ -1093,8 +1126,10 @@ class Sequencer{
 class CameraRail{
   constructor(THREE,points,opts={}){
     if(!Array.isArray(points)||points.length<2)throw new TypeError('CameraRail needs at least two points');
-    const {closed=false,tension=.5,curveType='centripetal',lookAt=null,lookAhead=.02,up=[0,1,0],roll=0,divisions=null}=opts;
-    this.THREE=THREE;this.curve=new THREE.CatmullRomCurve3(points.map(p=>toVec3(THREE,p)),closed,curveType,tension);
+    const {closed=false,tension=null,lookAt=null,lookAhead=.02,up=[0,1,0],roll=0,divisions=null}=opts;
+    // an explicit tension selects a uniform Catmull-Rom with that tension; otherwise centripetal (no cusps or loops)
+    const curveType=opts.curveType||(tension==null?'centripetal':'catmullrom');
+    this.THREE=THREE;this.curve=new THREE.CatmullRomCurve3(points.map(p=>toVec3(THREE,p)),closed,curveType,tension==null?.5:tension);
     this.curve.arcLengthDivisions=divisions||Math.max(200,points.length*60);this.curve.updateArcLengths();
     Object.assign(this,{closed,lookAt,lookAhead,roll});this.up=toVec3(THREE,up).normalize();
     this._p=new THREE.Vector3();this._q=new THREE.Vector3();this._t=new THREE.Vector3();this._look=new THREE.Vector3();
@@ -1133,7 +1168,7 @@ class CameraShake{
     const {maxYaw=.06,maxPitch=.06,maxRoll=.09,maxOffset=[.12,.12,.06],frequency=16,decay=1.1,exponent=2,seed=7,octaves=2}=opts;
     Object.assign(this,{THREE,maxYaw,maxPitch,maxRoll,frequency,decay,exponent,octaves});this.maxOffset=toVec3(THREE,maxOffset);
     this.trauma=0;this.time=0;this.noise=[0,1,2,3,4,5].map(i=>new Perlin1D(seed*31+i*1013));
-    const V=()=>new THREE.Vector3(),Q=()=>new THREE.Quaternion();this._off=V();this._rot=Q();this._pos=V();this._q=Q();this._applied=false;this._e=new THREE.Euler();this._tmp=V();
+    const V=()=>new THREE.Vector3(),Q=()=>new THREE.Quaternion();this._off=V();this._rot=Q();this._inv=Q();this._pos=V();this._q=Q();this._applied=false;this._e=new THREE.Euler();this._tmp=V();
   }
   get shake(){return Math.pow(this.trauma,this.exponent);}
   add(amount){this.trauma=clamp(this.trauma+(+amount||0),0,1);return this;}
@@ -1141,7 +1176,7 @@ class CameraShake{
   _n(i){let s=0,a=1,f=1,norm=0;for(let o=0;o<this.octaves;o++){s+=a*this.noise[i].noise(this.time*this.frequency*f+o*17.3);norm+=a;a*=.5;f*=2.1;}return s/norm;}
   /* Remove the offset applied last frame (only if the camera was not moved since). */
   restore(camera){if(!this._applied)return this;this._applied=false;
-    if(camera.position.distanceToSquared(this._pos)<1e-12&&Math.abs(camera.quaternion.dot(this._q))>1-1e-10){camera.position.sub(this._off);camera.quaternion.multiply(this._tmpInv||(this._tmpInv=new this.THREE.Quaternion()).copy(this._rot).invert());}
+    if(camera.position.distanceToSquared(this._pos)<1e-12&&Math.abs(camera.quaternion.dot(this._q))>1-1e-10){camera.position.sub(this._off);camera.quaternion.multiply(this._inv.copy(this._rot).invert());}
     return this;}
   update(dt,camera){
     this.restore(camera);this.time+=Math.max(0,dt);this.trauma=Math.max(0,this.trauma-this.decay*Math.max(0,dt));
@@ -1189,6 +1224,6 @@ Object.assign(KE,{easing,Tween,TweenManager,tweens,tween:(target,props,opts)=>ne
   IK:{twoBone,swingTwist},IKChain,LookAt,SpringChain,PoseBlender,AnimStateMachine,BlendSpace1D,BlendSpace2D,ProceduralGait,
   Sequencer,SequencerTrack,CameraRail,CameraShake,RootMotion,createBoneChain,buildSkinnedTube,
   animation:{resolvePath,delaunay}});
-KE.registerModule('animation',{provides:['easing','tween','tweens','IK','IKChain','LookAt','SpringChain','PoseBlender','AnimStateMachine','BlendSpace1D','BlendSpace2D',
-  'ProceduralGait','Sequencer','CameraRail','CameraShake','RootMotion','createBoneChain','buildSkinnedTube']});
+KE.registerModule('animation',{provides:['easing','tween','tweens','Tween','TweenManager','IK','IKChain','LookAt','SpringChain','PoseBlender','AnimStateMachine','BlendSpace1D','BlendSpace2D',
+  'ProceduralGait','Sequencer','SequencerTrack','CameraRail','CameraShake','RootMotion','createBoneChain','buildSkinnedTube']});
 })();

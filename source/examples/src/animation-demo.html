@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Animation playground · kitsune enginev3</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#9cc4e4;font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#10202c}
+  canvas{display:block;touch-action:none}
+  #hud{position:fixed;left:12px;top:12px;max-width:min(360px,calc(100vw - 24px));background:#ffffffd9;border-radius:10px;padding:10px 12px;box-shadow:0 2px 12px #0002}
+  #hud h1{font-size:14px;margin:0 0 4px}
+  #hud p{margin:0 0 6px}
+  #hud kbd{font:600 11px ui-monospace,monospace;background:#e6edf3;border:1px solid #c3d0db;border-radius:4px;padding:0 4px}
+  #stats{font:12px ui-monospace,monospace;white-space:pre;color:#2c4254}
+  #err{position:fixed;inset:0;display:none;place-items:center;background:#0b1520e6;color:#fff;font-size:15px;padding:24px;text-align:center}
+</style>
+</head>
+<body>
+<div id="hud">
+  <h1>Animation playground</h1>
+  <p><kbd>WASD</kbd> steer the fox (it wanders when idle) · <kbd>Shift</kbd> trot faster · drag to orbit</p>
+  <p><kbd>C</kbd> camera-rail flyover (sequencer) · <kbd>Space</kbd> camera shake · <kbd>P</kbd> pause</p>
+  <div id="stats"></div>
+</div>
+<div id="err"></div>
+<!--THREE-->
+<!--KITSUNE-->
+<script>
+(function(){
+'use strict';
+const T=window.THREE,KE=window.KitsuneEngine;
+const fail=msg=>{const e=document.getElementById('err');e.textContent=msg;e.style.display='grid';};
+if(!KE||!KE.ProceduralGait){fail('This page needs the kitsune engine with the animation module.');return;}
+
+/* ---------- renderer, camera, lights, terrain ---------- */
+const renderer=new T.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
+renderer.outputEncoding=T.sRGBEncoding;renderer.toneMapping=T.ACESFilmicToneMapping;renderer.toneMappingExposure=.9;renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+const lin=hex=>new T.Color(hex).convertSRGBToLinear();
+const scene=new T.Scene();scene.background=lin(0x9cc4e4);scene.fog=new T.Fog(scene.background.getHex(),14,45);
+const camera=new T.PerspectiveCamera(45,innerWidth/innerHeight,.05,200);camera.position.set(1.9,1.2,2.4);
+const railCam=new T.PerspectiveCamera(40,innerWidth/innerHeight,.05,200);
+const controls=new T.OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.maxPolarAngle=1.45;controls.minDistance=1.5;controls.maxDistance=14;
+const heightAt=(x,z)=>.32*Math.sin(x*.55+.4)+.22*Math.cos(z*.7)+.07*Math.sin((x+z)*1.9);
+{const S=80,N=260,geo=new T.PlaneGeometry(S,S,N,N);geo.rotateX(-Math.PI/2);const p=geo.attributes.position,col=new Float32Array(p.count*3),c=new T.Color();
+  for(let i=0;i<p.count;i++){const x=p.getX(i),z=p.getZ(i),y=heightAt(x,z);p.setY(i,y);const n=(Math.sin(x*3.1+Math.sin(z*1.7))*Math.cos(z*2.7-x*.4)+Math.sin(x*7.3+z*5.1)*.35)*.35+.5;
+    c.setHSL(.23+.05*n,.42+.1*n,.22+.07*(y+.5)+.07*n).convertSRGBToLinear();col[i*3]=c.r;col[i*3+1]=c.g;col[i*3+2]=c.b;}
+  geo.setAttribute('color',new T.BufferAttribute(col,3));geo.computeVertexNormals();const ground=new T.Mesh(geo,new T.MeshStandardMaterial({vertexColors:true,roughness:.95}));ground.receiveShadow=true;scene.add(ground);}
+scene.add(new T.HemisphereLight(lin(0xcfe3ff),lin(0x4a5a2e),.9));
+const sun=new T.DirectionalLight(lin(0xfff0d8),2.2);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-6,right:6,top:6,bottom:-6,near:.5,far:40});sun.shadow.bias=-.0005;sun.shadow.normalBias=.02;scene.add(sun,sun.target);
+
+/* ---------- a sphere-built fox: root > body > parts; legs hip > knee > foot; skinned tail on bones ---------- */
+const mat=(hex,r=.85)=>new T.MeshStandardMaterial({color:lin(hex),roughness:r});
+const orange=mat(0xc8642a),cream=mat(0xefdcc0,.9),ink=mat(0x2e2622,.7),eye=new T.MeshStandardMaterial({color:0x050505,roughness:.2});
+const orb=(r,m,x,y,z,sx,sy,sz,parent)=>{const o=new T.Mesh(new T.SphereGeometry(r,20,14),m);o.position.set(x,y,z);o.scale.set(sx,sy,sz);o.castShadow=true;parent.add(o);return o;};
+const root=new T.Group(),body=new T.Group();root.add(body);body.position.set(0,.5,0);scene.add(root);
+orb(.24,orange,0,.03,.05,1,1.02,1.75,body);orb(.2,cream,0,-.05,-.18,.85,.9,1.1,body);orb(.21,orange,0,.08,-.3,1,1.05,1.05,body);
+const neck=new T.Group();neck.position.set(0,.18,-.38);body.add(neck);const head=new T.Group();head.position.set(0,.17,-.06);neck.add(head);
+orb(.13,orange,0,-.05,.02,1,1,1.1,neck);orb(.17,orange,0,0,0,1.1,.95,1,head);orb(.12,cream,0,-.07,-.12,.8,.6,1,head);orb(.1,cream,0,-.06,-.2,.62,.48,1.15,head);orb(.035,ink,0,-.03,-.315,1,.8,.9,head);
+for(const x of [-.075,.075]){orb(.028,eye,x,.03,-.145,1,1.1,.7,head);const ear=new T.Mesh(new T.ConeGeometry(.07,.2,4),orange);ear.position.set(x*1.4,.19,.01);ear.rotation.set(-.15,Math.PI/4,x<0?.28:-.28);ear.castShadow=true;head.add(ear);}
+const legs=[];
+for(const x of [-.14,.14])for(const z of [-.3,.3]){const front=z<0,hip=new T.Group();hip.position.set(x,-.02,z);body.add(hip);orb(.075,orange,0,-.1,0,1,1.8,1.05,hip);
+  const knee=new T.Group();knee.position.set(0,-.21,front?.035:.05);hip.add(knee);orb(.05,orange,0,-.1,front?-.005:-.02,1,2.2,1,knee);
+  const foot=new T.Group();foot.position.set(0,-.2,front?-.02:-.035);knee.add(foot);orb(.058,ink,0,-.015,-.025,1,.6,1.35,foot);legs.push({hip,knee,foot,group:(x<0)===front?0:1});}
+const tailBase=new T.Group();tailBase.position.set(0,.06,.4);body.add(tailBase);
+const bones=KE.createBoneChain(T,6,.11,{direction:[0,.2,1],parent:tailBase});bones.forEach((b,i)=>{if(i>0)b.rotation.x=i<3?.12:-.06;});
+KE.buildSkinnedTube(T,bones,{radius:u=>.03+.075*Math.sin(Math.PI*Math.min(1,u*.8+.14)),segments:14,rings:4,color:u=>u>.8?lin(0xf2e6d0):lin(0xc8642a),material:new T.MeshStandardMaterial({vertexColors:true,roughness:.85})});
+
+/* ---------- animation systems ---------- */
+let footfalls=0;
+const gait=new KE.ProceduralGait(T,{body,legs,heightAt,stepLength:.4,stepHeight:.1,stepDuration:.2,lean:.12,onFootPlant:()=>{footfalls++;}});
+const tail=new KE.SpringChain(T,bones,{stiffness:110,damping:10,gravity:[0,-1.2,0],inertia:.9,maxAngle:.8});
+const look=new KE.LookAt(T,[neck,head],{maxYaw:.9,maxPitch:.4,speed:6});
+const shake=new KE.CameraShake(T);
+// camera-rail flyover driven by a sequencer track on a proxy object
+const railState={u:0},railPoints=[[-4,2,4],[0,1.1,3.4],[3.6,1.5,.6],[2,2.6,-3.6],[-3,1.8,-3]];let rail=null;
+// the flyover rail is laid out around wherever the fox is when it starts
+const makeRail=()=>new KE.CameraRail(T,railPoints.map(([x,y,z])=>[root.position.x+x,heightAt(root.position.x+x,root.position.z+z)+y,root.position.z+z]),{closed:true,lookAt:root});
+const seq=new KE.Sequencer(T);seq.addTrack({target:railState,path:'u',keys:[{t:0,value:0,ease:'inOutSine'},{t:9,value:1}]});
+seq.addCameraCut({t:0,camera:railCam});seq.addEvent({t:9,fn:()=>{flyover=false;}});
+let flyover=false;
+
+/* ---------- control ---------- */
+const keys=new Set();addEventListener('keydown',e=>{keys.add(e.code);if(e.code==='Space'){shake.add(.6);e.preventDefault();}if(e.code==='KeyC'){flyover=!flyover;if(flyover){rail=makeRail();seq.stop().play();}}if(e.code==='KeyP')paused=!paused;});
+addEventListener('keyup',e=>keys.delete(e.code));addEventListener('blur',()=>keys.clear());
+addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);for(const c of [camera,railCam]){c.aspect=innerWidth/innerHeight;c.updateProjectionMatrix();}});
+let yaw=0,speed=0,wander=0,paused=false,last=performance.now();const vel=new T.Vector3(),lookTarget=new T.Vector3(),prev=new T.Vector3();
+root.position.y=heightAt(0,0);controls.target.set(0,.5,0);
+const stats=document.getElementById('stats');
+renderer.setAnimationLoop(now=>{
+  const dt=Math.min(.05,(now-last)/1000);last=now;if(paused){renderer.render(scene,flyover?railCam:camera);return;}
+  // steering: WASD relative to the camera, otherwise a slow wander with pauses
+  let ix=(keys.has('KeyD')?1:0)-(keys.has('KeyA')?1:0),iz=(keys.has('KeyS')?1:0)-(keys.has('KeyW')?1:0),want=0,turn=0;
+  if(ix||iz){const cy=Math.atan2(camera.position.x-controls.target.x,camera.position.z-controls.target.z),c=Math.cos(cy),s=Math.sin(cy);const wx=ix*c+iz*s,wz=-ix*s+iz*c;
+    const targetYaw=Math.atan2(-wx,-wz);let d=targetYaw-yaw;d=Math.atan2(Math.sin(d),Math.cos(d));turn=KE.clamp(d*4,-3,3);want=keys.has('ShiftLeft')||keys.has('ShiftRight')?2.2:1.1;}
+  else{wander+=dt;const phase=wander%14;want=phase<9?1:phase<10?0:phase<13?.6:0;turn=Math.sin(wander*.35)*.5;}
+  speed=KE.damp(speed,want,4,dt);yaw+=turn*dt;vel.set(-Math.sin(yaw)*speed,0,-Math.cos(yaw)*speed);
+  prev.copy(root.position);root.position.addScaledVector(vel,dt);root.position.y=heightAt(root.position.x,root.position.z);root.rotation.y=yaw;root.updateMatrixWorld(true);
+  gait.update(dt,vel);tail.update(dt);lookTarget.copy(flyover?railCam.position:camera.position);look.update(lookTarget,dt);
+  // orbit camera follows the fox
+  camera.position.add(root.position).sub(prev);controls.target.set(root.position.x,root.position.y+.4,root.position.z);controls.update();
+  if(flyover){seq.update(dt);rail.apply(railCam,railState.u);}
+  const active=flyover?railCam:camera;shake.update(dt,active);
+  sun.position.copy(root.position).add(new T.Vector3(-4,9,3));sun.target.position.copy(root.position);sun.target.updateMatrixWorld();
+  renderer.render(scene,active);
+  stats.textContent=`speed ${gait.speed.toFixed(2)} m/s  steps ${gait.stepCount}  footfalls ${footfalls}\npitch ${(gait.pitch*57.3).toFixed(1)}°  roll ${(gait.roll*57.3).toFixed(1)}°\nplanted ${gait.legs.map(l=>l.planted?'■':'□').join(' ')}${flyover?'\ncamera rail '+(railState.u*100|0)+'%':''}`;
+});
+})();
+</script>
+</body>
+</html>
