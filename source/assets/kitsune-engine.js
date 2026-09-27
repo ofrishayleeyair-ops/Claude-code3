@@ -678,7 +678,7 @@ KE.capabilities=renderer=>{
   const has=n=>!!(renderer.extensions&&renderer.extensions.has&&renderer.extensions.has(n)),c=renderer.capabilities,gl=renderer.getContext();
   const webgl2=!!c.isWebGL2,floatRT=webgl2?has('EXT_color_buffer_float'):has('WEBGL_color_buffer_float')&&has('OES_texture_float');
   const halfRT=webgl2?(floatRT||has('EXT_color_buffer_half_float')):has('EXT_color_buffer_half_float')&&has('OES_texture_half_float');
-  return {webgl2,floatRT,halfRT,floatLinear:has('OES_texture_float_linear'),halfLinear:webgl2||has('OES_texture_half_float_linear'),
+  return {webgl2,floatRT,halfRT,floatLinear:has('OES_texture_float_linear'),floatBlend:has('EXT_float_blend'),halfLinear:webgl2||has('OES_texture_half_float_linear'),
     depthTexture:webgl2||has('WEBGL_depth_texture'),texture3D:webgl2,drawBuffers:webgl2||has('WEBGL_draw_buffers'),instancing:webgl2||has('ANGLE_instanced_arrays'),
     timerQuery:webgl2?has('EXT_disjoint_timer_query_webgl2'):has('EXT_disjoint_timer_query'),maxSamples:c.maxSamples||0,maxTextures:c.maxTextures,
     maxAnisotropy:c.getMaxAnisotropy?c.getMaxAnisotropy():1,maxTextureSize:c.maxTextureSize,precision:c.precision,
@@ -1663,7 +1663,8 @@ KE.ProbeVolume=class{
     const size=bounds.getSize(new THREE.Vector3());this.count=counts?new THREE.Vector3(...counts):new THREE.Vector3(Math.max(2,Math.round(size.x/spacing)+1),Math.max(2,Math.round(size.y/spacing)+1),Math.max(2,Math.round(size.z/spacing)+1));
     this.min=bounds.min.clone();this.step=new THREE.Vector3(size.x/(this.count.x-1),size.y/(this.count.y-1),size.z/(this.count.z-1));
     const n=this.count.x*this.count.y*this.count.z;this.total=n;const W=this.count.x*this.count.z,H=this.count.y*TEXELS,caps=KE.capabilities(renderer);
-    this.atlas=new THREE.WebGLRenderTarget(W,H,{type:caps.floatRT?THREE.FloatType:THREE.HalfFloatType,format:THREE.RGBAFormat,minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter,depthBuffer:false,stencilBuffer:false,generateMipmaps:false});
+    // The atlas is blended into (hysteresis): float32 only where EXT_float_blend allows it (about half of iOS devices lack it), else half float.
+    this.atlas=new THREE.WebGLRenderTarget(W,H,{type:caps.floatRT&&caps.floatBlend?THREE.FloatType:THREE.HalfFloatType,format:THREE.RGBAFormat,minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter,depthBuffer:false,stencilBuffer:false,generateMipmaps:false});
     this.cube=new THREE.WebGLCubeRenderTarget(faceSize,{type:caps.halfRT?THREE.HalfFloatType:THREE.UnsignedByteType,format:THREE.RGBAFormat,generateMipmaps:false,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter});
     this.cubeCamera=new THREE.CubeCamera(.1,far,this.cube);this.cubeCamera.children.forEach(c=>c.layers.set(KE.LAYERS.GI));this.cubeCamera.updateMatrixWorld(true);
     this.projectMaterial=new THREE.ShaderMaterial({vertexShader:KE.FULLSCREEN_VS,fragmentShader:PROJECT_FS,uniforms:{tCube:{value:this.cube.texture},uPosition:{value:new THREE.Vector3()},uValid:{value:1},uAlpha:{value:1},uRow0:{value:0}},depthTest:false,depthWrite:false,transparent:true,blending:THREE.CustomBlending,blendSrc:THREE.SrcAlphaFactor,blendDst:THREE.OneMinusSrcAlphaFactor,blendSrcAlpha:THREE.OneFactor,blendDstAlpha:THREE.ZeroFactor});

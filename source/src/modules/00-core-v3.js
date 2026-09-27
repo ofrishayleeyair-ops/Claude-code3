@@ -19,7 +19,7 @@ KE.capabilities=renderer=>{
   const has=n=>!!(renderer.extensions&&renderer.extensions.has&&renderer.extensions.has(n)),c=renderer.capabilities,gl=renderer.getContext();
   const webgl2=!!c.isWebGL2,floatRT=webgl2?has('EXT_color_buffer_float'):has('WEBGL_color_buffer_float')&&has('OES_texture_float');
   const halfRT=webgl2?(floatRT||has('EXT_color_buffer_half_float')):has('EXT_color_buffer_half_float')&&has('OES_texture_half_float');
-  return {webgl2,floatRT,halfRT,floatLinear:has('OES_texture_float_linear'),halfLinear:webgl2||has('OES_texture_half_float_linear'),
+  return {webgl2,floatRT,halfRT,floatLinear:has('OES_texture_float_linear'),floatBlend:has('EXT_float_blend'),halfLinear:webgl2||has('OES_texture_half_float_linear'),
     depthTexture:webgl2||has('WEBGL_depth_texture'),texture3D:webgl2,drawBuffers:webgl2||has('WEBGL_draw_buffers'),instancing:webgl2||has('ANGLE_instanced_arrays'),
     timerQuery:webgl2?has('EXT_disjoint_timer_query_webgl2'):has('EXT_disjoint_timer_query'),maxSamples:c.maxSamples||0,maxTextures:c.maxTextures,
     maxAnisotropy:c.getMaxAnisotropy?c.getMaxAnisotropy():1,maxTextureSize:c.maxTextureSize,precision:c.precision,

@@ -3,6 +3,8 @@
 const {openPage}=require('./harness.cjs');const path=require('path');const shots=process.argv.includes('--shots');
 (async()=>{
  const {page,close,outDir}=await openPage({modules:['src/modules/00-core-v3.js','src/modules/10-pipeline.js','src/modules/12-sky.js','src/modules/14-shadows.js','src/modules/18-gi.js'],viewport:{width:800,height:500},name:'gi'});
+ // --half: pretend EXT_float_blend is missing (as on many iOS devices) so the probe atlas uses half float.
+ if(process.argv.includes('--half'))await page.evaluate(()=>{const c=KitsuneEngine.capabilities;KitsuneEngine.capabilities=r=>({...c(r),floatBlend:false});});
  await page.evaluate(()=>{
   const T=THREE,KE=KitsuneEngine;KE.applyPreset('high');KE.setSettings({clouds:0});
   const renderer=new T.WebGLRenderer();renderer.setSize(innerWidth,innerHeight);renderer.outputEncoding=T.sRGBEncoding;renderer.toneMapping=T.ACESFilmicToneMapping;renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFSoftShadowMap;document.body.append(renderer.domElement);
@@ -26,7 +28,7 @@ const {openPage}=require('./harness.cjs');const path=require('path');const shots
    sample(x0,y0,x1,y1){const gl=renderer.getContext(),W=gl.drawingBufferWidth,H=gl.drawingBufferHeight,px=new Uint8Array(W*H*4);gl.readPixels(0,0,W,H,gl.RGBA,gl.UNSIGNED_BYTE,px);let r=0,g=0,b=0,n=0;for(let y=Math.floor(y0*H);y<y1*H;y++)for(let x=Math.floor(x0*W);x<x1*W;x++){const i=(y*W+x)*4;r+=px[i];g+=px[i+1];b+=px[i+2];n++;}return [r/n,g/n,b/n];}};
  });
  const test=async(name,fn)=>{await fn();console.log('PASS '+name);};const shot=async n=>{if(shots)await page.screenshot({path:path.join(outDir,'gi-'+n+'.png')});};
- await test('probe volume layout and materials',async()=>{const r=await page.evaluate(()=>({probes:t.gi.probes.length,materials:t.gi.materials.size,atlas:[t.gi.atlas.width,t.gi.atlas.height]}));if(r.probes<50||r.materials<5)throw Error(JSON.stringify(r));console.log('  ',JSON.stringify(r));});
+ await test('probe volume layout and materials',async()=>{const r=await page.evaluate(()=>({probes:t.gi.probes.length,materials:t.gi.materials.size,atlas:[t.gi.atlas.width,t.gi.atlas.height],atlasType:t.gi.atlas.texture.type===t.T.HalfFloatType?'half':'float',floatBlend:t.KE.capabilities(t.renderer).floatBlend}));if(process.argv.includes('--half')&&r.atlasType!=='half')throw Error('expected half-float atlas');if(r.probes<50||r.materials<5)throw Error(JSON.stringify(r));console.log('  ',JSON.stringify(r));});
  // Interior back-wall region and the floor strip next to the red wall, before and after GI converges.
  const measure=()=>page.evaluate(()=>{t.frame(3);return {inside:t.at(-1.2,2.2,-2.88),floorLeft:t.at(-2.5,.02,-1.2)};});
  await test('GI darkens the interior and bleeds red onto the floor',async()=>{
