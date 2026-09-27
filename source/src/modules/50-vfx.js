@@ -9,7 +9,11 @@
    attributes (capacity capped lower). Chosen automatically when float render targets fail a probe,
    when gpu:false, or when per-particle events (events.onDeath) need CPU-visible state.
    Rendering: camera-facing (optionally velocity-stretched) instanced quads or ribbons, premultiplied
-   blending (additive = alpha 0), curve LUTs, flipbooks, soft-particle depth fade, simple sun lighting. */
+   blending (additive = alpha 0), curve LUTs, flipbooks, soft-particle depth fade (KE.sceneUniforms depth,
+   translucent layer), camera offset, simple sun lighting, optional GPU bitonic depth sort.
+   The GPU path cannot see which slots are alive; a CPU-side spawn history (time buckets over the ring)
+   bounds the live slot window that is simulated/drawn and estimates the alive count.
+   Budget: capacity x KE.settings.vfx (min 64, never above the request); see references/vfx.md. */
 (function(){'use strict';
 const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
 
@@ -18,7 +22,8 @@ const MAX_BATCHES=8,CURVE_RES=128,MAX_PENDING=32,HISTORY=64,TAU=Math.PI*2;
 const SHAPES={point:0,sphere:1,hemisphere:2,box:3,cone:4,disc:5,ring:6,line:7,mesh:8};
 const DIRMODES={vector:0,shape:1,random:2,tangent:3};
 const BLENDS={additive:1,alpha:1,premultiplied:1};
-const BUILTIN_TEXTURES=['soft','spark','smoke','flare','ring','star','leaf'];
+const RIBBON_ATTRS=['aA','aB','aLS','aP','aN'],SPRITE_ATTRS=['aPosAge','aVelLife','aSlot'];
+const BUILTIN_TEXTURES=['soft','glow','spark','smoke','flare','ring','star','leaf'];
 
 /* ---------- small helpers ---------- */
 const isPlain=v=>!!v&&typeof v==='object'&&!Array.isArray(v)&&Object.getPrototypeOf(v)===Object.prototype;
@@ -30,6 +35,8 @@ const range=(v,def)=>Array.isArray(v)?[+v[0],+(v.length>1?v[1]:v[0])]:Number.isF
 function vec3(THREE,v,def){const o=new THREE.Vector3();if(v&&v.isVector3)return o.copy(v);if(Array.isArray(v))return o.set(+v[0]||0,+v[1]||0,+v[2]||0);if(Number.isFinite(v))return o.setScalar(v);return def?o.fromArray(def):o;}
 function toColor(THREE,c,linear){const col=new THREE.Color();if(c&&c.isColor){col.copy(c);return col;}col.set(c===undefined||c===null?0xffffff:c);if(linear)col.convertSRGBToLinear();return col;}
 const nextPow2=n=>{let p=1;while(p<n)p*=2;return p;};
+/* Budgeted capacity: capacity x budget, never below 64 (nor above the requested capacity). */
+const budgetCapacity=(capacity,budget)=>Math.min(capacity,Math.max(64,Math.round(capacity*budget)));
 
 /* Piecewise-linear curves. Scalar: [[t,v],...]; colour: [[t,color,alpha],...]. */
 function scalarCurve(keys,def){
@@ -258,14 +265,17 @@ const RENDER_VS=`attribute float aIndex;
  void keFetch(int slot,out vec4 P,out vec4 V){ivec2 t=ivec2(slot%uStateW,slot/uStateW);P=texelFetch(tPos,t,0);V=texelFetch(tVel,t,0);}
 #endif
 uniform sampler2D tCurves;uniform vec4 uSizeInfo;uniform vec3 uColorA;uniform vec3 uColorB;uniform vec4 uRotInfo;uniform vec4 uFlip;uniform float uFlipRandom;
-uniform float uWorldSpace;uniform float uEmissive;uniform vec4 uRibbon;
+uniform float uWorldSpace;uniform float uEmissive;uniform vec4 uRibbon;uniform float uCamOffset;
 varying vec2 vUv;varying vec4 vColor;varying float vViewZ;varying vec2 vCorner;varying float vAdd;
 #ifdef KE_FLIP_BLEND
 varying vec3 vUv2;
 #endif
 #include <fog_pars_vertex>
 ${KE.GLSL.hash}
-float keR(float slot,float i){return keHash12(vec2(slot*.618034+i*17.13,slot*.0173+i*3.71));}
+/* Per-particle random numbers: slots are reused, so the (random) lifetime is mixed in to decorrelate successive occupants. */
+vec2 kSeed;
+void keSeed(float slot,float life){kSeed=vec2(mod(slot,4096.)*1.618034,floor(slot/4096.)*7.31+fract(life*127.1)*631.7);}
+float keR(float i){return keHash12(kSeed+vec2(i*17.13,i*3.71));}
 vec4 keCurveA(float t){return texture2D(tCurves,vec2((t*${CURVE_RES-1}.+.5)/${CURVE_RES}.,.25));}
 vec4 keCurveB(float t){return texture2D(tCurves,vec2((t*${CURVE_RES-1}.+.5)/${CURVE_RES}.,.75));}
 vec4 keView(vec3 p){return uWorldSpace>.5?viewMatrix*vec4(p,1.):modelViewMatrix*vec4(p,1.);}
@@ -276,9 +286,9 @@ void keCull(){gl_Position=vec4(0.,0.,2.,1.);vColor=vec4(0.);vUv=vec2(0.);vViewZ=
 #endif
 }
 vec2 keCell(float f,vec2 uv){float cx=mod(f,uFlip.x),cy=floor(f/uFlip.x);return vec2((cx+uv.x)/uFlip.x,1.-(cy+1.-uv.y)/uFlip.y);}
-bool keStyle(float slot,float t,out float size){
- vec4 ca=keCurveA(t),cb=keCurveB(t);size=mix(uSizeInfo.x,uSizeInfo.y,keR(slot,1.))*cb.r*uSizeInfo.z;
- vColor=vec4(mix(uColorA,uColorB,keR(slot,2.))*ca.rgb*ca.rgb*uEmissive,ca.a);vAdd=cb.g;return size>1e-6&&ca.a>.002;
+bool keStyle(float slot,float life,float t,out float size){
+ keSeed(slot,life);vec4 ca=keCurveA(t),cb=keCurveB(t);size=mix(uSizeInfo.x,uSizeInfo.y,keR(1.))*cb.r*uSizeInfo.z;
+ vColor=vec4(mix(uColorA,uColorB,keR(2.))*ca.rgb*ca.rgb*uEmissive,ca.a);vAdd=cb.g;return size>1e-6&&ca.a>.002;
 }
 void main(){
 #ifdef KE_RIBBON
@@ -294,7 +304,7 @@ void main(){
  float seg=distance(A.xyz,B.xyz);
  if(!(LS.x>0.&&A.w<LS.x&&LS.y>0.&&B.w<LS.y&&B.w<=A.w+1e-4&&A.w-B.w<uRibbon.y&&seg<uRibbon.x&&seg>1e-5)){keCull();return;}
  float e=position.x;vec4 E=e<.5?A:B;float life=e<.5?LS.x:LS.y,slot=e<.5?LS.z:LS.w;vec3 tg=e<.5?B.xyz-PP:NN-A.xyz;
- float t=clamp(E.w/life,0.,1.),size;if(!keStyle(slot,t,size)){keCull();return;}
+ float t=clamp(E.w/life,0.,1.),size;if(!keStyle(slot,life,t,size)){keCull();return;}
  vec4 mvPosition=keView(E.xyz);vec3 side=cross(keViewDir(tg),mvPosition.xyz);float sl=length(side);side=sl>1e-9?side/sl:vec3(1.,0.,0.);
  mvPosition.xyz+=side*position.y*size*.5;vCorner=vec2(0.,position.y);vUv=vec2(uRibbon.z>.5?t:.5,position.y*.5+.5);
 #else
@@ -311,19 +321,21 @@ void main(){
  keFetch(si,P,V);slot=float(si);
  #endif
  if(V.w<=0.||P.w>=V.w){keCull();return;}
- float t=clamp(P.w/V.w,0.,1.),size;if(!keStyle(slot,t,size)){keCull();return;}
- vec4 mvPosition=keView(P.xyz);vec2 c=position.xy,off;float hs=size*.5;
+ float t=clamp(P.w/V.w,0.,1.),size;if(!keStyle(slot,V.w,t,size)){keCull();return;}
+ vec4 mvPosition=keView(P.xyz);vec2 c=position.xy,off;float hs=size*.5,ck=1.;
+ /* camera offset: slide the sprite toward the eye and shrink it by the same ratio (same screen footprint, less clipping into geometry) */
+ if(uCamOffset>0.){float L=length(mvPosition.xyz);ck=max(L-uCamOffset,L*.1)/max(L,1e-5);mvPosition.xyz*=ck;hs*=ck;}
  #ifdef KE_STRETCH
  vec3 vv=keViewDir(V.xyz);float sl=length(vv.xy);
- if(sl>1e-4){vec2 ax=vv.xy/sl,pp=vec2(-ax.y,ax.x);float ext=uSizeInfo.w*sl;off=ax*(c.x*(hs+ext*.5)-ext*.5)+pp*(c.y*hs);}else off=c*hs;
+ if(sl>1e-4){vec2 ax=vv.xy/sl,pp=vec2(-ax.y,ax.x);float ext=uSizeInfo.w*sl*ck;off=ax*(c.x*(hs+ext*.5)-ext*.5)+pp*(c.y*hs);}else off=c*hs;
  vCorner=c;
  #else
- float rot=mix(uRotInfo.x,uRotInfo.y,keR(slot,3.))+mix(uRotInfo.z,uRotInfo.w,keR(slot,4.))*P.w,cs=cos(rot),sn=sin(rot);
+ float rot=mix(uRotInfo.x,uRotInfo.y,keR(3.))+mix(uRotInfo.z,uRotInfo.w,keR(4.))*P.w,cs=cos(rot),sn=sin(rot);
  vec2 rc=vec2(c.x*cs-c.y*sn,c.x*sn+c.y*cs);off=rc*hs;vCorner=rc;
  #endif
  mvPosition.xy+=off;vec2 uv=c*.5+.5;
  #ifdef KE_FLIP
- float frames=uFlip.w,rnd=floor(keR(slot,5.)*frames);
+ float frames=uFlip.w,rnd=floor(keR(5.)*frames);
  float fr=uFlip.z>0.?P.w*uFlip.z+uFlipRandom*rnd:(uFlipRandom>.5?rnd:min(t*frames,frames-.001));
  float f0=mod(floor(fr),frames);vUv=keCell(f0,uv);
   #ifdef KE_FLIP_BLEND
@@ -389,6 +401,8 @@ function pixelCanvas(S,fn){
 const edge=r2=>clamp((1-r2)*4,0,1);
 const TEXTURE_PAINTERS={
   soft:()=>pixelCanvas(128,(u,v,o)=>{const r2=u*u+v*v,k=3.2;o[3]=r2>=1?0:(Math.exp(-r2*k)-Math.exp(-k))/(1-Math.exp(-k));}),
+  /* hot pinpoint core with a wide halo (fireflies, embers, light motes) */
+  glow:()=>pixelCanvas(128,(u,v,o)=>{const r2=u*u+v*v;o[3]=(Math.exp(-r2*45)+Math.exp(-r2*9)*.32+Math.exp(-r2*3)*.08)*edge(r2);}),
   spark:()=>pixelCanvas(128,(u,v,o)=>{const core=Math.exp(-u*u*2.2)*Math.exp(-v*v*20)*(1-u*u),glow=Math.exp(-u*u*1.2)*Math.exp(-v*v*5)*.25*(1-u*u);o[3]=core+glow;}),
   flare:()=>pixelCanvas(128,(u,v,o)=>{const r2=u*u+v*v,au=Math.abs(u),av=Math.abs(v),d1=Math.abs(u+v)*.7071,d2=Math.abs(u-v)*.7071;
     const rays=Math.exp(-av*55)*Math.exp(-au*2.6)+Math.exp(-au*55)*Math.exp(-av*2.6)+.35*(Math.exp(-d1*70)*Math.exp(-d2*5)+Math.exp(-d2*70)*Math.exp(-d1*5));
@@ -455,11 +469,11 @@ function normalizeConfig(THREE,cfg,linear){
   const wind=vec3(THREE,fo.wind,[0,0,0]);
   const hasBursts=bursts.length>0;
   return {
-    name:cfg.name||'emitter',capacity,gpu:cfg.gpu!==false,space:cfg.space==='local'?'local':'world',attachTo:cfg.attachTo&&cfg.attachTo.isObject3D?cfg.attachTo:null,
-    position:vec3(THREE,cfg.position,[0,0,0]),orientation:orient,autoplay:cfg.autoplay!==false,scaleWithBudget:cfg.scaleWithBudget!==false,seed:Number.isFinite(cfg.seed)?cfg.seed:(Math.random()*1e9)|0,
+    name:cfg.name||'emitter',capacity,gpu:cfg.gpu!==false,space:cfg.space==='local'?'local':'world',attachTo:cfg.attachTo&&cfg.attachTo.isObject3D?cfg.attachTo:null,attachRotation:cfg.attachRotation!==false,
+    position:vec3(THREE,cfg.position,[0,0,0]),orientation:orient,autoplay:cfg.autoplay!==false,teleportDistance:cfg.teleportDistance===undefined?20:Math.max(0,+cfg.teleportDistance||0),prewarm:Math.max(0,+cfg.prewarm||0),scaleWithBudget:cfg.scaleWithBudget!==false,seed:Number.isFinite(cfg.seed)?cfg.seed:(Math.random()*1e9)|0,
     spawn:{rate:Math.max(0,sp.rate===undefined?(hasBursts?0:50):+sp.rate||0),bursts,duration:sp.duration===undefined?Infinity:Math.max(1e-3,+sp.duration),loop:sp.loop!==false,
       rateOverDistance:Math.max(0,+sp.rateOverDistance||0),
-      shape:{type,code:SHAPES[type],radius:sh.radius===undefined?(type==='box'||type==='point'?0:.5):Math.max(0,+sh.radius),thickness:sh.surfaceOnly?0:clamp(sh.thickness===undefined?1:+sh.thickness,0,1),
+      shape:{type,code:SHAPES[type],radius:sh.radius===undefined?(type==='box'||type==='point'||type==='line'||type==='mesh'?0:.5):Math.max(0,+sh.radius),thickness:sh.surfaceOnly?0:clamp(sh.thickness===undefined?1:+sh.thickness,0,1),
         surfaceOnly:!!sh.surfaceOnly,size:vec3(THREE,sh.size,[1,1,1]),angle:sh.angle===undefined?.4:clamp(+sh.angle,0,Math.PI),width:Math.max(0,+sh.width||0),
         mesh:type==='mesh'?sh.mesh:null,samples:clamp(Math.round(sh.samples||2048),16,65536),from:vec3(THREE,sh.from,[0,0,0]),to:vec3(THREE,sh.to,[0,1,0])}},
     init:{life,speed:range(init.speed,[1,2]),dirMode,direction:dir,spread:clamp(+init.spread||0,0,Math.PI),size:range(init.size,[.1,.2]).map(v=>Math.max(0,v)),
@@ -475,7 +489,7 @@ function normalizeConfig(THREE,cfg,linear){
       blendOverLife:blending==='additive'?[[0,1],[1,1]]:blending==='alpha'?[[0,0],[1,0]]:scalarCurve(re.blendOverLife,[[0,0],[1,0]]),
       softness:Math.max(0,re.softness===undefined?.5:+re.softness||0),lit:!!re.lit,emissive:re.emissive===undefined?1:Math.max(0,+re.emissive),sortAlpha:!!re.sortAlpha,ribbons:!!re.ribbons,
       ambient:toColor(THREE,re.ambient===undefined?0x5a6070:re.ambient,linear),wrap:re.wrap===undefined?.6:clamp(+re.wrap,0,1),translucency:re.translucency===undefined?.4:Math.max(0,+re.translucency),
-      curvature:re.curvature===undefined?.7:Math.max(0,+re.curvature),order:+re.order||0,cameraFade:range(re.cameraFade,[.05,.4]),layer:Number.isInteger(re.layer)?re.layer:null,
+      curvature:re.curvature===undefined?.7:Math.max(0,+re.curvature),cameraOffset:Math.max(0,+re.cameraOffset||0),order:+re.order||0,cameraFade:range(re.cameraFade,[.05,.4]),layer:Number.isInteger(re.layer)?re.layer:null,
       ribbonMaxGap:re.ribbonMaxGap===undefined?4:Math.max(1e-3,+re.ribbonMaxGap),ribbonMaxAgeGap:re.ribbonMaxAgeGap===undefined?.5:Math.max(1e-3,+re.ribbonMaxAgeGap),ribbonUV:re.ribbonUV==='length'?'length':'profile',
       premultipliedTexture:re.premultipliedTexture},
     events:{onDeath:typeof ev.onDeath==='function'?ev.onDeath:null},
@@ -549,6 +563,7 @@ class GPUBackend{
 class CPUBackend{
   constructor(e){const cap=e.capacity;this.e=e;this.pos=new Float32Array(cap*3);this.vel=new Float32Array(cap*3);this.age=new Float32Array(cap);this.life=new Float32Array(cap);
     this.alive=0;this.rng=KE.random(e.config.seed);this._v=[0,0,0];this._c=[0,0,0];this._p=[0,0,0];this._d=[0,0,0];this.order=new Uint32Array(cap);this.keys=new Float32Array(cap);this.passes=0;
+    const keys=this.keys;this._byDepth=(a,b)=>keys[a]-keys[b];
     const THREE=e.THREE;this._dp=new THREE.Vector3();this._dv=new THREE.Vector3();this.deathInfo={position:new THREE.Vector3(),velocity:new THREE.Vector3(),index:0,emitter:e};}
   clear(){this.life.fill(0);this.age.fill(0);this.alive=0;}
   _randDir(o){const r=this.rng,z=r()*2-1,ph=r()*TAU,s=Math.sqrt(Math.max(0,1-z*z));o[0]=s*Math.cos(ph);o[1]=z;o[2]=s*Math.sin(ph);return o;}
@@ -597,8 +612,9 @@ class CPUBackend{
   simulate(dt,e){
     const f=e.frame,c=e.config,fo=c.forces,col=c.collision,cap=e.capacity,P=this.pos,V=this.vel,A=this.age,L=this.life,onDeath=c.events.onDeath;
     const gx=f.gravity.x,gy=f.gravity.y,gz=f.gravity.z,wx=f.wind.x,wy=f.wind.y,wz=f.wind.z,damp=Math.exp(-f.drag*dt),t=e.vfx.time,cu=fo.curl,cv=this._c;
-    const tw=f.toWorld.elements,tl=f.toLocal.elements,local=c.space==='local';let alive=0;
-    for(let i=0;i<cap;i++){
+    const tw=f.toWorld.elements,tl=f.toLocal.elements,local=c.space==='local',win=e.window;let alive=0;
+    /* only the ring window recorded by the spawn history can hold live particles */
+    for(let w=0;w<win.count;w++){const i=(win.base+w)%cap;
       if(L[i]<=0||A[i]>=L[i])continue;const j=i*3;let px=P[j],py=P[j+1],pz=P[j+2],vx=V[j],vy=V[j+1],vz=V[j+2],ax=gx,ay=gy,az=gz;
       if(cu){const s=cu.scale,o=t*cu.speed;curlNoise(px*s+.31*o,py*s+o,pz*s+.73*o,cv,cu.octaves);ax+=cv[0]*cu.strength;ay+=cv[1]*cu.strength;az+=cv[2]*cu.strength;}
       if(f.turb>0){const qx=px*1.37+1.3*t,qy=py*1.37+.7*t,qz=pz*1.37-t,k=2*f.turb;ax+=(noise3(qx,qy,qz)-.5)*k;ay+=(noise3(qx+17.1,qy+3.3,qz+5.7)-.5)*k;az+=(noise3(qx-7.9,qy+11.3,qz+23.1)-.5)*k;}
@@ -634,16 +650,16 @@ class CPUBackend{
       let n=0;for(let k=0;k+1<win.count;k++){const a=(win.base+k)%cap,b=(a+1)%cap;if(!ok(a,b))continue;const pa=(a-1+cap)%cap,nb=(b+1)%cap;
         for(let c=0;c<3;c++){aA[n*4+c]=P[a*3+c];aB[n*4+c]=P[b*3+c];aP[n*3+c]=k>0&&ok(pa,a)?P[pa*3+c]:P[a*3+c];aN[n*3+c]=k+2<win.count&&ok(b,nb)?P[nb*3+c]:P[b*3+c];}
         aA[n*4+3]=A[a];aB[n*4+3]=A[b];aLS[n*4]=L[a];aLS[n*4+1]=L[b];aLS[n*4+2]=a;aLS[n*4+3]=b;n++;}
-      for(const k of ['aA','aB','aLS','aP','aN']){const at=g.attributes[k];at.updateRange.offset=0;at.updateRange.count=Math.max(1,n)*at.itemSize;at.needsUpdate=true;}
+      for(const k of RIBBON_ATTRS){const at=g.attributes[k];at.updateRange.offset=0;at.updateRange.count=Math.max(1,n)*at.itemSize;at.needsUpdate=true;}
       return n;
     }
-    const order=this.order;let n=0;for(let i=0;i<cap;i++)if(L[i]>0&&A[i]<L[i])order[n++]=i;
+    const order=this.order,win=e.window;let n=0;for(let w=0;w<win.count;w++){const i=(win.base+w)%cap;if(L[i]>0&&A[i]<L[i])order[n++]=i;}
     if(e.config.render.sortAlpha&&camera&&n>1){const keys=this.keys,m=e._sortMatrix.elements;
       for(let k=0;k<n;k++){const i=order[k],x=P[i*3],y=P[i*3+1],z=P[i*3+2];keys[i]=m[2]*x+m[6]*y+m[10]*z+m[14];}
-      const sub=order.subarray(0,n);sub.sort((a,b)=>keys[a]-keys[b]);}
+      order.subarray(0,n).sort(this._byDepth);}
     const pa=g.attributes.aPosAge.array,va=g.attributes.aVelLife.array,sa=g.attributes.aSlot.array;
     for(let k=0;k<n;k++){const i=order[k];pa[k*4]=P[i*3];pa[k*4+1]=P[i*3+1];pa[k*4+2]=P[i*3+2];pa[k*4+3]=A[i];va[k*4]=V[i*3];va[k*4+1]=V[i*3+1];va[k*4+2]=V[i*3+2];va[k*4+3]=L[i];sa[k]=i;}
-    for(const k of ['aPosAge','aVelLife','aSlot']){const at=g.attributes[k];at.updateRange.offset=0;at.updateRange.count=Math.max(1,n)*at.itemSize;at.needsUpdate=true;}
+    for(const k of SPRITE_ATTRS){const at=g.attributes[k];at.updateRange.offset=0;at.updateRange.count=Math.max(1,n)*at.itemSize;at.needsUpdate=true;}
     return n;
   }
   readState(){const cap=this.e.capacity,pos=new Float32Array(cap*4),vel=new Float32Array(cap*4);
@@ -657,8 +673,8 @@ class Emitter{
     const THREE=vfx.THREE;this.vfx=vfx;this.THREE=THREE;const c=this.config=normalizeConfig(THREE,cfg,vfx.linearColors);
     this.name=c.name;this.forces=c.forces;this.attachTo=c.attachTo;this.position=c.position;this.orientation=c.orientation;this.rate=c.spawn.rate;
     const wantGPU=c.gpu&&!c.events.onDeath&&vfx.gpuSupported();
-    let cap=c.scaleWithBudget?Math.max(64,Math.round(c.capacity*vfx.budget)):c.capacity;if(!wantGPU)cap=Math.min(cap,vfx.cpuLimit);
-    this.capacity=cap;this.spawnScale=Math.min(1,cap/c.capacity);this.gpu=wantGPU;
+    let cap=c.scaleWithBudget?budgetCapacity(c.capacity,vfx.budget):c.capacity;if(!wantGPU)cap=Math.min(cap,vfx.cpuLimit);
+    this.capacity=cap;this.spawnScale=Math.min(1,cap/c.capacity);this.gpu=wantGPU;this.rng=KE.random((c.seed^0x5bd1e995)>>>0);
     this.fallbackReason=wantGPU?null:!c.gpu?'gpu:false requested':c.events.onDeath?'events.onDeath needs CPU-visible particles':'float render targets unavailable';
     /* transform and per-frame simulation parameters */
     this.matrix=new THREE.Matrix4();this.inverse=new THREE.Matrix4();this.worldPos=new THREE.Vector3();this.prevPos=new THREE.Vector3();this.worldQuat=new THREE.Quaternion();this.velocity=new THREE.Vector3();
@@ -692,11 +708,18 @@ class Emitter{
   }
   setPosition(x,y,z){if(x&&(x.isVector3||Array.isArray(x)))this._toVec(x,this.position);else this.position.set(+x||0,+y||0,+z||0);return this;}
   setRate(r){this.rate=Math.max(0,+r||0);return this;}
+  /* Simulates `seconds` immediately in coarse steps (<= 1/15 s, at most 240) so looping effects start in steady state. */
+  prewarm(seconds){seconds=Math.max(0,+seconds||0);if(!seconds||this.disposed)return this;this._computeTransform();if(!this.started){this.prevPos.copy(this.worldPos);this.started=true;}
+    const n=Math.min(240,Math.ceil(seconds*15)),h=seconds/n;for(let i=0;i<n;i++)this._step(h);return this;}
   get alive(){return this.gpu?this.history.estimate(this.time,this.frame.life.x,this.frame.life.y,this.capacity):this.backend.alive;}
   get drawn(){return this._drawn;}
   /* Debug/test helpers: full state read-back (synchronous GPU stall on the GPU path). */
   readState(){return this.backend.readState();}
   countAlive(){const s=this.readState();let n=0;for(let i=0;i<this.capacity;i++){const life=s.velocity[i*4+3];if(life>0&&s.position[i*4+3]<life)n++;}return n;}
+  /* Approximate GPU + typed-array memory owned by this emitter, in bytes. */
+  memoryBytes(){const b=this.backend,cap=this.capacity;let n=CURVE_RES*2*4;
+    if(this.gpu){n+=b.W*b.H*16*4+cap*4;if(b.sort)n+=b.sort.SW*b.sort.SH*16*2;}else n+=cap*(this.config.render.ribbons?18:9)*4*2+cap*(8*4+8);
+    if(this.meshTexture)n+=this.meshTexture.image.width*this.meshTexture.image.height*16;if(this.heightTexture)n+=this.heightTexture.image.width*this.heightTexture.image.height*16;return n;}
   get gpuState(){return this.gpu?{position:this.backend.position,velocity:this.backend.velocity,width:this.backend.W,height:this.backend.H}:null;}
   dispose(){
     if(this.disposed)return;this.disposed=true;const i=this.vfx.emitters.indexOf(this);if(i>=0)this.vfx.emitters.splice(i,1);
@@ -708,7 +731,8 @@ class Emitter{
   _resetBursts(){for(const b of this.config.spawn.bursts){b.next=b.time;b.left=b.repeat;}}
   _computeTransform(){
     if(this.attachTo){this.attachTo.updateWorldMatrix(true,false);this.attachTo.matrixWorld.decompose(this._tp,this._tq,this._ts);
-      this.worldPos.copy(this.position).applyQuaternion(this._tq).add(this._tp);this.worldQuat.copy(this._tq).multiply(this.orientation);}
+      if(this.config.attachRotation){this.worldPos.copy(this.position).applyQuaternion(this._tq).add(this._tp);this.worldQuat.copy(this._tq).multiply(this.orientation);}
+      else{this.worldPos.copy(this.position).add(this._tp);this.worldQuat.copy(this.orientation);}}
     else{this.worldPos.copy(this.position);this.worldQuat.copy(this.orientation);}
     this.matrix.compose(this.worldPos,this.worldQuat,this._one);this.inverse.copy(this.matrix).invert();
   }
@@ -736,7 +760,7 @@ class Emitter{
       if(this._heightCenter&&this.time-this._heightBakeTime<.25)return;}
     const d=this.heightData,x0=cx-size/2,z0=cz-size/2,st=size/(res-1);
     for(let iz=0;iz<res;iz++)for(let ix=0;ix<res;ix++){const h=col.heightAt(x0+ix*st,z0+iz*st);d[(iz*res+ix)*4]=Number.isFinite(h)?h:-1e9;}
-    this.heightTexture.needsUpdate=true;this._heightCenter=new this.THREE.Vector2(cx,cz);this._heightBakeTime=this.time;f.heightRegion.set(x0,z0,size,size);f.heightRes=res;
+    this.heightTexture.needsUpdate=true;(this._heightCenter||(this._heightCenter=new this.THREE.Vector2())).set(cx,cz);this._heightBakeTime=this.time;f.heightRegion.set(x0,z0,size,size);f.heightRes=res;
   }
   _buildRender(){
     const THREE=this.THREE,c=this.config,r=c.render,vfx=this.vfx,cap=this.capacity,gpu=this.gpu,ribbon=r.ribbons;
@@ -764,7 +788,7 @@ class Emitter{
       tCurves:{value:lt},map:{value:map},uSizeInfo:{value:new THREE.Vector4(c.init.size[0],c.init.size[1],smax,r.stretch)},uColorA:{value:new THREE.Vector3(c.init.color[0].r,c.init.color[0].g,c.init.color[0].b)},
       uColorB:{value:new THREE.Vector3(c.init.color[1].r,c.init.color[1].g,c.init.color[1].b)},uRotInfo:{value:new THREE.Vector4(c.init.rotation[0],c.init.rotation[1],c.init.angularVelocity[0],c.init.angularVelocity[1])},
       uFlip:{value:new THREE.Vector4(fb.cols,fb.rows,fb.fps,fb.frames)},uFlipRandom:{value:fb.random?1:0},uWorldSpace:{value:c.space==='world'?1:0},uEmissive:{value:r.emissive},
-      uRibbon:{value:new THREE.Vector4(r.ribbonMaxGap,r.ribbonMaxAgeGap,r.ribbonUV==='length'?1:0,0)},uSoftness:{value:Math.max(r.softness,1e-3)},uCameraFade:{value:new THREE.Vector2(r.cameraFade[0],r.cameraFade[1])},
+      uRibbon:{value:new THREE.Vector4(r.ribbonMaxGap,r.ribbonMaxAgeGap,r.ribbonUV==='length'?1:0,0)},uSoftness:{value:Math.max(r.softness,1e-3)},uCamOffset:{value:r.cameraOffset},uCameraFade:{value:new THREE.Vector2(r.cameraFade[0],r.cameraFade[1])},
       uLitInfo:{value:new THREE.Vector4(r.curvature,r.wrap,r.translucency,0)},uAmbient:{value:new THREE.Vector3(r.ambient.r,r.ambient.g,r.ambient.b)},
       keSceneDepth:su.keSceneDepth,keHasScene:su.keHasScene,keResolution:su.keResolution,keSunDirection:su.keSunDirection,keSunColor:su.keSunColor};
     const m=new THREE.ShaderMaterial({vertexShader:RENDER_VS,fragmentShader:RENDER_FS,uniforms,defines,transparent:true,depthWrite:false,depthTest:true,fog:true,
@@ -776,30 +800,33 @@ class Emitter{
     this.mesh=mesh;vfx.scene.add(mesh);
   }
   _schedule(dt){
-    const c=this.config,s=c.spawn,wp=this.worldPos,pp=this.prevPos,local=c.space==='local',scale=this.spawnScale;this.batchCount=0;let budget=this.capacity;
-    const add=(count,span,from,to)=>{count=Math.min(count,budget);if(count<=0||this.batchCount>=MAX_BATCHES)return;const b=this.batches[this.batchCount++];
-      b.start=this.cursor;b.count=count;b.span=span;b.seed=(this.seedCounter=(this.seedCounter+1)%16777216);b.from.copy(from);b.to.copy(to);this.cursor=(this.cursor+count)%this.capacity;budget-=count;};
+    const c=this.config,s=c.spawn,wp=this.worldPos,pp=this.prevPos,local=c.space==='local',scale=this.spawnScale;this.batchCount=0;this._budgetLeft=this.capacity;
     const origin=this._v;
     if(this.playing){
       const t0=this.elapsed,t1=t0+dt,emitting=t0<s.duration;
-      if(emitting){const moved=pp.distanceTo(wp);this.rateAcc+=(this.rate*Math.min(dt,s.duration-t0)+(moved<50?moved*s.rateOverDistance:0))*scale;
-        const n=Math.floor(this.rateAcc);this.rateAcc-=n;if(n>0){if(local){origin.set(0,0,0);add(n,dt,origin,origin);}else add(n,dt,pp,wp);}}
+      if(emitting){const moved=pp.distanceTo(wp);this.rateAcc+=(this.rate*Math.min(dt,s.duration-t0)+moved*s.rateOverDistance)*scale;
+        const n=Math.floor(this.rateAcc);this.rateAcc-=n;if(n>0){if(local){origin.set(0,0,0);this._addBatch(n,dt,origin,origin);}else this._addBatch(n,dt,pp,wp);}}
       if(local)origin.set(0,0,0);else origin.copy(wp);
-      for(const b of s.bursts){while(b.left>0&&b.next<t1&&b.next<s.duration){b.left--;const n=b.count[0]+Math.floor(Math.random()*(b.count[1]-b.count[0]+1));
-          if(Math.random()<=b.probability)add(Math.round(n*scale),0,origin,origin);if(b.cycle>0)b.next+=b.cycle;else b.left=0;}}
+      for(const b of s.bursts){while(b.left>0&&b.next<t1&&b.next<s.duration){b.left--;const n=b.count[0]+Math.floor(this.rng()*(b.count[1]-b.count[0]+1));
+          if(this.rng()<=b.probability)this._addBatch(Math.round(n*scale),0,origin,origin);if(b.cycle>0)b.next+=b.cycle;else b.left=0;}}
       this.elapsed=t1;
       if(t1>=s.duration){if(s.loop){this.elapsed=t1-s.duration*Math.floor(t1/s.duration);this._resetBursts();}else this.playing=false;}
     }
-    while(this.pendingCount&&this.batchCount<MAX_BATCHES&&budget>0){const p=this.pending[this.pendingHead];this.pendingHead=(this.pendingHead+1)%MAX_PENDING;this.pendingCount--;
+    while(this.pendingCount&&this.batchCount<MAX_BATCHES&&this._budgetLeft>0){const p=this.pending[this.pendingHead];this.pendingHead=(this.pendingHead+1)%MAX_PENDING;this.pendingCount--;
       if(p.hasPos){if(local)origin.copy(p.pos).applyMatrix4(this.inverse);else origin.copy(p.pos);}else if(local)origin.set(0,0,0);else origin.copy(wp);
-      add(Math.max(1,Math.round(p.count*scale)),0,origin,origin);}
+      this._addBatch(Math.max(1,Math.round(p.count*scale)),0,origin,origin);}
     let total=0;for(let i=0;i<this.batchCount;i++)total+=this.batches[i].count;return total;
   }
+  /* Reserve `count` ring slots (clamped to what is left of the capacity this frame) as one spawn batch.
+     span: seconds the spawns are spread over (sub-frame ages); from/to: origin at the start/end of that span. */
+  _addBatch(count,span,from,to){count=Math.min(count,this._budgetLeft);if(count<=0||this.batchCount>=MAX_BATCHES)return;const b=this.batches[this.batchCount++];
+    b.start=this.cursor;b.count=count;b.span=span;b.seed=(this.seedCounter=(this.seedCounter+1)%16777216);b.from.copy(from);b.to.copy(to);this.cursor=(this.cursor+count)%this.capacity;this._budgetLeft-=count;}
   /* Convert config into simulation-space parameters for this frame (shared by both backends). */
   _frameParams(dt){
     const c=this.config,f=this.frame,fo=c.forces,it=c.init,sh=c.spawn.shape,local=c.space==='local',q=this._q;
     if(local){f.emitRot.identity();f.toWorld.copy(this.matrix);f.toLocal.copy(this.inverse);}else{f.emitRot.setFromMatrix4(this._m.makeRotationFromQuaternion(this.worldQuat));f.toWorld.identity();f.toLocal.identity();}
-    if(!local&&dt>0)f.emitVel.copy(this.worldPos).sub(this.prevPos).multiplyScalar(it.inheritVelocity/dt);else f.emitVel.set(0,0,0);
+    if(dt>0)this.velocity.copy(this.worldPos).sub(this.prevPos).divideScalar(dt);
+    if(!local&&dt>0)f.emitVel.copy(this.velocity).multiplyScalar(it.inheritVelocity);else f.emitVel.set(0,0,0);
     if(f.emitVel.lengthSq()>1e6)f.emitVel.set(0,0,0);
     f.shape.set(sh.radius,sh.thickness,sh.angle,sh.surfaceOnly?1:0);if(sh.code===6)f.shapeSize.set(sh.width,0,0);else f.shapeSize.copy(sh.size);f.lineA.copy(sh.from);f.lineB.copy(sh.to);
     if(sh.code===8){sh.mesh.updateWorldMatrix(true,false);if(local)f.meshMatrix.multiplyMatrices(this.inverse,sh.mesh.matrixWorld);else f.meshMatrix.copy(sh.mesh.matrixWorld);f.meshInfo.set(this.meshSamples.count,this._meshTexW||1,0);}
@@ -814,15 +841,10 @@ class Emitter{
   }
   _update(dt,camera){
     const c=this.config;this._computeTransform();
-    if(!this.started){this.prevPos.copy(this.worldPos);this.started=true;}
-    this._frameParams(dt);
-    const spawned=this._schedule(dt),start=this.batchCount?this.batches[0].start:this.cursor;
-    this.time+=dt;
-    const lmax=c.init.life[1];this.history.prune(this.time,lmax);this.history.window(this.cursor,this.capacity,this.window);
-    const busy=this.gpu?(this.batchCount>0||this.window.count>0):(this.batchCount>0||this.backend.alive>0);
-    if(busy&&dt>0)this.backend.simulate(dt,this);else this.backend.passes=0;
-    this.history.add(this.time,spawned,start,Math.max(lmax/24,1/30));this.history.window(this.cursor,this.capacity,this.window);
-    this.prevPos.copy(this.worldPos);
+    /* first frame or a jump larger than teleportDistance: do not interpolate spawns (or inherit velocity) along the jump */
+    if(!this.started||(c.teleportDistance>0&&this.prevPos.distanceToSquared(this.worldPos)>c.teleportDistance*c.teleportDistance)){this.prevPos.copy(this.worldPos);
+      if(!this.started){this.started=true;if(c.prewarm>0&&this.playing)this.prewarm(c.prewarm);}}
+    this._step(dt);
     /* render state */
     const r=c.render,u=this.material.uniforms,mesh=this.mesh;
     if(c.space==='local')mesh.matrix.copy(this.matrix);else mesh.matrix.makeTranslation(this.worldPos.x,this.worldPos.y,this.worldPos.z);
@@ -835,11 +857,23 @@ class Emitter{
     else count=this.window.count>0||this.backend.alive>0?this.backend.pack(this,camera):0;
     this.geometry.instanceCount=count;this._drawn=count;mesh.visible=this.visible&&count>0;
   }
+  /* One simulation step: frame parameters, spawn scheduling, GPU/CPU integration, spawn history. */
+  _step(dt){
+    const c=this.config;this._frameParams(dt);
+    const spawned=this._schedule(dt),start=this.batchCount?this.batches[0].start:this.cursor;
+    this.time+=dt;
+    const lmax=c.init.life[1];this.history.prune(this.time,lmax);this.history.window(this.cursor,this.capacity,this.window);
+    const busy=this.gpu?(this.batchCount>0||this.window.count>0):(this.batchCount>0||this.backend.alive>0);
+    /* dt=0 (paused) still runs the passes when spawns are pending, otherwise they would be lost */
+    if(busy&&(dt>0||this.batchCount>0))this.backend.simulate(dt,this);else this.backend.passes=0;
+    this.history.add(this.time,spawned,start,Math.max(lmax/24,1/30));this.history.window(this.cursor,this.capacity,this.window);
+    this.prevPos.copy(this.worldPos);
+  }
 }
 
 /* A set of emitters driven together (e.g. layered presets such as explosion). */
 class EmitterGroup{
-  constructor(emitters){this.emitters=emitters;}
+  constructor(emitters,name='group'){this.emitters=emitters;this.name=name;}
   play(){for(const e of this.emitters)e.play();return this;}
   restart(){for(const e of this.emitters)e.restart();return this;}
   stop(o){for(const e of this.emitters)e.stop(o);return this;}
@@ -849,6 +883,8 @@ class EmitterGroup{
   setPosition(x,y,z){for(const e of this.emitters)e.setPosition(x,y,z);return this;}
   setRate(r){for(const e of this.emitters)e.setRate(r);return this;}
   get alive(){return this.emitters.reduce((s,e)=>s+e.alive,0);}
+  get drawn(){return this.emitters.reduce((s,e)=>s+e.drawn,0);}
+  countAlive(){return this.emitters.reduce((s,e)=>s+e.countAlive(),0);}
   get playing(){return this.emitters.some(e=>e.playing);}
   get capacity(){return this.emitters.reduce((s,e)=>s+e.capacity,0);}
   set visible(v){for(const e of this.emitters)e.visible=v;}
@@ -857,7 +893,7 @@ class EmitterGroup{
 }
 
 /* ---------- presets ---------- */
-/* Each preset is (opts) => config (or an array of configs for layered effects). Common opts:
+/* Each preset is (opts) => config (or {name, layers:[config,...]} for layered effects). Common opts:
    position, attachTo, scale (world size multiplier), intensity (emissive/rate multiplier), color,
    ground (collision plane height or heightAt function); anything else is deep-merged into the config. */
 function presetFactory(build){
@@ -865,17 +901,18 @@ function presetFactory(build){
     /* a preset's own position is an offset (e.g. rain starts above the given point) */
     const apply=cfg=>{if(position!==undefined){const p=position.isVector3?position.toArray():position,o=cfg.position||[0,0,0];cfg.position=[+p[0]+o[0],+p[1]+o[1],+p[2]+o[2]];}
       if(attachTo)cfg.attachTo=attachTo;return deepMerge(cfg,rest);};
-    const out=build({s:scale,k:intensity,color,ground});return Array.isArray(out)?out.map(apply):apply(out);};
+    const out=build({s:scale,k:intensity,color,ground});return out.layers?{name:out.name,layers:out.layers.map(apply)}:apply(out);};
 }
 const groundCollision=(ground,extra)=>ground===undefined||ground===null?undefined:{...(typeof ground==='function'?{heightAt:ground}:{plane:+ground}),...extra};
 const PRESETS={
-  fire:presetFactory(({s,k,color})=>({name:'fire',capacity:320,spawn:{rate:95*k,shape:{type:'disc',radius:.3*s}},
-    init:{life:[.55,1.05],speed:[.8*s,1.5*s],direction:[0,1,0],spread:.18,size:[.5*s,.75*s],color:color||[0xffffff,0xffe2b8],rotation:[0,TAU],angularVelocity:[-1.6,1.6]},
-    forces:{gravity:[0,2.3*s,0],drag:1.6,curl:{strength:2.2*s,scale:1.1/s,speed:1.4}},
-    render:{blending:'premultiplied',texture:'smoke',flipbook:{cols:2,rows:2,fps:0,random:true},emissive:1.9*k,softness:.35,
-      sizeOverLife:[[0,.55],[.15,1],[.6,.72],[1,.15]],blendOverLife:[[0,1],[.75,1],[1,.7]],
-      colorOverLife:[[0,0xfff4d0,0],[.06,0xffe49a,.9],[.25,0xffae3a,.85],[.5,0xff6414,.6],[.75,0xa82408,.3],[1,0x300804,0]]}})),
-  smoke:presetFactory(({s,k,color})=>({name:'smoke',capacity:160,spawn:{rate:11*k,shape:{type:'disc',radius:.3*s}},
+  fire:presetFactory(({s,k,color})=>({name:'fire',prewarm:.8,capacity:320,position:[0,.08*s,0],spawn:{rate:72*k,shape:{type:'disc',radius:.28*s}},
+    init:{life:[.5,.95],speed:[.5*s,1*s],direction:[0,1,0],spread:.1,size:[.5*s,.72*s],color:color||[0xffffff,0xffe4c0],rotation:[0,TAU],angularVelocity:[-1.4,1.4]},
+    /* buoyancy + an attractor above the base converge the flame into a tip; curl noise makes it lick */
+    forces:{gravity:[0,3*s,0],drag:1.8,curl:{strength:1.5*s,scale:1.4/s,speed:1.8},attractor:{position:[0,1.25*s,0],strength:1.8*s,radius:0}},
+    render:{blending:'premultiplied',texture:'smoke',flipbook:{cols:2,rows:2,fps:0,random:true},emissive:1.15*k,softness:.35*s,cameraOffset:.35*s,
+      sizeOverLife:[[0,.45],[.25,1],[.7,.62],[1,.15]],blendOverLife:[[0,1],[.5,.95],[1,.4]],
+      colorOverLife:[[0,0xffc860,0],[.08,0xffb040,.32],[.3,0xff7a1e,.42],[.55,0xe8440e,.34],[.8,0x6c1606,.18],[1,0x1a0402,0]]}})),
+  smoke:presetFactory(({s,k,color})=>({name:'smoke',prewarm:4,capacity:160,spawn:{rate:11*k,shape:{type:'disc',radius:.3*s}},
     init:{life:[3.8,5.6],speed:[.45*s,.8*s],direction:[0,1,0],spread:.28,size:[1.3*s,2.1*s],color:color||[0x8e8e92,0x6c6c70],rotation:[0,TAU],angularVelocity:[-.35,.35]},
     forces:{gravity:[0,.22*s,0],drag:.55,wind:[.3*s,0,.08*s],curl:{strength:.45*s,scale:.35/s,speed:.35}},
     render:{blending:'alpha',texture:'smoke',lit:true,sortAlpha:true,softness:1.2*s,sizeOverLife:[[0,.3],[1,1]],
@@ -885,55 +922,62 @@ const PRESETS={
     forces:{gravity:[0,-9.8*s,0],drag:.35},collision:groundCollision(ground,{bounce:.35,friction:.25}),
     render:{blending:'additive',texture:'spark',stretch:.055,emissive:5*k,softness:0,
       colorOverLife:[[0,0xffffff,1],[.25,0xffd070,1],[.65,0xff6a18,.85],[1,0x901000,0]],sizeOverLife:[[0,1],[.7,.85],[1,.4]]}})),
-  embers:presetFactory(({s,k,color})=>({name:'embers',capacity:160,spawn:{rate:14*k,shape:{type:'disc',radius:.5*s}},
-    init:{life:[2.4,4.4],speed:[.4*s,.9*s],direction:[0,1,0],spread:.4,size:[.045*s,.085*s],color:color||[0xffb050,0xff6a1a]},
+  embers:presetFactory(({s,k,color})=>({name:'embers',prewarm:3,capacity:160,spawn:{rate:14*k,shape:{type:'disc',radius:.5*s}},
+    init:{life:[2.4,4.4],speed:[.4*s,.9*s],direction:[0,1,0],spread:.4,size:[.07*s,.12*s],color:color||[0xffb050,0xff6a1a]},
     forces:{gravity:[0,.45*s,0],drag:.8,curl:{strength:1.9*s,scale:.7/s,speed:.8}},
-    render:{blending:'additive',texture:'soft',emissive:4*k,softness:.2,sizeOverLife:[[0,0],[.08,1],[.75,.8],[1,0]],
+    render:{blending:'additive',texture:'glow',emissive:4*k,softness:.2,sizeOverLife:[[0,0],[.08,1],[.75,.8],[1,0]],
       colorOverLife:[[0,0xffffff,0],[.08,0xffffff,1],[.45,0xffc080,.9],[.7,0xff9050,.5],[.8,0xffc090,.9],[1,0xff4010,0]]}})),
-  fireflies:presetFactory(({s,k,color})=>{const c=color||0xe0ff80;return {name:'fireflies',capacity:96,spawn:{rate:7*k,shape:{type:'box',size:[5*s,1.6*s,5*s]}},position:[0,1,0],
-    init:{life:[4.5,8],speed:[.05*s,.2*s],direction:'random',size:[.16*s,.24*s],color:[c,0xa8ff60]},
+  fireflies:presetFactory(({s,k,color})=>{const c=color||0xe0ff80;return {name:'fireflies',prewarm:5,capacity:96,spawn:{rate:7*k,shape:{type:'box',size:[5*s,1.6*s,5*s]}},position:[0,1*s,0],
+    init:{life:[4.5,8],speed:[.05*s,.2*s],direction:'random',size:[.3*s,.42*s],color:[c,0xa8ff60]},
     forces:{drag:.7,curl:{strength:.55*s,scale:.45/s,speed:.3}},
-    render:{blending:'additive',texture:'soft',emissive:2.2*k,softness:.3,sizeOverLife:[[0,.6],[.5,1],[1,.6]],
+    render:{blending:'additive',texture:'glow',emissive:3*k,softness:.3,sizeOverLife:[[0,.6],[.5,1],[1,.6]],
       colorOverLife:[[0,0xffffff,0],[.12,0xffffff,1],[.24,0xffffff,.12],[.38,0xffffff,1],[.52,0xffffff,.2],[.66,0xffffff,1],[.8,0xffffff,.15],[.9,0xffffff,.9],[1,0xffffff,0]]}};}),
-  magic:presetFactory(({s,k,color})=>({name:'magic',capacity:384,spawn:{rate:80*k,shape:{type:'sphere',radius:.55*s,thickness:.5}},position:[0,1.1*s,0],
-    init:{life:[1.6,2.8],speed:[.15*s,.4*s],direction:'tangent',spread:.5,size:[.05*s,.12*s],color:color||[0x60e4ff,0xb47cff]},
-    forces:{gravity:[0,.35*s,0],drag:1.2,curl:{strength:2.2*s,scale:1.2/s,speed:1},vortex:{axis:[0,1,0],strength:1.4*s,pull:.35*s},attractor:{position:[0,0,0],strength:.9*s,radius:3*s}},
-    render:{blending:'additive',texture:'soft',stretch:.05,emissive:2.8*k,softness:.3,sizeOverLife:[[0,.2],[.15,1],[.7,.7],[1,0]],
-      colorOverLife:[[0,0xffffff,0],[.1,0xffffff,1],[.5,0xc8e4ff,.8],[1,0x7050ff,0]]}})),
-  rain:presetFactory(({s,k,color,ground})=>({name:'rain',capacity:3000,spawn:{rate:1800*k,shape:{type:'box',size:[30*s,0,30*s]}},position:[0,14*s,0],
+  magic:presetFactory(({s,k,color})=>({name:'magic',prewarm:1.5,capacity:512,position:[0,.35*s,0],spawn:{rate:125*k,shape:{type:'ring',radius:.55*s,width:.08*s}},
+    /* tangential launch + vortex (swirl accel, pull toward the axis) keeps wisps orbiting; stretch turns them into arcs */
+    init:{life:[1.6,2.6],speed:[1.5*s,2.1*s],direction:'tangent',spread:.2,size:[.03*s,.06*s],color:color||[0x62e6ff,0xb07cff]},
+    forces:{gravity:[0,1*s,0],drag:.8,curl:{strength:1.1*s,scale:1.2/s,speed:.9},vortex:{axis:[0,1,0],strength:1.6*s,pull:5.5*s}},
+    render:{blending:'additive',texture:'soft',stretch:.16,emissive:3.2*k,softness:.3*s,sizeOverLife:[[0,0],[.12,1],[.7,.8],[1,0]],
+      colorOverLife:[[0,0xffffff,0],[.1,0xffffff,1],[.6,0xd0e0ff,.8],[1,0x7050ff,0]]}})),
+  rain:presetFactory(({s,k,color,ground})=>({name:'rain',prewarm:1.2,capacity:3000,spawn:{rate:1800*k,shape:{type:'box',size:[30*s,0,30*s]}},position:[0,14*s,0],
     init:{life:[1.1,1.25],speed:[13*s,16*s],direction:[.08,-1,.03],spread:.02,size:[.018*s,.028*s],color:color||0xb8d0f0},
     forces:{gravity:[0,-3*s,0]},collision:groundCollision(ground===undefined?0:ground,{die:true}),
     render:{blending:'premultiplied',texture:'spark',stretch:.05,softness:0,emissive:1.2*k,blendOverLife:[[0,.4],[1,.4]],colorOverLife:[[0,0xffffff,0],[.05,0xffffff,.55],[1,0xffffff,.55]]}})),
-  snow:presetFactory(({s,k,color,ground})=>({name:'snow',capacity:3000,spawn:{rate:170*k,shape:{type:'box',size:[30*s,0,30*s]}},position:[0,12*s,0],
+  snow:presetFactory(({s,k,color,ground})=>({name:'snow',prewarm:10,capacity:3000,spawn:{rate:170*k,shape:{type:'box',size:[30*s,0,30*s]}},position:[0,12*s,0],
     init:{life:[12,16],speed:[.6*s,1.1*s],direction:[0,-1,0],spread:.3,size:[.05*s,.1*s],color:color||0xffffff,rotation:[0,TAU]},
     forces:{gravity:[0,-.5*s,0],drag:.6,curl:{strength:.5*s,scale:.35/s,speed:.3}},collision:groundCollision(ground===undefined?0:ground,{bounce:0,friction:1,radius:.02*s}),
     render:{blending:'alpha',texture:'soft',softness:.2,colorOverLife:[[0,0xffffff,0],[.05,0xffffff,.95],[.9,0xffffff,.9],[1,0xffffff,0]]}})),
-  dust:presetFactory(({s,k,color})=>({name:'dust',capacity:96,spawn:{rate:6*k,shape:{type:'disc',radius:3*s}},position:[0,.9*s,0],
+  dust:presetFactory(({s,k,color})=>({name:'dust',prewarm:6,capacity:96,spawn:{rate:6*k,shape:{type:'disc',radius:3*s}},position:[0,.9*s,0],
     init:{life:[5,8],speed:[.05*s,.2*s],direction:'random',size:[1.6*s,2.8*s],color:color||0xb8a888,rotation:[0,TAU],angularVelocity:[-.2,.2]},
     forces:{drag:.4,wind:[.3*s,0,0],curl:{strength:.3*s,scale:.3/s,speed:.25}},
     render:{blending:'alpha',texture:'smoke',lit:true,softness:1*s,sizeOverLife:[[0,.6],[1,1]],colorOverLife:[[0,0xffffff,0],[.3,0xffffff,.09],[.7,0xffffff,.07],[1,0xffffff,0]]}})),
-  leaves:presetFactory(({s,k,color,ground})=>({name:'leaves',capacity:128,spawn:{rate:6*k,shape:{type:'box',size:[10*s,0,10*s]}},position:[0,7*s,0],
+  leaves:presetFactory(({s,k,color,ground})=>({name:'leaves',prewarm:8,capacity:128,spawn:{rate:6*k,shape:{type:'box',size:[10*s,0,10*s]}},position:[0,7*s,0],
     init:{life:[8,11],speed:[.1*s,.4*s],direction:'random',size:[.18*s,.28*s],color:color||[0xe0a030,0xb8401a],rotation:[0,TAU],angularVelocity:[-2.6,2.6]},
     forces:{gravity:[0,-1.2*s,0],drag:1.4,wind:[.5*s,0,.2*s],curl:{strength:1.6*s,scale:.5/s,speed:.6}},collision:groundCollision(ground===undefined?0:ground,{bounce:0,friction:.9,radius:.02*s}),
     render:{blending:'alpha',texture:'leaf',lit:true,translucency:.8,curvature:.35,softness:.1,colorOverLife:[[0,0xffffff,0],[.03,0xffffff,1],[.9,0xffffff,1],[1,0xffffff,0]]}})),
-  waterSplash:presetFactory(({s,k,color,ground})=>({name:'waterSplash',capacity:256,spawn:{bursts:[{time:0,count:[70,90]}],duration:.2,loop:false,shape:{type:'cone',radius:.15*s,angle:.55}},
-    init:{life:[.6,1.1],speed:[2.4*s,5*s],direction:'shape',size:[.04*s,.09*s],color:color||[0xe8f6ff,0xa8d4ff]},
-    forces:{gravity:[0,-9.8*s,0],drag:.3},collision:groundCollision(ground===undefined?0:ground,{die:true}),
-    render:{blending:'premultiplied',texture:'soft',stretch:.03,emissive:1.4*k,softness:.2,blendOverLife:[[0,.5],[1,.5]],colorOverLife:[[0,0xffffff,.9],[.7,0xffffff,.7],[1,0xffffff,0]]}})),
-  explosion:presetFactory(({s,k,color})=>[
+  waterSplash:presetFactory(({s,k,color,ground})=>({name:'waterSplash',layers:[
+    {name:'waterSplash.drops',capacity:256,spawn:{bursts:[{time:0,count:[90,120]}],duration:.2,loop:false,shape:{type:'cone',radius:.15*s,angle:.5}},
+      init:{life:[.6,1.1],speed:[2.2*s,4.8*s],direction:'shape',size:[.025*s,.05*s],color:color||[0xe8f6ff,0xb8dcff]},
+      forces:{gravity:[0,-9.8*s,0],drag:.3},collision:groundCollision(ground===undefined?0:ground,{die:true}),
+      render:{blending:'premultiplied',texture:'soft',stretch:.05,emissive:1.2*k,softness:.1,blendOverLife:[[0,.35],[1,.35]],colorOverLife:[[0,0xffffff,.95],[.7,0xffffff,.8],[1,0xffffff,0]]}},
+    {name:'waterSplash.mist',capacity:64,spawn:{bursts:[{time:0,count:[14,20]}],duration:.2,loop:false,shape:{type:'hemisphere',radius:.2*s}},
+      init:{life:[.7,1.2],speed:[.5*s,1.3*s],direction:'shape',size:[.35*s,.55*s],color:0xdde8f0,rotation:[0,TAU],angularVelocity:[-.8,.8]},
+      forces:{gravity:[0,-.5*s,0],drag:2.5},
+      render:{blending:'alpha',texture:'smoke',lit:true,softness:.4*s,cameraOffset:.2*s,sizeOverLife:[[0,.4],[1,1.4]],colorOverLife:[[0,0xffffff,0],[.1,0xffffff,.35],[1,0xffffff,0]]}}]})),
+  explosion:presetFactory(({s,k,color})=>({name:'explosion',layers:[
     {name:'explosion.fireball',capacity:128,spawn:{bursts:[{time:0,count:[55,65]}],duration:.3,loop:false,shape:{type:'sphere',radius:.35*s}},
       init:{life:[.9,1.9],speed:[1.2*s,4*s],direction:'shape',size:[1*s,1.7*s],color:color||[0xffc070,0xff9040],rotation:[0,TAU],angularVelocity:[-1,1]},
       forces:{gravity:[0,1.1*s,0],drag:2.6,curl:{strength:1.2*s,scale:.5/s,speed:.6}},
-      render:{blending:'premultiplied',texture:'smoke',emissive:3*k,softness:.6*s,sizeOverLife:[[0,.35],[.15,1],[1,1.6]],blendOverLife:[[0,1],[.25,.9],[.45,0],[1,0]],
-        colorOverLife:[[0,0xfff4d0,1],[.1,0xffb040,1],[.28,0xd04010,.9],[.45,0x3a2418,.75],[1,0x1a1818,0]]}},
+      render:{blending:'premultiplied',texture:'smoke',flipbook:{cols:2,rows:2,fps:0,random:true},emissive:2.2*k,softness:.6*s,cameraOffset:.5*s,sizeOverLife:[[0,.35],[.15,1],[1,1.6]],blendOverLife:[[0,1],[.25,.9],[.45,0],[1,0]],
+        colorOverLife:[[0,0xffe6b0,.8],[.1,0xffa840,.8],[.28,0xd04010,.75],[.45,0x3a2418,.7],[1,0x1a1818,0]]}},
     {name:'explosion.sparks',capacity:256,spawn:{bursts:[{time:0,count:[140,170]}],duration:.3,loop:false,shape:{type:'sphere',radius:.2*s}},
       init:{life:[.6,1.6],speed:[5*s,13*s],direction:'shape',size:[.03*s,.06*s],color:[0xfff0c0,0xffb050]},forces:{gravity:[0,-9.8*s,0],drag:.9},
       render:{blending:'additive',texture:'spark',stretch:.05,emissive:6*k,softness:0,colorOverLife:[[0,0xffffff,1],[.4,0xffc060,1],[1,0xff4010,0]]}},
-    {name:'explosion.smoke',capacity:64,spawn:{bursts:[{time:.12,count:[18,24]}],duration:.3,loop:false,shape:{type:'sphere',radius:.6*s}},
-      init:{life:[2.6,4.2],speed:[.5*s,1.6*s],direction:'shape',size:[1.6*s,2.6*s],color:[0x5a5654,0x3e3a38],rotation:[0,TAU],angularVelocity:[-.4,.4]},
+    /* drawn before the fireball (order -1) so the glowing core stays in front of the rising smoke */
+    {name:'explosion.smoke',capacity:64,spawn:{bursts:[{time:.18,count:[18,24]}],duration:.3,loop:false,shape:{type:'sphere',radius:.6*s}},
+      init:{life:[2.6,4.2],speed:[.5*s,1.6*s],direction:'shape',size:[1.6*s,2.6*s],color:[0x6a6664,0x4a4644],rotation:[0,TAU],angularVelocity:[-.4,.4]},
       forces:{gravity:[0,.7*s,0],drag:1.2,curl:{strength:.5*s,scale:.35/s,speed:.3}},
-      render:{blending:'alpha',texture:'smoke',lit:true,sortAlpha:true,softness:1*s,sizeOverLife:[[0,.5],[1,1.3]],colorOverLife:[[0,0xffffff,0],[.12,0xffffff,.75],[.6,0xffffff,.45],[1,0xffffff,0]]}}]),
-  portal:presetFactory(({s,k,color})=>({name:'portal',capacity:600,space:'local',orientation:[Math.PI/2,0,0],position:[0,1.4*s,0],spawn:{rate:200*k,shape:{type:'ring',radius:1.15*s,width:.06*s}},
+      render:{blending:'alpha',texture:'smoke',lit:true,sortAlpha:true,order:-1,softness:1*s,cameraOffset:.5*s,sizeOverLife:[[0,.5],[1,1.3]],colorOverLife:[[0,0xffffff,0],[.12,0xffffff,.75],[.6,0xffffff,.45],[1,0xffffff,0]]}}]})),
+  portal:presetFactory(({s,k,color})=>({name:'portal',prewarm:1.5,capacity:600,space:'local',orientation:[Math.PI/2,0,0],position:[0,1.4*s,0],spawn:{rate:200*k,shape:{type:'ring',radius:1.15*s,width:.06*s}},
     init:{life:[1.1,2],speed:[.5*s,1*s],direction:'tangent',spread:.15,size:[.04*s,.1*s],color:color||[0x9a70ff,0x50d8ff]},
     forces:{drag:.9,vortex:{axis:[0,1,0],strength:1.8*s,pull:.9*s},curl:{strength:.6*s,scale:1.2/s,speed:.8}},
     render:{blending:'additive',texture:'soft',stretch:.05,emissive:2.4*k,softness:.2,sizeOverLife:[[0,0],[.15,1],[1,.2]],colorOverLife:[[0,0xffffff,0],[.15,0xffffff,.9],[.7,0xe0d8ff,.6],[1,0x8060ff,0]]}})),
@@ -947,6 +991,8 @@ KE.VFX=class{
   constructor(THREE,renderer,scene,{budget,cpuLimit=2048,maxDt=.1,prepareCamera=true,linearColors}={}){
     if(!THREE||!renderer||!scene)throw new TypeError('new KE.VFX(THREE, renderer, scene, options)');
     this.THREE=THREE;this.renderer=renderer;this.scene=scene;this.budget=clamp(Number.isFinite(budget)?budget:(Number.isFinite(KE.settings.vfx)?KE.settings.vfx:1),0,1);
+    /* Without an explicit budget the system follows KE.settings.vfx (quality panel, fx.Budget cvar). */
+    this._offSettings=Number.isFinite(budget)||!KE.events?null:KE.events.on('settings',st=>{if(st&&Number.isFinite(st.vfx)&&st.vfx!==this.budget)this.setBudget(st.vfx);});
     this.cpuLimit=Math.max(64,Math.floor(cpuLimit));this.maxDt=maxDt;this.prepareCamera=prepareCamera;
     this.linearColors=linearColors===undefined?renderer.outputEncoding===THREE.sRGBEncoding:!!linearColors;
     this.emitters=[];this.time=0;this.frameCount=0;this.fsq=new KE.FullScreenQuad(THREE);this._textures={};this._gpuOK=undefined;this._iter=[];this._cc=new THREE.Color();this.disposed=false;
@@ -962,6 +1008,12 @@ KE.VFX=class{
     rt.dispose();m.dispose();return this._gpuOK=ok;
   }
   get gpu(){return this.gpuSupported();}
+  /* Changes the particle budget. New emitters allocate capacity x budget; existing emitters keep their
+     allocation (GPU memory is not reallocated) but scale their spawn rates to the new budget. */
+  setBudget(b){this.budget=clamp(Number.isFinite(+b)?+b:1,0,1);
+    for(const e of this.emitters)if(e.config.scaleWithBudget)e.spawnScale=Math.min(1,e.capacity/e.config.capacity,budgetCapacity(e.config.capacity,this.budget)/e.config.capacity);return this;}
+  /* Builds an emitter (or EmitterGroup for layered presets) from a named preset: vfx.create('fire', {position}). */
+  create(name,opts){const f=Object.prototype.hasOwnProperty.call(PRESETS,name)?PRESETS[name]:null;if(!f)throw new RangeError('KE.VFX: unknown preset "'+name+'"');return this.emitter(f(opts));}
   texture(name){
     if(name&&name.isTexture)return name;if(!TEXTURE_PAINTERS[name])throw new RangeError('KE.VFX: unknown texture "'+name+'"');
     if(!this._textures[name]){const t=new this.THREE.CanvasTexture(TEXTURE_PAINTERS[name]());t.premultiplyAlpha=true;t.anisotropy=1;t.userData={keVFX:name};this._textures[name]=t;}
@@ -969,7 +1021,8 @@ KE.VFX=class{
   }
   emitter(cfg){
     if(this.disposed)throw new Error('KE.VFX: disposed');
-    if(Array.isArray(cfg)){const list=[];try{for(const c of cfg)list.push(this.emitter(c));}catch(err){for(const e of list)e.dispose();throw err;}return new EmitterGroup(list);}
+    const layers=Array.isArray(cfg)?cfg:cfg&&Array.isArray(cfg.layers)?cfg.layers:null;
+    if(layers){const list=[];try{for(const c of layers)list.push(this.emitter(c));}catch(err){for(const e of list)e.dispose();throw err;}return new EmitterGroup(list,cfg.name||'group');}
     const e=new Emitter(this,cfg);this.emitters.push(e);return e;
   }
   update(dt,camera){
@@ -978,11 +1031,12 @@ KE.VFX=class{
     this.time+=dt;this.frameCount++;const list=this._iter;list.length=0;for(const e of this.emitters)list.push(e);
     for(const e of list)if(!e.disposed)e._update(dt,camera);list.length=0;
   }
-  stats(){let capacity=0,alive=0,drawn=0,gpuEmitters=0,passes=0;
-    for(const e of this.emitters){capacity+=e.capacity;alive+=e.alive;drawn+=e.drawn;if(e.gpu)gpuEmitters++;passes+=e.backend.passes;}
-    return {emitters:this.emitters.length,capacity,alive,drawn,gpu:this.gpuSupported(),gpuEmitters,cpuEmitters:this.emitters.length-gpuEmitters,simPasses:passes,budget:this.budget};}
+  stats(){let capacity=0,alive=0,drawn=0,gpuEmitters=0,passes=0,bytes=0;
+    for(const e of this.emitters){capacity+=e.capacity;alive+=e.alive;drawn+=e.drawn;if(e.gpu)gpuEmitters++;passes+=e.backend.passes;bytes+=e.memoryBytes();}
+    for(const k of Object.keys(this._textures)){const im=this._textures[k].image;bytes+=im?im.width*im.height*4:0;}
+    return {emitters:this.emitters.length,capacity,alive,drawn,gpu:this.gpuSupported(),gpuEmitters,cpuEmitters:this.emitters.length-gpuEmitters,simPasses:passes,budget:this.budget,bytes};}
   _clear(rt){const r=this.renderer,prev=r.getRenderTarget(),a=r.getClearAlpha();r.getClearColor(this._cc);r.setRenderTarget(rt);r.setClearColor(0x000000,0);r.clear(true,false,false);r.setClearColor(this._cc,a);r.setRenderTarget(prev);}
-  dispose(){if(this.disposed)return;for(const e of this.emitters.slice())e.dispose();for(const k of Object.keys(this._textures))this._textures[k].dispose();this._textures={};this.fsq.dispose();this.disposed=true;}
+  dispose(){if(this.disposed)return;if(this._offSettings){this._offSettings();this._offSettings=null;}for(const e of this.emitters.slice())e.dispose();for(const k of Object.keys(this._textures))this._textures[k].dispose();this._textures={};this.fsq.dispose();this.disposed=true;}
 };
 KE.VFX.presets=PRESETS;
 KE.VFX.Emitter=Emitter;

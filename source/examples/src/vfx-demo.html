@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kitsune VFX showcase</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#05070d;font:13px/1.4 system-ui,sans-serif;color:#dfe6f3}
+  canvas{display:block;touch-action:none}
+  #ui{position:fixed;left:12px;top:12px;right:12px;display:flex;flex-wrap:wrap;gap:6px;pointer-events:none}
+  #ui button{pointer-events:auto;border:1px solid #ffffff30;background:#0d1320cc;color:inherit;border-radius:6px;padding:5px 10px;font:inherit;cursor:pointer}
+  #ui button.on{background:#2c4a7acc;border-color:#8fb6ff80}
+  #stats{position:fixed;left:12px;bottom:12px;background:#0d1320b0;border-radius:6px;padding:6px 10px;font:12px ui-monospace,monospace;white-space:pre}
+  #hint{position:fixed;right:12px;bottom:12px;opacity:.7;max-width:46ch;text-align:right}
+  @media (max-width:900px){#hint{display:none}}
+</style>
+</head>
+<body>
+<div id="ui"></div>
+<div id="stats"></div>
+<div id="hint">Drag to orbit. Click the ground for an explosion, or water-splash mode. Toggle effects above.</div>
+<!--THREE-->
+<!--KITSUNE-->
+<script>
+(function(){'use strict';
+const T=window.THREE,KE=window.KitsuneEngine;
+const renderer=new T.WebGLRenderer({antialias:false,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
+renderer.outputEncoding=T.sRGBEncoding;renderer.toneMapping=T.ACESFilmicToneMapping;document.body.prepend(renderer.domElement);
+const scene=new T.Scene();scene.background=new T.Color(0x05070d);scene.fog=new T.FogExp2(0x05070d,.03);
+const camera=new T.PerspectiveCamera(50,innerWidth/innerHeight,.1,300);camera.position.set(0,4,13);KE.prepareCamera(camera);
+const controls=T.OrbitControls?new T.OrbitControls(camera,renderer.domElement):null;if(controls){controls.target.set(0,1.2,0);controls.enableDamping=true;controls.maxPolarAngle=1.45;controls.update();}else camera.lookAt(0,1.2,0);
+
+/* ground, a campfire ring and a little moonlight on the shared sun uniforms (lit smoke uses them) */
+const ground=new T.Mesh(new T.PlaneGeometry(120,120),new T.MeshStandardMaterial({color:0x1b1e24,roughness:.95}));ground.rotation.x=-Math.PI/2;scene.add(ground);
+scene.add(new T.HemisphereLight(0x33405a,0x0a0a0c,.6));
+const fireLight=new T.PointLight(0xff8a3a,6,10,2);fireLight.position.set(-6,1,0);scene.add(fireLight);
+const logMat=new T.MeshStandardMaterial({color:0x2a1a10,roughness:.9});
+for(let i=0;i<4;i++){const l=new T.Mesh(new T.CylinderGeometry(.09,.09,1.1,8),logMat);l.rotation.set(Math.PI/2,0,i*Math.PI/4);l.position.set(-6,.08,0);scene.add(l);}
+const U=KE.sceneUniforms(T);U.keSunColor.value.setRGB(.6,.68,.95);U.keSunDirection.value.set(-.45,.7,.55).normalize();
+
+const pipeline=KE.Pipeline&&KE.settings.pipeline?new KE.Pipeline(T,renderer,{bloomStrength:.07}):null;
+const vfx=new KE.VFX(T,renderer,scene);   // budget follows KE.settings.vfx
+
+/* toggleable looping effects */
+const effects={
+  fire:()=>[vfx.create('fire',{position:[-6,0,0]}),vfx.create('embers',{position:[-6,0,0]})],
+  sparks:()=>[vfx.create('sparks',{position:[-3,0,0],ground:0})],
+  magic:()=>[vfx.create('magic',{position:[0,0,0]})],
+  smoke:()=>[vfx.create('smoke',{position:[3,0,0]})],
+  fireflies:()=>[vfx.create('fireflies',{position:[6.5,0,0],scale:.6})],
+  portal:()=>[vfx.create('portal',{position:[0,0,-5]})],
+  snow:()=>[vfx.create('snow',{ground:0})],
+  rain:()=>[vfx.create('rain',{ground:0})],
+  leaves:()=>[vfx.create('leaves',{position:[0,0,2],ground:0})],
+  dust:()=>[vfx.create('dust',{position:[0,0,4]})],
+};
+const active={};
+const ui=document.getElementById('ui');
+function toggle(name,btn){if(active[name]){for(const e of active[name])e.dispose();delete active[name];btn.classList.remove('on');}else{active[name]=effects[name]();btn.classList.add('on');}}
+for(const name of Object.keys(effects)){const b=document.createElement('button');b.textContent=name;b.onclick=()=>toggle(name,b);ui.append(b);if(['fire','sparks','magic','smoke','fireflies'].includes(name))toggle(name,b);}
+let clickMode='explosion';
+const modeBtn=document.createElement('button');modeBtn.textContent='click: explosion';modeBtn.onclick=()=>{clickMode=clickMode==='explosion'?'waterSplash':'explosion';modeBtn.textContent='click: '+clickMode;};ui.append(modeBtn);
+
+/* a trail that loops around the scene */
+const trail=vfx.create('trail');
+
+/* click the ground: one-shot effect, disposed once it has finished */
+const oneShots=[],ray=new T.Raycaster(),ndc=new T.Vector2();let down=null;
+renderer.domElement.addEventListener('pointerdown',e=>{down=[e.clientX,e.clientY];});
+renderer.domElement.addEventListener('pointerup',e=>{if(!down||Math.hypot(e.clientX-down[0],e.clientY-down[1])>6)return;
+  ndc.set(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1);ray.setFromCamera(ndc,camera);const hit=ray.intersectObject(ground)[0];
+  if(hit)oneShots.push({fx:vfx.create(clickMode,{position:hit.point.toArray(),ground:0}),age:0});});
+
+addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();});
+const statsEl=document.getElementById('stats');let last=performance.now(),acc=0,frames=0,time=0;
+function frame(now){
+  const dt=Math.min(.1,(now-last)/1000);last=now;time+=dt;
+  trail.setPosition(Math.cos(time*.9)*4.5,1.2+Math.sin(time*2.1)*.4,Math.sin(time*.9)*2.5-1);
+  fireLight.intensity=5+Math.sin(time*23)*.6+Math.sin(time*7.3)*.8;
+  for(let i=oneShots.length-1;i>=0;i--){const o=oneShots[i];o.age+=dt;if(o.age>5){o.fx.dispose();oneShots.splice(i,1);}}
+  if(controls)controls.update();
+  vfx.update(dt,camera);
+  if(pipeline)pipeline.render(scene,camera,dt);else renderer.render(scene,camera);
+  acc+=dt;frames++;if(acc>.5){const s=vfx.stats();statsEl.textContent=`${Math.round(frames/acc)} fps  ${s.gpu?'GPU':'CPU'} simulation  budget ${s.budget}\nemitters ${s.emitters}  alive ~${s.alive}  drawn ${s.drawn}  passes ${s.simPasses}  ${(s.bytes/1048576).toFixed(1)} MB`;acc=0;frames=0;}
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
