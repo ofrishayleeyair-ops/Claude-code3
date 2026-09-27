@@ -687,16 +687,16 @@ KE.capabilities=renderer=>{
 
 /* ---------- v3 quality settings ---------- */
 const V3={
-  low:      {pipeline:false,taa:false,gtao:false,ssr:false,ssgi:false,volumetrics:false,clouds:0,dof:false,motionBlur:false,autoExposure:false,cascades:1,lod:.6, fur:false,vfx:.35,lights:2},
-  medium:   {pipeline:true, taa:true, gtao:false,ssr:false,ssgi:false,volumetrics:false,clouds:1,dof:false,motionBlur:false,autoExposure:true, cascades:2,lod:.8, fur:true, vfx:.6, lights:4},
-  high:     {pipeline:true, taa:true, gtao:true, ssr:true, ssgi:false,volumetrics:true, clouds:1,dof:false,motionBlur:false,autoExposure:true, cascades:3,lod:1,  fur:true, vfx:1,  lights:6},
-  ultra:    {pipeline:true, taa:true, gtao:true, ssr:true, ssgi:true, volumetrics:true, clouds:2,dof:false,motionBlur:false,autoExposure:true, cascades:4,lod:1.25,fur:true, vfx:1,  lights:8},
+  low:      {pipeline:false,gi:false,taa:false,gtao:false,ssr:false,ssgi:false,volumetrics:false,clouds:0,dof:false,motionBlur:false,autoExposure:false,cascades:1,lod:.6, fur:false,vfx:.35,lights:2,upscale:1},
+  medium:   {pipeline:true, gi:false,taa:true, gtao:false,ssr:false,ssgi:false,volumetrics:false,clouds:1,dof:false,motionBlur:false,autoExposure:true, cascades:2,lod:.8, fur:true, vfx:.6, lights:4,upscale:.67},
+  high:     {pipeline:true, gi:true, taa:true, gtao:true, ssr:true, ssgi:false,volumetrics:true, clouds:1,dof:false,motionBlur:false,autoExposure:true, cascades:3,lod:1,  fur:true, vfx:1,  lights:6,upscale:.8},
+  ultra:    {pipeline:true, gi:true, taa:true, gtao:true, ssr:true, ssgi:true, volumetrics:true, clouds:2,dof:false,motionBlur:false,autoExposure:true, cascades:4,lod:1.25,fur:true, vfx:1,  lights:8,upscale:1},
 };
 for(const [name,extra] of Object.entries(V3))Object.assign(KE.PRESETS[name],extra);
 KE.PRESETS.cinematic={...KE.PRESETS.ultra,preset:'cinematic',scale:1.6,shadowRes:2048,tex:512,grass:20000,view:220,aniso:16,dof:true,motionBlur:true,lod:1.5,lights:12};
 KE.PRESET_ORDER=['cinematic','ultra','high','medium','low'];
-const BOOL_V3=['pipeline','taa','gtao','ssr','ssgi','volumetrics','dof','motionBlur','autoExposure','fur'];
-const NUM_V3=[['clouds',0,2,true],['cascades',1,4,true],['lod',.25,2,false],['vfx',0,1,false],['lights',0,16,true]];
+const BOOL_V3=['pipeline','gi','taa','gtao','ssr','ssgi','volumetrics','dof','motionBlur','autoExposure','fur'];
+const NUM_V3=[['upscale',.5,1,false],['clouds',0,2,true],['cascades',1,4,true],['lod',.25,2,false],['vfx',0,1,false],['lights',0,16,true]];
 const baseSanitize=KE.sanitizeSettings;
 KE.sanitizeSettings=(raw={})=>{
   if(!raw||typeof raw!=='object'||Array.isArray(raw))raw={};
@@ -719,9 +719,9 @@ KE.settingsPanel=(onChange)=>{const el=document.createElement('div');el.classNam
   const onOff=(label,key)=>row(label,key,[[false,'Off'],[true,'On']]);
   const group=(title,html)=>`<details class="ke-group" data-g="${title}" ${open.has(title)?'open':''}><summary>${title}</summary>${html}</details>`;
   const draw=()=>{el.innerHTML=group('Quality',`<div class="ke-row"><span>Preset</span><div class="ke-seg">${KE.PRESET_ORDER.slice().reverse().map(p=>`<button type="button" data-p="${p}" class="${S().preset===p&&!S().custom?'on':''}">${p[0].toUpperCase()+p.slice(1)}</button>`).join('')}<button type="button" data-p="auto" class="${S().auto?'on':''}">Auto</button></div></div>
-      ${onOff('Tenko render pipeline (HDR)','pipeline')}${row('Render resolution','scale',[[.75,'75%'],[1,'100%'],[1.25,'125%'],[1.6,'160%']])}${row('View distance','view',[[70,'Near'],[95,'Mid'],[120,'Far'],[160,'Max'],[220,'Epic']])}`)
+      ${onOff('Tenko render pipeline (HDR)','pipeline')}${row('Render resolution','scale',[[.75,'75%'],[1,'100%'],[1.25,'125%'],[1.6,'160%']])}${row('Temporal upscaling','upscale',[[1,'Native'],[.8,'Quality'],[.67,'Balanced'],[.5,'Performance']])}${row('View distance','view',[[70,'Near'],[95,'Mid'],[120,'Far'],[160,'Max'],[220,'Epic']])}`)
     +group('Lighting and shadows',`${onOff('Shadows','shadows')}${row('Shadow resolution','shadowRes',[[1024,'Soft'],[1536,'Sharp'],[2048,'Ultra']])}${row('Shadow cascades','cascades',[[1,'1'],[2,'2'],[3,'3'],[4,'4']])}
-      ${onOff('Ambient occlusion (GTAO)','gtao')}${onOff('Screen-space global illumination','ssgi')}${row('Dynamic point lights','lights',[[0,'0'],[2,'2'],[4,'4'],[8,'8'],[12,'12']])}${onOff('Auto exposure','autoExposure')}`)
+      ${onOff('Probe global illumination','gi')}${onOff('Ambient occlusion (GTAO)','gtao')}${onOff('Screen-space global illumination','ssgi')}${row('Dynamic point lights','lights',[[0,'0'],[2,'2'],[4,'4'],[8,'8'],[12,'12']])}${onOff('Auto exposure','autoExposure')}`)
     +group('Effects',`${onOff('Temporal anti-aliasing','taa')}${onOff('Edge anti-aliasing (FXAA/MSAA)','aa')}${onOff('Bloom','bloom')}${onOff('Screen-space reflections','ssr')}${onOff('Volumetric light and fog','volumetrics')}
       ${row('Volumetric clouds','clouds',[[0,'Off'],[1,'Fast'],[2,'Rich']])}${onOff('Depth of field','dof')}${onOff('Motion blur','motionBlur')}${onOff('Weather effects','fx')}`)
     +group('World',`${row('Texture detail','tex',[[128,'Low'],[256,'High'],[512,'Ultra']])}${row('Terrain detail','terrain',[[1,'Normal'],[2,'Detailed'],[3,'Epic']])}${row('Grass','grass',[[0,'Off'],[3000,'Low'],[7000,'High'],[14000,'Ultra'],[20000,'Epic']])}
@@ -750,11 +750,11 @@ KE.cvars={
 };
 for(const [name,key,help,type,min,max,scale=1] of [
   ['r.TAA','taa','Temporal anti-aliasing','boolean'],['r.GTAO','gtao','Ground-truth ambient occlusion','boolean'],['r.SSR','ssr','Screen-space reflections','boolean'],
-  ['r.SSGI','ssgi','Screen-space global illumination','boolean'],['r.Bloom','bloom','Bloom','boolean'],['r.Shadows','shadows','Sun shadows','boolean'],
+  ['r.SSGI','ssgi','Screen-space global illumination','boolean'],['r.GI','gi','Probe-volume dynamic diffuse GI','boolean'],['r.Bloom','bloom','Bloom','boolean'],['r.Shadows','shadows','Sun shadows','boolean'],
   ['r.Shadow.Cascades','cascades','Cascaded shadow map count','number',1,4],['r.Shadow.Resolution','shadowRes','Shadow map resolution','number',512,2048],
   ['r.Volumetrics','volumetrics','Light shafts and height fog','boolean'],['r.Clouds','clouds','Cloud quality 0-2','number',0,2],['r.DOF','dof','Depth of field','boolean'],
   ['r.MotionBlur','motionBlur','Camera motion blur','boolean'],['r.AutoExposure','autoExposure','Eye adaptation','boolean'],['r.Pipeline','pipeline','HDR post pipeline','boolean'],
-  ['r.ScreenPercentage','scale','Render scale percent','number',50,200,100],['r.ViewDistance','view','Fog/view distance','number',30,300],['r.LODBias','lod','Geometry detail multiplier','number',.25,2],
+  ['r.ScreenPercentage','scale','Render scale percent','number',50,200,100],['r.Upscale','upscale','Internal resolution fraction reconstructed by TAA (0.5-1)','number',.5,1],['r.ViewDistance','view','Fog/view distance','number',30,300],['r.LODBias','lod','Geometry detail multiplier','number',.25,2],
   ['r.Lights','lights','Max dynamic point lights','number',0,16],['foliage.Grass','grass','Grass blade budget','number',0,20000],['fx.Budget','vfx','Particle budget 0-1','number',0,1],['r.Fur','fur','Shell fur','boolean']])
   KE.cvars.register(name,{help,type,min,max,get:()=>type==='number'?KE.settings[key]*scale:KE.settings[key],set:v=>{KE.settings.auto=false;KE.settings.custom=true;KE.setSettings({[key]:type==='number'?v/scale:v});}});
 KE.cvars.register('t.MaxFPS',{value:0,type:'number',min:0,max:240,help:'Frame cap for KE.Loop users that honor it (0 = uncapped)'});
@@ -802,7 +802,9 @@ KE.GPUTimer=class{
 KE.sceneUniforms=THREE=>{if(KE._sceneUniforms)return KE._sceneUniforms;return KE._sceneUniforms={
   keSceneColor:{value:null},keSceneDepth:{value:null},keHasScene:{value:0},keResolution:{value:new THREE.Vector2(1,1)},keNearFar:{value:new THREE.Vector2(.1,1000)},
   keInvProjection:{value:new THREE.Matrix4()},keProjection:{value:new THREE.Matrix4()},keViewMatrix:{value:new THREE.Matrix4()},keInvView:{value:new THREE.Matrix4()},
-  keTime:{value:0},keSunDirection:{value:new THREE.Vector3(.3,.8,.2).normalize()},keSunColor:{value:new THREE.Color(1,1,1)},keExposure:{value:1}};};
+  keTime:{value:0},keFrame:{value:0},keSSR:{value:1},keSunDirection:{value:new THREE.Vector3(.3,.8,.2).normalize()},keSunColor:{value:new THREE.Color(1,1,1)},keExposure:{value:1}};};
+/* GLSL declarations matching KE.sceneUniforms; merge the uniform objects into a material with Object.assign(material.uniforms, KE.sceneUniforms(THREE)). */
+KE.GLSL_SCENE_DECL='uniform sampler2D keSceneColor;uniform sampler2D keSceneDepth;uniform float keHasScene;uniform vec2 keResolution;uniform vec2 keNearFar;uniform mat4 keInvProjection;uniform mat4 keProjection;uniform mat4 keViewMatrix;uniform mat4 keInvView;uniform float keTime;uniform float keFrame;uniform float keSSR;uniform vec3 keSunDirection;uniform vec3 keSunColor;uniform float keExposure;';
 
 /* ---------- full-screen pass helper ---------- */
 KE.FullScreenQuad=class{
@@ -839,4 +841,949 @@ vec3 keYCoCgToRGB(vec3 c){return vec3(c.x+c.y-c.z,c.x+c.z,c.x-c.y-c.z);}`,
 vec3 keViewPosFromDepth(vec2 uv,float d,mat4 invProj){vec4 p=invProj*vec4(vec3(uv,d)*2.-1.,1.);return p.xyz/p.w;}`
 };
 KE.GLSL.all=KE.GLSL.hash+'\n'+KE.GLSL.noise+'\n'+KE.GLSL.color+'\n'+KE.GLSL.depth;
+})();
+
+/* ===== module: 10-pipeline.js ===== */
+/* KE.Pipeline — the Tenko HDR frame pipeline.
+   Frame: jittered opaque pass → scene colour/depth copies (shared through KE.sceneUniforms) → translucent layer
+   (water, soft particles, refraction) → GTAO + screen-space indirect light (half res, denoised) → lighting
+   composite with exponential height fog and sun inscattering → light shafts → temporal anti-aliasing with
+   depth reprojection and variance clipping → depth of field → motion blur → multi-mip bloom → eye adaptation
+   → ACES tone mapping, white balance, colour grading and lens effects (→ FXAA when TAA is off).
+   All targets are sized from the renderer's drawing buffer and rebuilt automatically when it changes. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+const clamp=KE.clamp,halton=(i,b)=>{let f=1,r=0;while(i>0){f/=b;r+=f*(i%b);i=Math.floor(i/b);}return r;};
+const TRANSLUCENT_BIT=1<<KE.LAYERS.TRANSLUCENT;
+
+/* Shared GLSL for passes that reconstruct geometry from the hardware depth buffer. */
+const DEPTH_GLSL=`uniform sampler2D tDepth;uniform mat4 uInvProj;uniform vec2 uTexel;uniform float uNear;uniform float uFar;
+float rawDepth(vec2 uv){return texture2D(tDepth,uv).x;}
+vec3 viewPosAt(vec2 uv,float d){vec4 p=uInvProj*vec4(vec3(uv,d)*2.-1.,1.);return p.xyz/p.w;}
+vec2 snapUV(vec2 uv){return (floor(uv/uTexel)+.5)*uTexel;}
+vec3 viewPosAt(vec2 uv){uv=snapUV(uv);return viewPosAt(uv,rawDepth(uv));}
+vec3 viewNormalAt(vec2 uv,vec3 c){vec3 l=viewPosAt(uv-vec2(uTexel.x,0.)),r=viewPosAt(uv+vec2(uTexel.x,0.)),b=viewPosAt(uv-vec2(0.,uTexel.y)),t=viewPosAt(uv+vec2(0.,uTexel.y));
+ vec3 dx=abs(r.z-c.z)<abs(c.z-l.z)?r-c:c-l;vec3 dy=abs(t.z-c.z)<abs(c.z-b.z)?t-c:c-b;return normalize(cross(dx,dy));}
+float ign(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))));}`;
+const VS=KE.FULLSCREEN_VS;
+
+/* Screen-space reflection helper for translucent-layer materials (water, glossy opt-in materials).
+   Marches the reflected view ray against the opaque linear depth copy; returns rgb + confidence. */
+KE.GLSL.ssr=`vec4 keTraceSSR(vec3 vpos,vec3 vnormal,float roughness,float jitter){
+ if(keHasScene<.5||keSSR<.5)return vec4(0.);
+ vec3 dir=normalize(reflect(normalize(vpos),vnormal));if(dir.z>.2)return vec4(0.);
+ float maxDist=min(60.,keNearFar.y*.5);float stepLen=maxDist/40.;vec3 p=vpos+dir*stepLen*(.5+jitter);vec2 hitUV=vec2(-1.);float thickness=.8;
+ for(int i=0;i<40;i++){vec4 clip=keProjection*vec4(p,1.);vec2 uv=clip.xy/clip.w*.5+.5;if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.)break;
+  float sceneZ=texture2D(keSceneDepth,uv).r;float rayZ=-p.z;float diff=rayZ-sceneZ;
+  if(diff>0.&&diff<thickness+stepLen*1.5){vec3 a=p-dir*stepLen,b=p;for(int j=0;j<5;j++){vec3 m=(a+b)*.5;vec4 cm=keProjection*vec4(m,1.);vec2 um=cm.xy/cm.w*.5+.5;if(-m.z>texture2D(keSceneDepth,um).r)b=m;else a=m;}
+   vec4 cb=keProjection*vec4(b,1.);hitUV=cb.xy/cb.w*.5+.5;break;}
+  p+=dir*stepLen;stepLen*=1.06;}
+ if(hitUV.x<0.)return vec4(0.);
+ vec2 e=smoothstep(0.,.12,hitUV)*smoothstep(1.,.88,hitUV);float conf=e.x*e.y*(1.-smoothstep(.3,.7,roughness))*smoothstep(.2,-.1,dir.z);
+ return vec4(texture2D(keSceneColor,hitUV).rgb,conf);}`;
+
+const GTAO_FS=`${DEPTH_GLSL}
+uniform float uRadius;uniform float uProjScale;uniform float uFrame;uniform float uPower;varying vec2 vUv;
+void main(){vec2 uv=snapUV(vUv);float d=rawDepth(uv);if(d>=1.){gl_FragColor=vec4(1.,uFar,0.,1.);return;}
+ vec3 P=viewPosAt(uv,d),N=viewNormalAt(uv,P),V=normalize(-P);float radiusPx=min(uRadius*uProjScale/max(-P.z,1e-3),160.);
+ if(radiusPx<1.5){gl_FragColor=vec4(1.,-P.z,0.,1.);return;}
+ float ns=ign(gl_FragCoord.xy+uFrame*5.588238),nt=ign(gl_FragCoord.yx*1.37+uFrame*7.41),vis=0.;
+ for(int s=0;s<SLICES;s++){float phi=(float(s)+ns)/float(SLICES)*3.14159265;vec2 om=vec2(cos(phi),sin(phi));vec3 dv=vec3(om,0.);vec3 od=dv-dot(dv,V)*V;vec3 ax=normalize(cross(od,V)+1e-6);
+  vec3 pn=N-ax*dot(N,ax);float pl=length(pn)+1e-5;float cn=clamp(dot(pn,V)/pl,0.,1.);float n=sign(dot(od,pn))*acos(cn);float lo0=cos(n+1.5707963),lo1=cos(n-1.5707963),h0c=lo0,h1c=lo1;
+  for(int j=0;j<STEPS;j++){float t=(float(j)+nt)/float(STEPS);t*=t;vec2 off=om*max(t*radiusPx,float(j)+1.)*uTexel;
+   vec3 s0=viewPosAt(uv+off)-P,s1=viewPosAt(uv-off)-P;float l0=length(s0),l1=length(s1);
+   float w0=clamp(1.-l0*l0/(uRadius*uRadius),0.,1.),w1=clamp(1.-l1*l1/(uRadius*uRadius),0.,1.);
+   h0c=max(h0c,mix(lo0,dot(s0,V)/max(l0,1e-4),w0));h1c=max(h1c,mix(lo1,dot(s1,V)/max(l1,1e-4),w1));}
+  float h0=-acos(clamp(h1c,-1.,1.)),h1=acos(clamp(h0c,-1.,1.));h0=n+clamp(h0-n,-1.5707963,1.5707963);h1=n+clamp(h1-n,-1.5707963,1.5707963);
+  vis+=pl*((cn+2.*h0*sin(n)-cos(2.*h0-n))+(cn+2.*h1*sin(n)-cos(2.*h1-n)))*.25;}
+ vis=pow(clamp(vis/float(SLICES),0.,1.),uPower);gl_FragColor=vec4(max(vis,.03),-P.z,0.,1.);}`;
+
+/* Depth-aware separable blur for half-resolution AO/GI (value in rgb or r, linear depth in the last used channel). */
+const BILATERAL_FS=`uniform sampler2D tSrc;uniform vec2 uDir;uniform float uDepthChannel;varying vec2 vUv;
+vec4 fetch(vec2 uv){return texture2D(tSrc,uv);}float dz(vec4 v){return uDepthChannel>.5?v.a:v.g;}
+void main(){vec4 c=fetch(vUv);float z=dz(c),ws=1.;vec4 acc=c;
+ for(int i=1;i<=4;i++){for(int s=-1;s<=1;s+=2){vec4 v=fetch(vUv+uDir*float(i*s));float w=exp(-float(i*i)/8.)*exp(-abs(dz(v)-z)/(.02*z+.05));acc+=v*w;ws+=w;}}
+ acc/=ws;if(uDepthChannel>.5)acc.a=z;else acc.g=z;gl_FragColor=acc;}`;
+
+/* Screen-space indirect diffuse: cosine-distributed rays marched against depth, radiance from last frame's
+   reprojected lit image, then temporally accumulated. No albedo buffer exists, so bounce colour is applied
+   using the receiving pixel's chroma (see composite). */
+const SSGI_FS=`${DEPTH_GLSL}
+uniform sampler2D tPrevColor;uniform mat4 uProj;uniform mat4 uInvView;uniform mat4 uPrevViewProj;uniform float uFrame;uniform float uGIRadius;varying vec2 vUv;
+vec2 reproject(vec3 vp){vec4 w=uInvView*vec4(vp,1.);vec4 c=uPrevViewProj*w;return c.xy/c.w*.5+.5;}
+void main(){vec2 uv0=snapUV(vUv);float d=rawDepth(uv0);if(d>=1.){gl_FragColor=vec4(0.,0.,0.,uFar);return;}
+ vec3 P=viewPosAt(uv0,d),N=viewNormalAt(uv0,P);vec3 T=normalize(abs(N.y)<.99?cross(N,vec3(0.,1.,0.)):cross(N,vec3(1.,0.,0.)));vec3 B=cross(N,T);vec3 acc=vec3(0.);
+ for(int r=0;r<RAYS;r++){vec2 xi=vec2(ign(gl_FragCoord.xy+float(r)*17.31+uFrame*3.7),ign(gl_FragCoord.yx+float(r)*9.13+uFrame*5.3));
+  float phi=6.2831853*xi.x,ct=sqrt(1.-xi.y),st=sqrt(xi.y);vec3 dir=normalize(T*cos(phi)*st+B*sin(phi)*st+N*ct);
+  float stepLen=uGIRadius/float(STEPS);vec3 p=P+N*.05+dir*stepLen*xi.y;
+  for(int i=0;i<STEPS;i++){vec4 c=uProj*vec4(p,1.);vec2 uv=snapUV(c.xy/c.w*.5+.5);if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.)break;float sd=rawDepth(uv);vec3 sp=viewPosAt(uv,sd);float diff=sp.z-p.z;
+   if(diff>0.&&diff<uGIRadius*.5&&sd<1.){vec2 pu=reproject(sp);if(pu.x>0.&&pu.y>0.&&pu.x<1.&&pu.y<1.){float fall=1.-float(i)/float(STEPS);acc+=texture2D(tPrevColor,pu).rgb*fall;}break;}
+   p+=dir*stepLen;}}
+ gl_FragColor=vec4(acc/float(RAYS),-P.z);}`;
+const SSGI_TEMPORAL_FS=`${DEPTH_GLSL}
+uniform sampler2D tCurrent;uniform sampler2D tHistory;uniform mat4 uInvView;uniform mat4 uPrevViewProj;uniform float uValid;varying vec2 vUv;
+void main(){vec4 cur=texture2D(tCurrent,vUv);float d=rawDepth(vUv);if(d>=1.||uValid<.5){gl_FragColor=cur;return;}vec3 vp=viewPosAt(vUv,d);vec4 w=uInvView*vec4(vp,1.);vec4 c=uPrevViewProj*w;vec2 pu=c.xy/c.w*.5+.5;
+ if(pu.x<0.||pu.y<0.||pu.x>1.||pu.y>1.){gl_FragColor=cur;return;}vec4 h=texture2D(tHistory,pu);float valid=1.-smoothstep(.05,.2,abs(h.a-cur.a)/max(cur.a,.1));
+ gl_FragColor=vec4(mix(cur.rgb,h.rgb,.9*valid),cur.a);}`;
+
+const COPY_FS=`uniform sampler2D tSrc;varying vec2 vUv;void main(){gl_FragColor=texture2D(tSrc,vUv);}`;
+const LINEAR_DEPTH_FS=`${DEPTH_GLSL}varying vec2 vUv;void main(){float d=rawDepth(vUv);gl_FragColor=vec4(d>=1.?uFar:-viewPosAt(vUv,d).z,0.,0.,1.);}`;
+
+/* Lighting composite: AO, indirect bounce, exponential height fog with directional inscattering, light shafts. */
+const COMPOSITE_FS=`${DEPTH_GLSL}
+uniform sampler2D tColor;uniform sampler2D tAO;uniform sampler2D tGI;uniform sampler2D tShafts;uniform sampler2D tVol;uniform float uVol;uniform mat4 uInvView;uniform vec3 uCamPos;uniform vec2 uHalfTexel;
+uniform float uAO;uniform float uGI;uniform float uShafts;uniform vec3 uShaftColor;
+uniform float uFog;uniform float uFogDensity;uniform float uFogFalloff;uniform float uFogHeight;uniform float uFogStart;uniform float uFogMax;uniform vec3 uFogColor;uniform vec3 uSunDir;uniform vec3 uSunColor;uniform float uInscatterExp;uniform float uInscatter;uniform float uFogSky;
+varying vec2 vUv;
+float upsampleAO(float z){vec2 base=vUv/uHalfTexel-.5;vec2 f=fract(base);vec2 o=(floor(base)+.5)*uHalfTexel;float acc=0.,ws=0.;
+ for(int i=0;i<4;i++){vec2 k=vec2(float(i-(i/2)*2),float(i/2));vec4 s=texture2D(tAO,o+k*uHalfTexel);float bw=(k.x>.5?f.x:1.-f.x)*(k.y>.5?f.y:1.-f.y);float w=bw*exp(-abs(s.g-z)/(.03*z+.05))+1e-4;acc+=s.r*w;ws+=w;}return acc/ws;}
+void main(){vec3 c=texture2D(tColor,vUv).rgb;float d=rawDepth(vUv);
+ if(d<1.){vec3 vp=viewPosAt(vUv,d);float z=-vp.z;
+  if(uAO>0.)c*=mix(1.,upsampleAO(z),uAO);
+  if(uGI>0.){vec3 gi=texture2D(tGI,vUv).rgb;float mx=max(c.r,max(c.g,c.b));vec3 alb=mx>1e-4?c/mx*.55:vec3(.3);c+=gi*alb*uGI;}
+  if(uFog>0.){vec3 wp=(uInvView*vec4(vp,1.)).xyz;vec3 ray=wp-uCamPos;float dist=length(ray);vec3 rd=ray/max(dist,1e-4);float dist2=max(dist-uFogStart,0.);
+   float h0=uCamPos.y-uFogHeight;float dh=ray.y*(dist2/max(dist,1e-4));float falloff=max(uFogFalloff,1e-4)*dh;float line=abs(falloff)>1e-3?(1.-exp(-falloff))/falloff:1.;
+   float amount=uFogDensity*exp(-uFogFalloff*h0)*dist2*line;float T=max(exp(-amount),1.-uFogMax);
+   vec3 inscatter=uFogColor+uSunColor*pow(max(dot(rd,uSunDir),0.),uInscatterExp)*uInscatter;c=c*T+inscatter*(1.-T);}
+ }else if(uFog>0.&&uFogSky>0.){vec3 vp=viewPosAt(vUv,.9999);vec3 rd=normalize((uInvView*vec4(vp,0.)).xyz);float hz=1.-smoothstep(0.,.25,rd.y);vec3 inscatter=uFogColor+uSunColor*pow(max(dot(rd,uSunDir),0.),uInscatterExp)*uInscatter;c=mix(c,inscatter,hz*uFogSky*uFogMax);}
+ if(uShafts>0.)c+=texture2D(tShafts,vUv).rgb*uShaftColor*uShafts;
+ if(uVol>0.)c+=texture2D(tVol,vUv).rgb*uVol;
+ gl_FragColor=vec4(c,1.);}`;
+
+/* Light shafts: bright sky near the sun, radially blurred toward the sun's screen position (two chained passes). */
+const SHAFT_MASK_FS=`uniform sampler2D tColor;uniform sampler2D tDepth;uniform vec2 uSunUV;uniform float uAspect;uniform float uThreshold;varying vec2 vUv;
+void main(){float d=texture2D(tDepth,vUv).x;if(d<1.){gl_FragColor=vec4(0.);return;}vec3 c=min(texture2D(tColor,vUv).rgb,vec3(6.));vec2 v=(vUv-uSunUV)*vec2(uAspect,1.);float fall=exp(-dot(v,v)*10.);
+ gl_FragColor=vec4(max(c-uThreshold,0.)*fall*.25+c*fall*.05,1.);}`;
+const SHAFT_BLUR_FS=`uniform sampler2D tSrc;uniform vec2 uSunUV;uniform float uStep;uniform float uFrame;varying vec2 vUv;
+float ign(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))));}
+void main(){vec2 delta=(vUv-uSunUV)*uStep/24.;vec2 uv=vUv-delta*ign(gl_FragCoord.xy+uFrame);vec3 acc=vec3(0.);float decay=1.;
+ for(int i=0;i<24;i++){acc+=texture2D(tSrc,uv).rgb*decay;decay*=.96;uv-=delta;}gl_FragColor=vec4(acc/12.,1.);}`;
+
+/* Shadowed volumetric fog: march the view ray through exponential height fog, testing sun visibility in the
+   cascaded shadow maps at each step, with a Henyey-Greenstein phase. Half resolution, jittered per frame. */
+const VOLUME_FS=`${DEPTH_GLSL}
+#include <packing>
+uniform sampler2D tShadow0;uniform sampler2D tShadow1;uniform sampler2D tShadow2;uniform sampler2D tShadow3;uniform mat4 uShadowM0;uniform mat4 uShadowM1;uniform mat4 uShadowM2;uniform mat4 uShadowM3;uniform vec4 uSplits;uniform float uCascades;
+uniform mat4 uInvView;uniform vec3 uCamPos;uniform vec3 uSunDir;uniform vec3 uSunColor;uniform float uDensity;uniform float uFalloff;uniform float uHeight;uniform float uG;uniform float uMaxDist;uniform float uFrame;varying vec2 vUv;
+float shadowAt(sampler2D m,mat4 M,vec3 p){vec4 c=M*vec4(p,1.);c.xyz/=c.w;if(c.x<0.||c.y<0.||c.x>1.||c.y>1.||c.z>1.)return 1.;return step(c.z,unpackRGBAToDepth(texture2D(m,c.xy))+.0015);}
+float visibility(vec3 p,float z){if(uCascades<.5)return 1.;if(z<uSplits.x)return shadowAt(tShadow0,uShadowM0,p);if(uCascades>1.5&&z<uSplits.y)return shadowAt(tShadow1,uShadowM1,p);if(uCascades>2.5&&z<uSplits.z)return shadowAt(tShadow2,uShadowM2,p);if(uCascades>3.5&&z<uSplits.w)return shadowAt(tShadow3,uShadowM3,p);return 1.;}
+void main(){vec2 uv=snapUV(vUv);float d=rawDepth(uv);vec3 vp=viewPosAt(uv,min(d,.99999));float dist=min(length(vp),uMaxDist);vec3 dirV=normalize(vp);vec3 dirW=normalize((uInvView*vec4(dirV,0.)).xyz);
+ float cosT=dot(dirW,uSunDir),g2=uG*uG,phase=.0795775*(1.-g2)/pow(max(1.+g2-2.*uG*cosT,1e-4),1.5);float stepLen=dist/float(STEPS);float j=ign(gl_FragCoord.xy+uFrame*7.13);
+ vec3 acc=vec3(0.);float T=1.;for(int i=0;i<STEPS;i++){float t=(float(i)+j)*stepLen;vec3 p=uCamPos+dirW*t;float dens=uDensity*exp(-uFalloff*max(p.y-uHeight,0.));float ext=dens*stepLen;
+  float vis=visibility(p,t*-dirV.z);acc+=T*vis*dens*stepLen;T*=exp(-ext);}
+ gl_FragColor=vec4(uSunColor*acc*phase,d>=1.?uFar:-vp.z);}`;
+
+/* Temporal AA: 3x3 YCoCg variance clipping, depth-dilated camera reprojection, Catmull-Rom history, Karis weighting. */
+const TAA_FS=`uniform sampler2D tCurrent;uniform sampler2D tHistory;uniform sampler2D tDepth;uniform mat4 uInvProjU;uniform mat4 uInvView;uniform mat4 uPrevViewProj;uniform vec2 uTexel;uniform vec2 uCurTexel;uniform float uBlend;uniform float uValid;varying vec2 vUv;
+${KE.GLSL.color}
+vec3 tm(vec3 c){return c/(1.+max(c.r,max(c.g,c.b)));}vec3 itm(vec3 c){return c/max(1.-max(c.r,max(c.g,c.b)),1e-4);}
+vec3 catmull(sampler2D t,vec2 uv){vec2 sz=1./uTexel;vec2 sp=uv*sz;vec2 tp=floor(sp-.5)+.5;vec2 f=sp-tp;vec2 w0=f*(-.5+f*(1.-.5*f)),w1=1.+f*f*(-2.5+1.5*f),w2=f*(.5+f*(2.-1.5*f)),w3=f*f*(-.5+.5*f);vec2 w12=w1+w2;vec2 o12=w2/w12;
+ vec2 t0=(tp-1.)*uTexel,t3=(tp+2.)*uTexel,t12=(tp+o12)*uTexel;vec3 r=texture2D(t,vec2(t12.x,t0.y)).rgb*w12.x*w0.y+texture2D(t,vec2(t0.x,t12.y)).rgb*w0.x*w12.y+texture2D(t,t12).rgb*w12.x*w12.y+texture2D(t,vec2(t3.x,t12.y)).rgb*w3.x*w12.y+texture2D(t,vec2(t12.x,t3.y)).rgb*w12.x*w3.y;
+ float ws=w12.x*w0.y+w0.x*w12.y+w12.x*w12.y+w3.x*w12.y+w12.x*w3.y;return max(r/ws,0.);}
+vec3 clipAABB(vec3 lo,vec3 hi,vec3 p,vec3 q){vec3 c=.5*(hi+lo),e=.5*(hi-lo)+1e-5;vec3 v=q-c;vec3 a=abs(v/e);float m=max(a.x,max(a.y,a.z));return m>1.?c+v/m:q;}
+void main(){vec3 cur=keRGBToYCoCg(tm(texture2D(tCurrent,vUv).rgb)),m1=vec3(0.),m2=vec3(0.),mn=vec3(1e9),mx=vec3(-1e9);float cd=1.;vec2 cuv=vUv;
+ for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){vec2 o=vec2(float(x),float(y))*uCurTexel;vec3 s=keRGBToYCoCg(tm(texture2D(tCurrent,vUv+o).rgb));m1+=s;m2+=s*s;mn=min(mn,s);mx=max(mx,s);float d=texture2D(tDepth,vUv+o).x;if(d<cd){cd=d;cuv=vUv+o;}}
+ vec3 mean=m1/9.,sig=sqrt(max(m2/9.-mean*mean,0.));vec3 lo=max(mean-1.25*sig,mn),hi=min(mean+1.25*sig,mx);
+ vec4 p=uInvProjU*vec4(vec3(cuv,cd)*2.-1.,1.);p/=p.w;vec4 pc=uPrevViewProj*(uInvView*vec4(p.xyz,1.));vec2 prev=vUv+(pc.xy/pc.w*.5+.5-cuv);
+ float blend=uBlend;if(uValid<.5||prev.x<0.||prev.y<0.||prev.x>1.||prev.y>1.)blend=1.;
+ vec3 hist=clipAABB(lo,hi,mean,keRGBToYCoCg(tm(catmull(tHistory,prev))));float motion=length((prev-vUv)/uTexel);blend=clamp(blend+motion*.004,blend,.5);if(uValid<.5||prev.x<0.||prev.y<0.||prev.x>1.||prev.y>1.)blend=1.;
+ float wc=blend/(1.+cur.x),wh=(1.-blend)/(1.+hist.x);vec3 res=(cur*wc+hist*wh)/(wc+wh);gl_FragColor=vec4(itm(keYCoCgToRGB(res)),1.);}`;
+
+/* Depth of field: circle of confusion from linear depth, half-resolution golden-angle gather, then blend. */
+const DOF_GATHER_FS=`${DEPTH_GLSL}uniform sampler2D tColor;uniform float uFocus;uniform float uAperture;uniform float uMaxBlur;uniform float uAutoFocus;uniform vec2 uFullTexel;varying vec2 vUv;
+float coc(vec2 uv,float f){float d=rawDepth(uv);float z=d>=1.?uFar:-viewPosAt(uv,d).z;return clamp(uAperture*abs(z-f)/max(z,1e-3)*80.,0.,uMaxBlur);}
+void main(){float f=uFocus;if(uAutoFocus>.5){float s=0.;for(int i=0;i<5;i++){vec2 o=vec2(float(i-2)*.02,0.);float d=rawDepth(vec2(.5)+o);s+=d>=1.?uFar:-viewPosAt(vec2(.5)+o,d).z;}f=s/5.;}
+ float c0=coc(vUv,f);vec3 acc=texture2D(tColor,vUv).rgb;float ws=1.;
+ for(int i=1;i<32;i++){float r=sqrt(float(i)/32.)*uMaxBlur;float a=float(i)*2.39996323;vec2 uv=vUv+vec2(cos(a),sin(a))*r*uFullTexel;float cs=coc(uv,f);float w=smoothstep(r-1.5,r+1.5,max(cs,min(c0,cs+2.)));acc+=texture2D(tColor,uv).rgb*w;ws+=w;}
+ gl_FragColor=vec4(acc/ws,c0);}`;
+const DOF_COMBINE_FS=`uniform sampler2D tColor;uniform sampler2D tBlur;varying vec2 vUv;void main(){vec4 b=texture2D(tBlur,vUv);vec3 c=texture2D(tColor,vUv).rgb;gl_FragColor=vec4(mix(c,b.rgb,smoothstep(.5,2.5,b.a)),1.);}`;
+const MOTION_FS=`${DEPTH_GLSL}uniform sampler2D tColor;uniform mat4 uInvView;uniform mat4 uPrevViewProj;uniform float uStrength;uniform float uFrame;varying vec2 vUv;
+void main(){float d=rawDepth(vUv);vec3 vp=viewPosAt(vUv,min(d,.99999));vec4 c=uPrevViewProj*(uInvView*vec4(vp,1.));vec2 vel=(vUv-(c.xy/c.w*.5+.5))*uStrength;float len=length(vel/uTexel);
+ if(len<.75){gl_FragColor=texture2D(tColor,vUv);return;}vel*=min(1.,40./len);float j=ign(gl_FragCoord.xy+uFrame)-.5;vec3 acc=vec3(0.);for(int i=0;i<10;i++){float t=(float(i)+j)/9.-.5;acc+=texture2D(tColor,vUv+vel*t).rgb;}gl_FragColor=vec4(acc/10.,1.);}`;
+
+/* Bloom: 13-tap downsample (Karis-weighted first level with soft threshold) and additive tent upsampling. */
+const BLOOM_DOWN_FS=`uniform sampler2D tSrc;uniform vec2 uTexel;uniform float uFirst;uniform vec4 uCurve;varying vec2 vUv;
+float lum(vec3 c){return dot(c,vec3(.2126,.7152,.0722));}vec3 t(vec2 o){return texture2D(tSrc,vUv+o*uTexel).rgb;}
+vec3 kw(vec3 a,vec3 b,vec3 c,vec3 d){if(uFirst<.5)return (a+b+c+d)*.25;float wa=1./(1.+lum(a)),wb=1./(1.+lum(b)),wc=1./(1.+lum(c)),wd=1./(1.+lum(d));return (a*wa+b*wb+c*wc+d*wd)/(wa+wb+wc+wd);}
+void main(){vec3 A=t(vec2(-2,2)),B=t(vec2(0,2)),C=t(vec2(2,2)),D=t(vec2(-2,0)),E=t(vec2(0,0)),F=t(vec2(2,0)),G=t(vec2(-2,-2)),H=t(vec2(0,-2)),I=t(vec2(2,-2)),J=t(vec2(-1,1)),K=t(vec2(1,1)),L=t(vec2(-1,-1)),M=t(vec2(1,-1));
+ vec3 r=kw(J,K,L,M)*.5+(kw(A,B,D,E)+kw(B,C,E,F)+kw(D,E,G,H)+kw(E,F,H,I))*.125;
+ if(uFirst>.5){float br=max(r.r,max(r.g,r.b));float rq=clamp(br-uCurve.x,0.,uCurve.y);rq=uCurve.z*rq*rq;r*=max(rq,br-uCurve.w)/max(br,1e-4);}
+ gl_FragColor=vec4(max(r,0.),1.);}`;
+const BLOOM_UP_FS=`uniform sampler2D tSrc;uniform vec2 uTexel;uniform float uRadius;varying vec2 vUv;vec3 t(vec2 o){return texture2D(tSrc,vUv+o*uTexel*uRadius).rgb;}
+void main(){vec3 r=t(vec2(0))*4.+(t(vec2(-1,0))+t(vec2(1,0))+t(vec2(0,-1))+t(vec2(0,1)))*2.+t(vec2(-1,-1))+t(vec2(1,-1))+t(vec2(-1,1))+t(vec2(1,1));gl_FragColor=vec4(r/16.,1.);}`;
+
+/* Eye adaptation: centre-weighted log luminance reduced 64² → 16² → 4² → 1², adapted over time. */
+const LUM_FS=`uniform sampler2D tSrc;uniform vec2 uTexel;varying vec2 vUv;
+void main(){float s=0.;for(int y=0;y<2;y++)for(int x=0;x<2;x++){vec3 c=texture2D(tSrc,vUv+(vec2(float(x),float(y))-.5)*uTexel*.5).rgb;s+=log2(max(dot(c,vec3(.2126,.7152,.0722)),1e-4));}
+ vec2 d=vUv-.5;float w=mix(.25,1.,exp(-dot(d,d)*6.));gl_FragColor=vec4(s*.25*w,w,0.,1.);}`;
+const REDUCE_FS=`uniform sampler2D tSrc;uniform vec2 uTexel;varying vec2 vUv;void main(){vec2 a=vec2(0.);for(int y=0;y<4;y++)for(int x=0;x<4;x++)a+=texture2D(tSrc,vUv+(vec2(float(x),float(y))-1.5)*uTexel).rg;gl_FragColor=vec4(a,0.,1.);}`;
+const ADAPT_FS=`uniform sampler2D tCur;uniform sampler2D tPrev;uniform float uDt;uniform float uUp;uniform float uDown;uniform float uValid;varying vec2 vUv;
+void main(){vec2 c=texture2D(tCur,vec2(.5)).rg;float cur=c.x/max(c.y,1e-5);float prev=texture2D(tPrev,vec2(.5)).r;float speed=cur>prev?uUp:uDown;gl_FragColor=vec4(uValid>.5?prev+(cur-prev)*(1.-exp(-uDt*speed)):cur,0.,0.,1.);}`;
+
+/* Final: exposure, bloom, white balance, saturation/contrast, ACES, lift/gamma/gain, lens effects, debug views. */
+const FINAL_FS=`uniform sampler2D tInput;uniform sampler2D tBloom;uniform sampler2D tExposure;uniform sampler2D tAO;uniform sampler2D tGI;uniform sampler2D tDepth;uniform sampler2D tScene;
+uniform float uAuto;uniform float uManual;uniform float uComp;uniform float uKey;uniform vec2 uExpRange;uniform float uBloom;uniform vec3 uWB;uniform float uSat;uniform float uContrast;uniform vec3 uLift;uniform vec3 uGamma;uniform vec3 uGain;
+uniform float uVignette;uniform float uGrain;uniform float uCA;uniform float uFlare;uniform float uSharpen;uniform vec2 uTexel;uniform float uTime;uniform float uEncode;uniform int uDebug;uniform float uNear;uniform float uFar;varying vec2 vUv;
+${KE.GLSL.color}
+float ign(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))));}
+float linz(float d){return uNear*uFar/(uFar-d*(uFar-uNear));}
+void main(){vec2 uv=vUv;vec3 c;
+ if(uCA>0.){vec2 dir=(uv-.5)*uCA*.012;c=vec3(texture2D(tInput,uv+dir).r,texture2D(tInput,uv).g,texture2D(tInput,uv-dir).b);}else c=texture2D(tInput,uv).rgb;
+ if(uSharpen>0.){vec3 n=texture2D(tInput,uv+vec2(0.,uTexel.y)).rgb+texture2D(tInput,uv-vec2(0.,uTexel.y)).rgb+texture2D(tInput,uv+vec2(uTexel.x,0.)).rgb+texture2D(tInput,uv-vec2(uTexel.x,0.)).rgb;c=max(c+(c*4.-n)*uSharpen*.25,c*.5);}
+ c+=texture2D(tBloom,uv).rgb*uBloom;
+ if(uFlare>0.){vec2 fuv=1.-uv,gv=(vec2(.5)-fuv)*.38;vec3 fl=vec3(0.);for(int i=1;i<5;i++){vec2 o=fract(fuv+gv*float(i));float w=pow(max(1.-length(vec2(.5)-o)/.7071,0.),5.);vec3 tint=mix(vec3(1.,.72,.45),vec3(.5,.75,1.),fract(float(i)*.37));fl+=texture2D(tBloom,o).rgb*w*tint;}
+  vec2 hv=normalize(gv+1e-5)*.46;vec2 ho=fract(fuv+hv);float hw=pow(max(1.-length(vec2(.5)-ho)/.7071,0.),5.);fl+=texture2D(tBloom,ho).rgb*hw*vec3(.8,.9,1.)*.6;c+=fl*uFlare;}
+ float ex=uAuto>.5?clamp(uKey/exp2(texture2D(tExposure,vec2(.5)).r),uExpRange.x,uExpRange.y):uManual;c*=ex*exp2(uComp)*uWB;
+ if(uDebug==1||uDebug==2){c=uDebug==1?vec3(texture2D(tAO,uv).r):vec3(fract(log2(linz(texture2D(tDepth,uv).x))*.5));gl_FragColor=vec4(uEncode>.5?keLinearToSRGB(c):c,1.);return;}
+ if(uDebug==3)c=texture2D(tBloom,uv).rgb*uBloom*ex*4.;else if(uDebug==4)c=texture2D(tGI,uv).rgb*ex;else if(uDebug==5)c=texture2D(tScene,uv).rgb*ex;else if(uDebug==6)c=vec3(keLuma(c));
+ float l=keLuma(c);c=max(mix(vec3(l),c,uSat),0.);c=.18*pow(c/.18+1e-6,vec3(uContrast));
+ c=keACES(c);c=pow(max(c*uGain+uLift*(1.-c),0.),1./uGamma);
+ vec2 d=uv-.5;c*=1.-uVignette*smoothstep(.2,.9,length(d*vec2(1.25,1.)));
+ c+=(ign(gl_FragCoord.xy+fract(uTime)*97.)-.5)*uGrain*(1.-c*.5);
+ if(uEncode>.5)c=keLinearToSRGB(clamp(c,0.,1.));c+=(ign(gl_FragCoord.yx+uTime*3.)-.5)/255.;gl_FragColor=vec4(clamp(c,0.,1.),1.);}`;
+const FXAA_FS=`uniform sampler2D tSrc;uniform vec2 uTexel;varying vec2 vUv;
+void main(){vec3 luma=vec3(.299,.587,.114);vec3 rgbM=texture2D(tSrc,vUv).rgb;float lNW=dot(texture2D(tSrc,vUv+vec2(-1.,-1.)*uTexel).rgb,luma),lNE=dot(texture2D(tSrc,vUv+vec2(1.,-1.)*uTexel).rgb,luma),lSW=dot(texture2D(tSrc,vUv+vec2(-1.,1.)*uTexel).rgb,luma),lSE=dot(texture2D(tSrc,vUv+vec2(1.,1.)*uTexel).rgb,luma),lM=dot(rgbM,luma);
+ float lo=min(lM,min(min(lNW,lNE),min(lSW,lSE))),hi=max(lM,max(max(lNW,lNE),max(lSW,lSE)));if(hi-lo<max(.0312,hi*.125)){gl_FragColor=vec4(rgbM,1.);return;}
+ vec2 dir=vec2(-((lNW+lNE)-(lSW+lSE)),(lNW+lSW)-(lNE+lSE));float rd=max((lNW+lNE+lSW+lSE)*.03125,.0078125);dir=clamp(dir/(min(abs(dir.x),abs(dir.y))+rd),vec2(-8.),vec2(8.))*uTexel;
+ vec3 a=.5*(texture2D(tSrc,vUv+dir*(-1./6.)).rgb+texture2D(tSrc,vUv+dir*(1./6.)).rgb);vec3 b=a*.5+.25*(texture2D(tSrc,vUv-dir*.5).rgb+texture2D(tSrc,vUv+dir*.5).rgb);float lb=dot(b,luma);gl_FragColor=vec4(lb<lo||lb>hi?a:b,1.);}`;
+
+const DEBUG_VIEWS={lit:0,ao:1,depth:2,bloom:3,ssgi:4,unlit:5,raw:5,lighting:6};
+
+KE.Pipeline=class{
+  constructor(THREE,renderer,o={}){
+    this.THREE=THREE;this.renderer=renderer;this.caps=KE.capabilities(renderer);const caps=this.caps;
+    this.hdr=caps.halfRT&&o.hdr!==false;this.hdrType=this.hdr?THREE.HalfFloatType:THREE.UnsignedByteType;this.depthOK=caps.depthTexture;
+    this.enabled=true;this.frame=0;this.historyValid=false;this.size=[0,0];this.internal=[0,0];this.targets=[];this.stats={passes:0,ms:0};
+    this.options={taa:true,taaBlend:.1,upscale:1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,lensFlare:.035,
+      autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,fxaa:true,sharpen:.18,
+      fog:{enabled:true,density:.012,falloff:.12,height:0,start:4,maxOpacity:.9,color:new THREE.Color(.55,.66,.78),inscatter:1.2,inscatterExponent:12,sky:.35,replaceSceneFog:true},
+      volumetrics:true,shaftStrength:.25,volumetricFog:{enabled:true,density:.012,falloff:.22,height:0,anisotropy:.45,intensity:1,maxDistance:50,steps:20},dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
+      grading:{saturation:1.05,contrast:1.04,temperature:0,tint:0,lift:[0,0,0],gamma:[1,1,1],gain:[1,1,1],vignette:.22,grain:.012,chromaticAberration:.15},sun:null,debugView:'lit'};
+    this.set(o);
+    this.uniforms=KE.sceneUniforms(THREE);this.quad=new KE.FullScreenQuad(THREE);
+    this.proj=new THREE.Matrix4();this.invProj=new THREE.Matrix4();this.invProjU=new THREE.Matrix4();this.viewProj=new THREE.Matrix4();this.prevViewProj=new THREE.Matrix4();
+    this._v2=new THREE.Vector2();this._v3=new THREE.Vector3();this._fwd=new THREE.Vector3();this._sunWorld=new THREE.Vector3();this._fogColor=new THREE.Color();
+    const M=(fs,u,defines={})=>new THREE.ShaderMaterial({vertexShader:VS,fragmentShader:fs,uniforms:u,defines,depthTest:false,depthWrite:false,toneMapped:false});
+    const depthU=()=>({tDepth:{value:null},uInvProj:{value:this.invProj},uTexel:{value:new THREE.Vector2()},uNear:{value:.1},uFar:{value:1000}});
+    this.m={
+      copy:M(COPY_FS,{tSrc:{value:null}}),
+      linearDepth:M(LINEAR_DEPTH_FS,depthU()),
+      gtao:M(GTAO_FS,{...depthU(),uRadius:{value:1},uProjScale:{value:1},uFrame:{value:0},uPower:{value:1}},{SLICES:2,STEPS:6}),
+      blur:M(BILATERAL_FS,{tSrc:{value:null},uDir:{value:new THREE.Vector2()},uDepthChannel:{value:0}}),
+      ssgi:M(SSGI_FS,{...depthU(),tPrevColor:{value:null},uProj:{value:new THREE.Matrix4()},uInvView:{value:new THREE.Matrix4()},uPrevViewProj:{value:this.prevViewProj},uFrame:{value:0},uGIRadius:{value:4}},{RAYS:2,STEPS:10}),
+      ssgiTemporal:M(SSGI_TEMPORAL_FS,{...depthU(),tCurrent:{value:null},tHistory:{value:null},uInvView:{value:new THREE.Matrix4()},uPrevViewProj:{value:this.prevViewProj},uValid:{value:0}}),
+      composite:M(COMPOSITE_FS,{...depthU(),tColor:{value:null},tAO:{value:null},tGI:{value:null},tShafts:{value:null},tVol:{value:null},uVol:{value:0},uInvView:{value:new THREE.Matrix4()},uCamPos:{value:new THREE.Vector3()},uHalfTexel:{value:new THREE.Vector2()},
+        uAO:{value:0},uGI:{value:0},uShafts:{value:0},uShaftColor:{value:new THREE.Color(1,.9,.7)},uFog:{value:0},uFogDensity:{value:.01},uFogFalloff:{value:.1},uFogHeight:{value:0},uFogStart:{value:0},uFogMax:{value:1},
+        uFogColor:{value:new THREE.Color()},uSunDir:{value:new THREE.Vector3(0,1,0)},uSunColor:{value:new THREE.Color()},uInscatterExp:{value:8},uInscatter:{value:1},uFogSky:{value:0}}),
+      shaftMask:M(SHAFT_MASK_FS,{tColor:{value:null},tDepth:{value:null},uSunUV:{value:new THREE.Vector2()},uAspect:{value:1},uThreshold:{value:1}}),
+      shaftBlur:M(SHAFT_BLUR_FS,{tSrc:{value:null},uSunUV:{value:new THREE.Vector2()},uStep:{value:.5},uFrame:{value:0}}),
+      taa:M(TAA_FS,{tCurrent:{value:null},tHistory:{value:null},tDepth:{value:null},uInvProjU:{value:this.invProjU},uInvView:{value:new THREE.Matrix4()},uPrevViewProj:{value:this.prevViewProj},uTexel:{value:new THREE.Vector2()},uCurTexel:{value:new THREE.Vector2()},uBlend:{value:.1},uValid:{value:0}}),
+      dofGather:M(DOF_GATHER_FS,{...depthU(),tColor:{value:null},uFocus:{value:8},uAperture:{value:.03},uMaxBlur:{value:8},uAutoFocus:{value:0},uFullTexel:{value:new THREE.Vector2()}}),
+      dofCombine:M(DOF_COMBINE_FS,{tColor:{value:null},tBlur:{value:null}}),
+      motion:M(MOTION_FS,{...depthU(),tColor:{value:null},uInvView:{value:new THREE.Matrix4()},uPrevViewProj:{value:this.prevViewProj},uStrength:{value:.5},uFrame:{value:0}}),
+      bloomDown:M(BLOOM_DOWN_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()},uFirst:{value:0},uCurve:{value:new THREE.Vector4()}}),
+      bloomUp:M(BLOOM_UP_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()},uRadius:{value:1}}),
+      lum:M(LUM_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()}}),
+      reduce:M(REDUCE_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()}}),
+      adapt:M(ADAPT_FS,{tCur:{value:null},tPrev:{value:null},uDt:{value:.016},uUp:{value:2},uDown:{value:1},uValid:{value:0}}),
+      volume:M(VOLUME_FS,{...depthU(),tShadow0:{value:null},tShadow1:{value:null},tShadow2:{value:null},tShadow3:{value:null},uShadowM0:{value:new THREE.Matrix4()},uShadowM1:{value:new THREE.Matrix4()},uShadowM2:{value:new THREE.Matrix4()},uShadowM3:{value:new THREE.Matrix4()},uSplits:{value:new THREE.Vector4()},uCascades:{value:0},
+        uInvView:{value:new THREE.Matrix4()},uCamPos:{value:new THREE.Vector3()},uSunDir:{value:new THREE.Vector3(0,1,0)},uSunColor:{value:new THREE.Color()},uDensity:{value:.02},uFalloff:{value:.15},uHeight:{value:0},uG:{value:.6},uMaxDist:{value:60},uFrame:{value:0}},{STEPS:20}),
+      final:M(FINAL_FS,{tInput:{value:null},tBloom:{value:null},tExposure:{value:null},tAO:{value:null},tGI:{value:null},tDepth:{value:null},tScene:{value:null},uAuto:{value:1},uManual:{value:1},uComp:{value:0},uKey:{value:.2},uExpRange:{value:new THREE.Vector2(.25,4)},
+        uBloom:{value:.05},uFlare:{value:0},uWB:{value:new THREE.Vector3(1,1,1)},uSat:{value:1},uContrast:{value:1},uLift:{value:new THREE.Vector3()},uGamma:{value:new THREE.Vector3(1,1,1)},uGain:{value:new THREE.Vector3(1,1,1)},uVignette:{value:.2},uGrain:{value:.01},uCA:{value:0},uSharpen:{value:0},
+        uTexel:{value:new THREE.Vector2()},uTime:{value:0},uEncode:{value:1},uDebug:{value:0},uNear:{value:.1},uFar:{value:1000}}),
+      fxaa:M(FXAA_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()}}),
+    };
+    this.m.bloomUp.blending=THREE.AdditiveBlending;this.m.bloomUp.transparent=true;
+    this._black=new THREE.DataTexture(new Uint8Array([0,0,0,255]),1,1,THREE.RGBAFormat);this._black.needsUpdate=true;
+    this._white=new THREE.DataTexture(new Uint8Array([255,255,255,255]),1,1,THREE.RGBAFormat);this._white.needsUpdate=true;
+    this.onSettings=KE.events.on('settings',s=>this.applySettings(s));
+    const cv=KE.cvars.find('r.ViewMode');if(cv){cv.options=[...new Set([...(cv.options||[]),...Object.keys(DEBUG_VIEWS)])];cv.onChange=v=>{this.options.debugView=v;};}
+    if(o.applySettings!==false)this.applySettings(KE.settings);
+  }
+  /* Deep-merge options. Nested groups (fog, dof, motionBlur, grading) merge key by key. */
+  set(o={}){for(const [k,v] of Object.entries(o)){const cur=this.options[k];if(cur&&typeof cur==='object'&&!cur.isColor&&!Array.isArray(cur)&&v&&typeof v==='object'&&!v.isColor&&!Array.isArray(v)){for(const [kk,vv] of Object.entries(v)){if(cur[kk]&&cur[kk].isColor&&vv!==undefined&&!(vv&&vv.isColor))cur[kk].set(vv);else if(cur[kk]&&cur[kk].isColor&&vv&&vv.isColor)cur[kk].copy(vv);else cur[kk]=vv;}}else this.options[k]=v;}return this;}
+  /* Map KE.settings quality keys onto pipeline passes. */
+  applySettings(s=KE.settings){const o=this.options;o.taa=!!s.taa&&this.depthOK;o.gtao=!!s.gtao&&this.depthOK;o.ssgi=!!s.ssgi&&this.depthOK&&this.hdr;o.bloom=s.bloom!==false;o.volumetrics=!!s.volumetrics;o.autoExposure=!!s.autoExposure&&this.hdr;
+    o.fxaa=!!s.aa&&!o.taa;o.upscale=Number.isFinite(s.upscale)?s.upscale:1;o.dof.enabled=!!s.dof&&this.depthOK;o.motionBlur.enabled=!!s.motionBlur&&this.depthOK;this.uniforms.keSSR.value=s.ssr?1:0;this.enabled=s.pipeline!==false;
+    const q=s.preset==='ultra'||s.preset==='cinematic';this.m.gtao.defines.SLICES=q?3:2;this.m.gtao.defines.STEPS=q?8:6;this.m.gtao.needsUpdate=true;this.historyValid=false;return this;}
+  target(w,h,{type=this.hdrType,format=this.THREE.RGBAFormat,filter=this.THREE.LinearFilter,depth=false}={}){const T=this.THREE,t=new T.WebGLRenderTarget(Math.max(1,w),Math.max(1,h),{type,format,minFilter:filter,magFilter:filter,depthBuffer:depth,stencilBuffer:false,generateMipmaps:false});t.texture.generateMipmaps=false;this.targets.push(t);return t;}
+  setSize(){const s=this.renderer.getDrawingBufferSize(this._v2);this._resize(s.x,s.y);return this;}
+  /* Display targets (TAA history onward) use the drawing-buffer size; scene and lighting targets use the internal
+     size (display × upscale when TAA is on), which TAA reconstructs back to display resolution. */
+  _resize(W,H){W=Math.max(1,Math.floor(W));H=Math.max(1,Math.floor(H));const u=this.options.taa?clamp(this.options.upscale||1,.5,1):1,IW=Math.max(1,Math.round(W*u)),IH=Math.max(1,Math.round(H*u));
+    if(W===this.size[0]&&H===this.size[1]&&IW===this.internal[0]&&IH===this.internal[1])return;const T=this.THREE;this.disposeTargets();this.size=[W,H];this.internal=[IW,IH];
+    const w2=Math.max(1,IW>>1),h2=Math.max(1,IH>>1),dw2=Math.max(1,W>>1),dh2=Math.max(1,H>>1);
+    this.scene=this.target(IW,IH,{depth:true});if(this.depthOK){this.scene.depthTexture=new T.DepthTexture(IW,IH,T.UnsignedIntType);this.scene.depthTexture.format=T.DepthFormat;}
+    this.colorCopy=this.target(IW,IH);this.linearDepth=this.target(IW,IH,{type:this.caps.floatRT?T.FloatType:this.hdrType,format:this.caps.webgl2?T.RedFormat:T.RGBAFormat,filter:T.NearestFilter});
+    this.lit=this.target(IW,IH);this.taa=[this.target(W,H),this.target(W,H)];this.post=[this.target(W,H),this.target(W,H)];this.ldr=this.target(W,H,{type:T.UnsignedByteType});
+    this.ao=[this.target(w2,h2),this.target(w2,h2)];this.gi=[this.target(w2,h2),this.target(w2,h2)];this.giHist=[this.target(w2,h2),this.target(w2,h2)];
+    this.shafts=[this.target(w2,h2),this.target(w2,h2)];this.vol=[this.target(w2,h2),this.target(w2,h2)];this.dofBlur=this.target(dw2,dh2);
+    this.bloomMips=[];let bw=dw2,bh=dh2;for(let i=0;i<6&&bw>=4&&bh>=4;i++){this.bloomMips.push(this.target(bw,bh));bw>>=1;bh>>=1;}
+    this.lumTargets=[64,16,4,1].map(n=>this.target(n,n,{type:this.caps.floatRT?T.FloatType:this.hdrType,filter:T.NearestFilter}));this.adapt=[0,1].map(()=>this.target(1,1,{type:this.caps.floatRT?T.FloatType:this.hdrType,filter:T.NearestFilter}));
+    this.historyValid=false;this.adaptValid=false;this.giValid=false;}
+  /* Use a KE.CascadedShadows (or any object with lights[] and splits[]) for shadowed volumetric fog. */
+  setShadowSource(csm){this.shadowSource=csm||null;return this;}
+  resetHistory(){this.historyValid=false;this.giValid=false;return this;}
+  get textures(){return {sceneColor:this.colorCopy&&this.colorCopy.texture,sceneDepth:this.linearDepth&&this.linearDepth.texture,depth:this.scene&&this.scene.depthTexture,output:this.taa&&this.taa[this.frame&1].texture};}
+  pass(material,target){this.quad.render(this.renderer,target,material);this.stats.passes++;}
+  render(scene,camera,dt=1/60){
+    const R=this.renderer,T=this.THREE,o=this.options,U=this.uniforms;
+    if(!this.enabled){KE.prepareCamera(camera);R.render(scene,camera);return;}
+    const t0=performance.now();this.setSize();const [W,H]=this.size,[IW,IH]=this.internal;this.frame++;this.stats.passes=0;
+    const prevTarget=R.getRenderTarget(),prevTone=R.toneMapping,prevAutoClear=R.autoClear,prevInfo=R.info.autoReset,prevFog=scene.fog,prevBg=scene.background,prevMask=camera.layers.mask;
+    R.info.autoReset=false;R.info.reset();
+    camera.updateMatrixWorld();if(camera.isPerspectiveCamera||camera.isOrthographicCamera)camera.updateProjectionMatrix();
+    this.invProjU.copy(camera.projectionMatrix).invert();this.viewProj.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);
+    const jitter=o.taa&&!(camera.view&&camera.view.enabled);
+    if(jitter){const n=IW<W?16:8,i=(this.frame%n)+1;camera.setViewOffset(IW,IH,halton(i,2)-.5,halton(i,3)-.5,IW,IH);}
+    this.proj.copy(camera.projectionMatrix);this.invProj.copy(this.proj).invert();
+    const near=camera.near,far=camera.far,texel=this._v2.set(1/IW,1/IH),dtexel=(this._dt||(this._dt=new T.Vector2())).set(1/W,1/H),frameValid=this.historyValid;
+    Object.assign(U.keNearFar.value,{x:near,y:far});U.keResolution.value.set(IW,IH);U.keProjection.value.copy(this.proj);U.keInvProjection.value.copy(this.invProj);U.keViewMatrix.value.copy(camera.matrixWorldInverse);U.keInvView.value.copy(camera.matrixWorld);U.keTime.value+=dt;U.keFrame.value=this.frame;
+    const sun=o.sun;if(sun){this._sunWorld.copy(sun.position).sub(sun.target.position).normalize();U.keSunDirection.value.copy(this._sunWorld);U.keSunColor.value.copy(sun.color).multiplyScalar(sun.intensity);}
+    try{
+      // 1. Opaque scene into the HDR target (linear, no tone mapping), without the translucent layer.
+      if(o.fog.enabled&&o.fog.replaceSceneFog&&this.depthOK)scene.fog=null;R.toneMapping=T.NoToneMapping;
+      camera.layers.mask=prevMask&~TRANSLUCENT_BIT;R.autoClear=true;R.setRenderTarget(this.scene);R.render(scene,camera);
+      // 2. Copies that translucent materials may sample.
+      this.m.copy.uniforms.tSrc.value=this.scene.texture;this.pass(this.m.copy,this.colorCopy);
+      if(this.depthOK){this.bindDepth(this.m.linearDepth,near,far,texel);this.pass(this.m.linearDepth,this.linearDepth);}
+      U.keSceneColor.value=this.colorCopy.texture;U.keSceneDepth.value=this.depthOK?this.linearDepth.texture:null;U.keHasScene.value=this.depthOK?1:0;
+      // 3. Translucent layer drawn over the opaque result with depth testing.
+      camera.layers.mask=TRANSLUCENT_BIT;scene.background=null;const sm=R.shadowMap,au=sm.autoUpdate,nu=sm.needsUpdate;sm.autoUpdate=false;sm.needsUpdate=false;R.autoClear=false;R.setRenderTarget(this.scene);R.render(scene,camera);sm.autoUpdate=au;sm.needsUpdate=nu;
+      camera.layers.mask=prevMask;scene.background=prevBg;scene.fog=prevFog;
+      // 4. Half-resolution ambient occlusion and indirect light.
+      const halfTexel=(this._half||(this._half=new T.Vector2())).set(1/this.ao[0].width,1/this.ao[0].height);
+      if(o.gtao){const g=this.m.gtao;this.bindDepth(g,near,far,texel);g.uniforms.uRadius.value=o.aoRadius;g.uniforms.uProjScale.value=IH/(2*Math.tan((camera.fov||50)*Math.PI/360));g.uniforms.uFrame.value=this.frame%64;g.uniforms.uPower.value=o.aoPower;this.pass(g,this.ao[0]);this.blur(this.ao,halfTexel,0);}
+      let giTex=this._black;
+      if(o.ssgi){const g=this.m.ssgi;this.bindDepth(g,near,far,texel);g.uniforms.tPrevColor.value=this.historyValid?this.taa[(this.frame+1)&1].texture:this.colorCopy.texture;g.uniforms.uProj.value.copy(this.proj);g.uniforms.uInvView.value.copy(camera.matrixWorld);g.uniforms.uFrame.value=this.frame%64;g.uniforms.uGIRadius.value=o.giRadius;this.pass(g,this.gi[0]);
+        const tt=this.m.ssgiTemporal,hi=this.frame&1;this.bindDepth(tt,near,far,texel);tt.uniforms.tCurrent.value=this.gi[0].texture;tt.uniforms.tHistory.value=this.giHist[hi^1].texture;tt.uniforms.uInvView.value.copy(camera.matrixWorld);tt.uniforms.uValid.value=this.giValid?1:0;this.pass(tt,this.giHist[hi]);
+        this.m.copy.uniforms.tSrc.value=this.giHist[hi].texture;this.pass(this.m.copy,this.gi[0]);this.blur(this.gi,halfTexel,1);giTex=this.gi[0].texture;this.giValid=true;}
+      // 5. Light shafts from the sun's screen position.
+      let shaftsOn=0;if(o.volumetrics&&sun&&this.depthOK){const s=this._v3.copy(this._sunWorld).multiplyScalar(far*.5).add(camera.position).project(camera);camera.getWorldDirection(this._fwd);
+        const facing=this._fwd.dot(this._sunWorld),vis=clamp((facing-.1)*2.5,0,1)*clamp(1-Math.max(Math.abs(s.x),Math.abs(s.y))*.45,0,1)*clamp(this._sunWorld.y*6,0,1);
+        if(vis>.01){const sx=s.x*.5+.5,sy=s.y*.5+.5,mk=this.m.shaftMask;mk.uniforms.tColor.value=this.scene.texture;mk.uniforms.tDepth.value=this.scene.depthTexture;mk.uniforms.uSunUV.value.set(sx,sy);mk.uniforms.uAspect.value=IW/IH;mk.uniforms.uThreshold.value=this.hdr?1.5:.8;this.pass(mk,this.shafts[0]);
+          const b=this.m.shaftBlur;b.uniforms.uSunUV.value.set(sx,sy);b.uniforms.uFrame.value=this.frame%64;b.uniforms.tSrc.value=this.shafts[0].texture;b.uniforms.uStep.value=.55;this.pass(b,this.shafts[1]);b.uniforms.tSrc.value=this.shafts[1].texture;b.uniforms.uStep.value=.22;this.pass(b,this.shafts[0]);shaftsOn=vis;}}
+      // 5b. Shadowed volumetric fog from the cascaded shadow maps.
+      let volOn=0;const vf=o.volumetricFog;if(o.volumetrics&&vf.enabled&&sun&&this.depthOK){const v=this.m.volume,vu=v.uniforms;this.bindDepth(v,near,far,texel);let nc=0;
+        const cs=this.shadowSource,lightsC=cs?cs.lights:[sun];for(let i=0;i<Math.min(4,lightsC.length);i++){const l=lightsC[i];if(!l.castShadow||!l.shadow||!l.shadow.map)break;vu['tShadow'+i].value=l.shadow.map.texture;vu['uShadowM'+i].value.copy(l.shadow.matrix);nc++;}
+        const sp=cs&&cs.splits&&cs.splits.length>1?cs.splits:[0,vf.maxDistance];vu.uSplits.value.set(sp[1]||1e9,sp[2]||1e9,sp[3]||1e9,sp[4]||1e9);if(!cs&&nc)vu.uSplits.value.x=1e9;vu.uCascades.value=R.shadowMap.enabled?nc:0;
+        vu.uInvView.value.copy(camera.matrixWorld);vu.uCamPos.value.setFromMatrixPosition(camera.matrixWorld);vu.uSunDir.value.copy(this._sunWorld);vu.uSunColor.value.copy(sun.color).multiplyScalar(sun.intensity*vf.intensity);
+        vu.uDensity.value=vf.density;vu.uFalloff.value=vf.falloff;vu.uHeight.value=vf.height;vu.uG.value=vf.anisotropy;vu.uMaxDist.value=vf.maxDistance;vu.uFrame.value=this.frame%64;if(v.defines.STEPS!==vf.steps){v.defines.STEPS=vf.steps;v.needsUpdate=true;}
+        if(vu.uSunColor.value.r+vu.uSunColor.value.g+vu.uSunColor.value.b>.01){this.pass(v,this.vol[0]);this.blur(this.vol,halfTexel,1);volOn=1;}}
+      // 6. Lighting composite with height fog.
+      const c=this.m.composite,cu=c.uniforms,f=o.fog;this.bindDepth(c,near,far,texel);cu.tColor.value=this.scene.texture;cu.tAO.value=o.gtao?this.ao[0].texture:this._white;cu.tGI.value=giTex;cu.tShafts.value=this.shafts[0].texture;cu.uInvView.value.copy(camera.matrixWorld);cu.uCamPos.value.setFromMatrixPosition(camera.matrixWorld);cu.uHalfTexel.value.copy(halfTexel);
+      cu.uAO.value=o.gtao?o.aoStrength:0;cu.uGI.value=o.ssgi?o.giStrength:0;cu.uShafts.value=shaftsOn*o.shaftStrength*(volOn?.5:1);cu.tVol.value=this.vol[0].texture;cu.uVol.value=volOn;cu.uFog.value=f.enabled&&this.depthOK?1:0;Object.assign(cu.uFogDensity,{value:f.density});cu.uFogFalloff.value=f.falloff;cu.uFogHeight.value=f.height;cu.uFogStart.value=f.start;cu.uFogMax.value=f.maxOpacity;cu.uFogColor.value.copy(f.color);
+      cu.uSunDir.value.copy(this._sunWorld.lengthSq()?this._sunWorld:this._v3.set(0,1,0));if(sun){cu.uSunColor.value.copy(sun.color).multiplyScalar(sun.intensity*(volOn?.25:o.volumetrics?1:.35));cu.uShaftColor.value.copy(sun.color).multiplyScalar(sun.intensity);}else cu.uSunColor.value.setRGB(0,0,0);cu.uInscatter.value=f.inscatter;cu.uInscatterExp.value=f.inscatterExponent;cu.uFogSky.value=f.sky;
+      this.pass(c,this.lit);let current=this.lit;
+      // 7. Temporal anti-aliasing.
+      if(o.taa){const a=this.m.taa,u=a.uniforms,wi=this.frame&1;u.tCurrent.value=this.lit.texture;u.tHistory.value=this.taa[wi^1].texture;u.tDepth.value=this.scene.depthTexture;u.uInvView.value.copy(camera.matrixWorld);u.uTexel.value.copy(dtexel);u.uCurTexel.value.copy(texel);u.uBlend.value=o.taaBlend*(IW<W?.8:1);u.uValid.value=frameValid?1:0;this.pass(a,this.taa[wi]);current=this.taa[wi];this.historyValid=true;}
+      else{this.historyValid=false;}
+      // 8. Depth of field and motion blur.
+      let pi=0;if(o.dof.enabled){const g=this.m.dofGather,u=g.uniforms,d=o.dof;this.bindDepth(g,near,far,texel);u.tColor.value=current.texture;u.uFocus.value=d.focusDistance;u.uAperture.value=d.aperture;u.uMaxBlur.value=d.maxBlur;u.uAutoFocus.value=d.autoFocus?1:0;u.uFullTexel.value.copy(dtexel);this.pass(g,this.dofBlur);
+        const cb=this.m.dofCombine;cb.uniforms.tColor.value=current.texture;cb.uniforms.tBlur.value=this.dofBlur.texture;this.pass(cb,this.post[pi]);current=this.post[pi];pi^=1;}
+      if(o.motionBlur.enabled&&frameValid){const mb=this.m.motion;this.bindDepth(mb,near,far,dtexel);mb.uniforms.tColor.value=current.texture;mb.uniforms.uInvView.value.copy(camera.matrixWorld);mb.uniforms.uStrength.value=o.motionBlur.strength*clamp(1/(60*Math.max(dt,1e-3)),.25,2);mb.uniforms.uFrame.value=this.frame%64;this.pass(mb,this.post[pi]);current=this.post[pi];pi^=1;}
+      // 9. Bloom.
+      let bloomTex=this._black;if(o.bloom&&this.bloomMips.length){const d=this.m.bloomDown,u=this.m.bloomUp;let src=current;
+        const th=this.hdr?o.bloomThreshold:.8,knee=Math.max(1e-4,th*o.bloomKnee);d.uniforms.uCurve.value.set(th-knee,knee*2,.25/knee,th);
+        this.bloomMips.forEach((t,i)=>{d.uniforms.tSrc.value=src.texture;d.uniforms.uTexel.value.set(1/src.width,1/src.height);d.uniforms.uFirst.value=i===0?1:0;this.pass(d,t);src=t;});
+        for(let i=this.bloomMips.length-2;i>=0;i--){const s=this.bloomMips[i+1];u.uniforms.tSrc.value=s.texture;u.uniforms.uTexel.value.set(1/s.width,1/s.height);u.uniforms.uRadius.value=o.bloomRadius;this.pass(u,this.bloomMips[i]);}
+        bloomTex=this.bloomMips[0].texture;}
+      // 10. Eye adaptation.
+      let expTex=this._white;if(o.autoExposure){const l=this.m.lum,r=this.m.reduce;l.uniforms.tSrc.value=current.texture;l.uniforms.uTexel.value.set(1/64,1/64);this.pass(l,this.lumTargets[0]);
+        for(let i=1;i<4;i++){const s=this.lumTargets[i-1];r.uniforms.tSrc.value=s.texture;r.uniforms.uTexel.value.set(1/s.width,1/s.height);this.pass(r,this.lumTargets[i]);}
+        const ad=this.m.adapt,ai=this.frame&1;ad.uniforms.tCur.value=this.lumTargets[3].texture;ad.uniforms.tPrev.value=this.adapt[ai^1].texture;ad.uniforms.uDt.value=clamp(dt,0,.25);ad.uniforms.uUp.value=o.adaptUp;ad.uniforms.uDown.value=o.adaptDown;ad.uniforms.uValid.value=this.adaptValid?1:0;this.pass(ad,this.adapt[ai]);this.adaptValid=true;expTex=this.adapt[ai].texture;}
+      // 11. Final grade to the screen (or through FXAA).
+      const fm=this.m.final,fu=fm.uniforms,g=o.grading;fu.tInput.value=current.texture;fu.tBloom.value=bloomTex;fu.tExposure.value=expTex;fu.tAO.value=o.gtao?this.ao[0].texture:this._white;fu.tGI.value=giTex;fu.tDepth.value=this.scene.depthTexture;fu.tScene.value=this.colorCopy.texture;
+      fu.uAuto.value=o.autoExposure?1:0;fu.uManual.value=o.exposure*(R.toneMappingExposure||1);fu.uComp.value=o.exposureCompensation;fu.uKey.value=o.exposureKey;fu.uExpRange.value.set(o.minExposure,o.maxExposure);fu.uBloom.value=o.bloom?o.bloomStrength:0;fu.uFlare.value=o.bloom?o.lensFlare:0;
+      fu.uWB.value.copy(this.whiteBalance(g.temperature,g.tint));fu.uSat.value=g.saturation;fu.uContrast.value=g.contrast;fu.uLift.value.fromArray(g.lift);fu.uGamma.value.fromArray(g.gamma);fu.uGain.value.fromArray(g.gain);fu.uVignette.value=g.vignette;fu.uGrain.value=g.grain;fu.uCA.value=g.chromaticAberration;
+      fu.uSharpen.value=o.taa?o.sharpen*(IW<W?1.6:1):0;fu.uTexel.value.copy(dtexel);fu.uTime.value=(fu.uTime.value+dt)%1000;fu.uEncode.value=R.outputEncoding===T.sRGBEncoding?1:0;fu.uDebug.value=DEBUG_VIEWS[o.debugView]||0;fu.uNear.value=near;fu.uFar.value=far;
+      if(o.fxaa){this.pass(fm,this.ldr);this.m.fxaa.uniforms.tSrc.value=this.ldr.texture;this.m.fxaa.uniforms.uTexel.value.copy(dtexel);this.pass(this.m.fxaa,prevTarget);}else this.pass(fm,prevTarget);
+    }finally{
+      camera.layers.mask=prevMask;scene.background=prevBg;scene.fog=prevFog;R.toneMapping=prevTone;R.autoClear=prevAutoClear;R.setRenderTarget(prevTarget);R.info.autoReset=prevInfo;
+      if(jitter)camera.clearViewOffset();
+    }
+    this.prevViewProj.copy(this.viewProj);this.stats.ms=performance.now()-t0;
+  }
+  bindDepth(m,near,far,texel){const u=m.uniforms;u.tDepth.value=this.scene.depthTexture;u.uNear.value=near;u.uFar.value=far;u.uTexel.value.copy(texel);}
+  blur(pair,halfTexel,channel){const b=this.m.blur;b.uniforms.uDepthChannel.value=channel;b.uniforms.tSrc.value=pair[0].texture;b.uniforms.uDir.value.set(halfTexel.x,0);this.pass(b,pair[1]);b.uniforms.tSrc.value=pair[1].texture;b.uniforms.uDir.value.set(0,halfTexel.y);this.pass(b,pair[0]);}
+  /* Approximate white balance multiplier from temperature (-1 cool .. +1 warm) and tint (-1 green .. +1 magenta). */
+  whiteBalance(t,tint){const v=this._wb||(this._wb=new this.THREE.Vector3());v.set(1+t*.18-tint*.04,1-Math.abs(t)*.02+tint*.12*-1,1-t*.22-tint*.04);const l=v.x*.2126+v.y*.7152+v.z*.0722;return v.multiplyScalar(1/l);}
+  disposeTargets(){for(const t of this.targets){if(t.depthTexture)t.depthTexture.dispose();t.dispose();}this.targets.length=0;this.size=[0,0];this.internal=[0,0];}
+  dispose(){this.disposeTargets();for(const m of Object.values(this.m))m.dispose();this.quad.dispose();this._black.dispose();this._white.dispose();if(this.onSettings)this.onSettings();const U=this.uniforms;U.keSceneColor.value=null;U.keSceneDepth.value=null;U.keHasScene.value=0;this.enabled=false;}
+};
+KE.registerModule('pipeline',{provides:['Pipeline','GLSL.ssr']});
+})();
+
+/* ===== module: 12-sky.js ===== */
+/* KE.SkyAtmosphere — physically based sky, volumetric clouds, sun/moon/stars and a real-time sky light.
+   The sky (single-scattering Rayleigh + Mie + ozone atmosphere, Nishita-style) and raymarched volumetric
+   clouds (tileable Perlin-Worley noise atlas generated on the GPU, multi-octave scattering approximation,
+   dual-lobe phase, beer-powder) are rendered into a cube map one face per frame. The cube is the scene
+   background, and every full refresh is prefiltered with PMREM into scene.environment so image-based
+   lighting follows the time of day and weather. The directional light's colour and intensity come from the
+   same atmosphere model's transmittance, and a matching horizon colour feeds height fog. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+const clamp=KE.clamp,smooth=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t);};
+/* Atmosphere constants in kilometres. */
+const MAX_PATH=110,RG=6360,RT=6460,BETA_R=[5.802e-3,13.558e-3,33.1e-3],BETA_M=3.996e-3,BETA_MX=4.4e-3,HR=8,HM=1.2,BETA_O=[.650e-3,1.881e-3,.085e-3],G_M=.8;
+
+const ATMOSPHERE_GLSL=`
+const float MAX_PATH=${MAX_PATH.toFixed(1)};const float RG=${RG.toFixed(1)},RT=${RT.toFixed(1)},HR=${HR.toFixed(1)},HM=${HM.toFixed(1)},GM=${G_M};
+const vec3 BR=vec3(${BETA_R.join(',')}),BO=vec3(${BETA_O.join(',')});const float BM=${BETA_M},BMX=${BETA_MX};
+float kePlanetDist(float r,float mu,float R){float s=r*sqrt(max(1.-mu*mu,0.));float disc=(R-s)*(R+s);return disc<0.?-1.:-r*mu+sqrt(disc);}
+float keGroundDisc(float r,float mu){float s=r*sqrt(max(1.-mu*mu,0.));return (RG-s)*(RG+s);}
+bool keHitsGround(float r,float mu){return mu<0.&&keGroundDisc(r,mu)>=0.;}
+vec3 keDensity(float h){return vec3(exp(-h/HR),exp(-h/HM),max(0.,1.-abs(h-25.)/15.));}
+vec3 keExtinction(vec3 od){return BR*od.x+BMX*od.y+BO*od.z;}
+vec3 keTransmittanceToTop(vec3 p,vec3 l){float r=length(p);float mu=dot(p,l)/r;if(keHitsGround(r,mu))return vec3(0.);float t=kePlanetDist(r,mu,RT);float ds=t/float(LIGHT_SAMPLES);vec3 od=vec3(0.);
+ for(int i=0;i<LIGHT_SAMPLES;i++){vec3 q=p+l*(float(i)+.5)*ds;od+=keDensity(length(q)-RG)*ds;}return exp(-keExtinction(od));}
+float kePhaseR(float mu){return .0596831*(1.+mu*mu);}
+float kePhaseM(float mu){float g=GM,g2=g*g;return .1193662*(1.-g2)*(1.+mu*mu)/((2.+g2)*pow(max(1.+g2-2.*g*mu,1e-4),1.5));}
+vec3 keScatter(vec3 ro,vec3 rd,vec3 l,float intensity,out vec3 viewT){float r=length(ro),mu=dot(ro,rd)/r;float tMax=kePlanetDist(r,mu,RT);if(keHitsGround(r,mu))tMax=min(tMax,-r*mu-sqrt(max(keGroundDisc(r,mu),0.)));tMax=min(tMax,MAX_PATH);
+ float ds=tMax/float(VIEW_SAMPLES);vec3 od=vec3(0.),sr=vec3(0.),sm=vec3(0.);
+ for(int i=0;i<VIEW_SAMPLES;i++){vec3 p=ro+rd*(float(i)+.5)*ds;vec3 d=keDensity(length(p)-RG)*ds;od+=d;vec3 T=exp(-keExtinction(od))*keTransmittanceToTop(p,l);sr+=d.x*T;sm+=d.y*T;}
+ viewT=exp(-keExtinction(od));float c=dot(rd,l);return intensity*(sr*BR*kePhaseR(c)+sm*BM*kePhaseM(c));}`;
+
+/* Tileable 3D noise: R = Perlin-Worley (cloud shape), GBA = Worley fBm at 2x/4x/8x (erosion detail).
+   64³ voxels stored as an 8×8 grid of 64×64 slices in a 512² RGBA texture. */
+const NOISE_FS=`varying vec2 vUv;
+vec3 h3(vec3 p){p=fract(p*vec3(.1031,.1030,.0973));p+=dot(p,p.yxz+33.33);return fract((p.xxy+p.yxx)*p.zyx);}
+float perlin(vec3 x,float P){vec3 i=floor(x),f=fract(x),u=f*f*f*(f*(f*6.-15.)+10.);float r=0.;
+ #define G(o) dot(normalize(h3(mod(i+o,P))*2.-1.),f-o)
+ r=mix(mix(mix(G(vec3(0,0,0)),G(vec3(1,0,0)),u.x),mix(G(vec3(0,1,0)),G(vec3(1,1,0)),u.x),u.y),mix(mix(G(vec3(0,0,1)),G(vec3(1,0,1)),u.x),mix(G(vec3(0,1,1)),G(vec3(1,1,1)),u.x),u.y),u.z);return r*.5+.5;}
+float worley(vec3 x,float P){vec3 i=floor(x),f=fract(x);float d=1.;for(int z=-1;z<=1;z++)for(int y=-1;y<=1;y++)for(int k=-1;k<=1;k++){vec3 o=vec3(float(k),float(y),float(z));vec3 r=o+h3(mod(i+o,P))-f;d=min(d,dot(r,r));}return 1.-sqrt(d);}
+float wfbm(vec3 p,float P){return worley(p*P,P)*.625+worley(p*P*2.,P*2.)*.25+worley(p*P*4.,P*4.)*.125;}
+void main(){vec2 px=floor(vUv*512.);vec2 tile=floor(px/64.);vec3 p=(vec3(mod(px,64.),tile.y*8.+tile.x)+.5)/64.;
+ float pf=perlin(p*4.,4.)*.5+perlin(p*8.,8.)*.25+perlin(p*16.,16.)*.125+perlin(p*32.,32.)*.0625;pf=pf/.9375;float w=wfbm(p,4.);
+ pf=clamp((pf-.5)*2.4+.5,0.,1.);float pw=clamp(pf*.7+w*.45-.12,0.,1.);
+ gl_FragColor=vec4(pw,wfbm(p,8.),wfbm(p,16.),wfbm(p,32.));}`;
+
+const SKY_VS=`varying vec3 vDir;void main(){vDir=normalize((modelMatrix*vec4(position,0.)).xyz);gl_Position=projectionMatrix*viewMatrix*vec4(position,1.);gl_Position.z=gl_Position.w;}`;
+const SKY_FS=`uniform vec3 uSun;uniform vec3 uMoon;uniform float uSunI;uniform float uMoonI;uniform float uAltitude;uniform vec3 uGround;uniform float uSkyScale;uniform float uNightGlow;
+uniform sampler2D tNoise;uniform float uClouds;uniform float uCoverage;uniform float uCloudDensity;uniform vec2 uCloudLayer;uniform vec3 uWindOffset;uniform vec3 uCloudSun;uniform vec3 uCloudAmbTop;uniform vec3 uCloudAmbBottom;uniform float uFrame;
+varying vec3 vDir;
+${ATMOSPHERE_GLSL}
+float hash12(vec2 p){vec3 p3=fract(vec3(p.xyx)*.1031);p3+=dot(p3,p3.yzx+33.33);return fract((p3.x+p3.y)*p3.z);}
+vec4 noise3(vec3 p){p=fract(p);float z=p.z*64.-.5;float z0=floor(z),f=z-z0;float s0=mod(z0+64.,64.),s1=mod(z0+1.,64.);vec2 xy=clamp(p.xy*64.,.5,63.5)/512.;
+ vec2 t0=vec2(mod(s0,8.),floor(s0/8.))/8.,t1=vec2(mod(s1,8.),floor(s1/8.))/8.;return mix(texture2D(tNoise,t0+xy),texture2D(tNoise,t1+xy),f);}
+float remap(float v,float a,float b,float c,float d){return c+(v-a)/(b-a)*(d-c);}
+float weather(vec2 xz){vec4 n=noise3(vec3(xz*.012+uWindOffset.xz*.2,.37));vec4 m=noise3(vec3(xz*.031+uWindOffset.xz*.4,.71));return clamp(uCoverage+(n.r-.5)*.9+(m.g-.5)*.35,0.,1.);}
+float cloudDensity(vec3 p,float h,bool detail){if(h<0.||h>1.)return 0.;vec3 q=p*.21+uWindOffset;float cov=weather(p.xz);vec4 n=noise3(q);
+ float shape=smoothstep(0.,.09,h)*smoothstep(1.,.35+cov*.2,h);float base=remap(n.r*shape,1.-cov*.95,1.,0.,1.);if(base<=0.)return 0.;
+ if(detail){vec4 d=noise3(q*3.7+uWindOffset*1.7);float det=d.g*.625+d.b*.25+d.a*.125;base=remap(base,mix(det,1.-det,clamp(h*3.,0.,1.))*.38,1.,0.,1.);}return max(base,0.)*uCloudDensity;}
+float hg(float c,float g){float g2=g*g;return .0795775*(1.-g2)/pow(max(1.+g2-2.*g*c,1e-4),1.5);}
+vec4 clouds(vec3 ro,vec3 rd,vec3 l){float r=length(ro),mu=dot(ro,rd)/r;float bot=RG+uCloudLayer.x,top=RG+uCloudLayer.y;
+ if(rd.y<-.02)return vec4(0.,0.,0.,1.);float t0=kePlanetDist(r,mu,bot),t1=kePlanetDist(r,mu,top);if(t0<0.||t1<0.)return vec4(0.,0.,0.,1.);
+ float len=min(t1-t0,12.);float ds=len/float(CLOUD_STEPS);float t=t0+ds*hash12(gl_FragCoord.xy+uFrame*.37);float T=1.;vec3 S=vec3(0.);float c=dot(rd,l);float thick=uCloudLayer.y-uCloudLayer.x;
+ float ph=mix(hg(c,.75),hg(c,-.25),.35);
+ for(int i=0;i<CLOUD_STEPS;i++){vec3 p=ro+rd*t;float h=(length(p)-bot)/thick;float d=cloudDensity(p,h,true);
+  if(d>.003){float od=0.;float ls=thick*.07;vec3 lp=p;for(int j=0;j<5;j++){lp+=l*ls;od+=cloudDensity(lp,(length(lp)-bot)/thick,j<2)*ls;ls*=1.5;}
+   vec3 lit=vec3(0.);float a=1.,b=1.,cc=1.;for(int k=0;k<3;k++){lit+=uCloudSun*a*mix(hg(c*cc,.75),hg(c*cc,-.25),.35)*exp(-od*b*42.);a*=.5;b*=.4;cc*=.6;}
+   float powder=1.-exp(-d*30.);vec3 amb=mix(uCloudAmbBottom,uCloudAmbTop,clamp(h,0.,1.));vec3 Ls=lit*mix(.55,1.,powder)+amb;
+   float ext=max(d*42.,1e-4);float Ts=exp(-ext*ds);S+=T*Ls*(1.-Ts);T*=Ts;if(T<.02)break;}
+  t+=ds;}
+ float fade=exp(-t0*.012)*smoothstep(-.02,.06,rd.y);return vec4(S*fade,mix(1.,T,fade));}
+void main(){vec3 rd=normalize(vDir);vec3 ro=vec3(0.,RG+uAltitude,0.);vec3 rs=normalize(vec3(rd.x,max(rd.y,.004),rd.z));vec3 vt;vec3 col=keScatter(ro,rs,uSun,uSunI,vt);
+ if(uMoonI>0.){vec3 vt2;col+=keScatter(ro,rs,uMoon,uMoonI,vt2);}
+ col+=uNightGlow*vec3(.015,.025,.055)*(1.-rd.y*.5);
+ if(rd.y<0.){float k=smoothstep(0.,-.2,rd.y);col=mix(col,uGround,k*.8);}
+ if(uClouds>0.){vec4 cl=clouds(ro,rd,uSun.y>-.1?uSun:uMoon);col=col*cl.a+cl.rgb;}
+ gl_FragColor=vec4(col*uSkyScale,1.);}`;
+
+/* ---------- CPU mirror of the atmosphere model (fog colour, sun colour, ambient) ---------- */
+function planetDist(r,mu,R){const s=r*Math.sqrt(Math.max(1-mu*mu,0)),disc=(R-s)*(R+s);return disc<0?-1:-r*mu+Math.sqrt(disc);}
+function hitsGround(r,mu){return mu<0&&r*r*(mu*mu-1)+RG*RG>=0;}
+function density(h,out){out[0]=Math.exp(-h/HR);out[1]=Math.exp(-h/HM);out[2]=Math.max(0,1-Math.abs(h-25)/15);return out;}
+const _d=[0,0,0];
+function transmittance(p,l,samples=12,out=[0,0,0]){const r=Math.hypot(p[0],p[1],p[2]),mu=(p[0]*l[0]+p[1]*l[1]+p[2]*l[2])/r;if(hitsGround(r,mu)){out[0]=out[1]=out[2]=0;return out;}
+  const t=planetDist(r,mu,RT),ds=t/samples;let a=0,b=0,c=0;for(let i=0;i<samples;i++){const s=(i+.5)*ds,q0=p[0]+l[0]*s,q1=p[1]+l[1]*s,q2=p[2]+l[2]*s;density(Math.hypot(q0,q1,q2)-RG,_d);a+=_d[0]*ds;b+=_d[1]*ds;c+=_d[2]*ds;}
+  for(let k=0;k<3;k++)out[k]=Math.exp(-(BETA_R[k]*a+BETA_MX*b+BETA_O[k]*c));return out;}
+function scatter(rd,l,intensity,alt,out=[0,0,0]){const ro=[0,RG+alt,0],r=ro[1],mu=rd[1];let tMax=planetDist(r,mu,RT);if(hitsGround(r,mu))tMax=Math.min(tMax,-r*mu-Math.sqrt(Math.max(r*r*(mu*mu-1)+RG*RG,0)));tMax=Math.min(tMax,MAX_PATH);
+  const N=12,ds=tMax/N;let od=[0,0,0],sr=[0,0,0],sm=[0,0,0];const T=[0,0,0],p=[0,0,0];
+  for(let i=0;i<N;i++){const s=(i+.5)*ds;p[0]=rd[0]*s;p[1]=r+rd[1]*s;p[2]=rd[2]*s;density(Math.hypot(p[0],p[1],p[2])-RG,_d);const dr=_d[0]*ds,dm=_d[1]*ds;od[0]+=dr;od[1]+=dm;od[2]+=_d[2]*ds;transmittance(p,l,6,T);
+    for(let k=0;k<3;k++){const e=Math.exp(-(BETA_R[k]*od[0]+BETA_MX*od[1]+BETA_O[k]*od[2]));sr[k]+=dr*e*T[k];sm[k]+=dm*e*T[k];}}
+  const c=rd[0]*l[0]+rd[1]*l[1]+rd[2]*l[2],pr=.0596831*(1+c*c),g2=G_M*G_M,pm=.1193662*(1-g2)*(1+c*c)/((2+g2)*Math.pow(Math.max(1+g2-2*G_M*c,1e-4),1.5));
+  for(let k=0;k<3;k++)out[k]=intensity*(sr[k]*BETA_R[k]*pr+sm[k]*BETA_M*pm);return out;}
+KE.atmosphere={scatter,transmittance,RG,RT};
+
+/* Procedural moon disc (craters, maria, limb darkening). */
+function moonTexture(THREE){const S=256,c=document.createElement('canvas');c.width=c.height=S;const g=c.getContext('2d'),r=KE.random(77);g.clearRect(0,0,S,S);
+  const grad=g.createRadialGradient(S*.45,S*.42,S*.05,S/2,S/2,S*.49);grad.addColorStop(0,'#f4f1e8');grad.addColorStop(.85,'#d6d2c6');grad.addColorStop(1,'#a8a499');g.fillStyle=grad;g.beginPath();g.arc(S/2,S/2,S*.49,0,Math.PI*2);g.fill();
+  g.save();g.beginPath();g.arc(S/2,S/2,S*.49,0,Math.PI*2);g.clip();for(let i=0;i<7;i++){g.fillStyle=`rgba(120,118,112,${.18+r()*.14})`;g.beginPath();g.ellipse(S*(.25+r()*.5),S*(.25+r()*.5),S*(.06+r()*.12),S*(.05+r()*.09),r()*3,0,Math.PI*2);g.fill();}
+  for(let i=0;i<60;i++){const x=r()*S,y=r()*S,cr=(1+r()*7)*S/256;g.strokeStyle='rgba(90,88,84,.35)';g.lineWidth=cr*.35;g.beginPath();g.arc(x,y,cr,0,Math.PI*2);g.stroke();g.fillStyle='rgba(255,255,250,.12)';g.beginPath();g.arc(x-cr*.2,y-cr*.2,cr*.6,0,Math.PI*2);g.fill();}g.restore();
+  const t=new THREE.CanvasTexture(c);t.encoding=THREE.sRGBEncoding;return t;}
+
+KE.SkyAtmosphere=class{
+  constructor(THREE,renderer,scene,o={}){
+    this.THREE=THREE;this.renderer=renderer;this.scene=scene;const caps=KE.capabilities(renderer);this.caps=caps;
+    this.options=Object.assign({sun:null,moonLight:true,hemi:null,cubeSize:null,clouds:KE.settings.clouds,coverage:.42,cloudDensity:1,cloudLayer:[1.4,3.4],wind:[.012,.004],environment:true,background:true,
+      sunIntensity:22,skyScale:1,sunLightIntensity:4.2,moonLightIntensity:.32,altitude:.05,stars:true,sunDisc:true,moonDisc:true,envInterval:1.25,groundColor:[.035,.045,.03],time:.22,lightDistance:120,
+      envIntensityDay:1,envIntensityNight:.35},o);
+    this.time=this.options.time;this.sunDirection=new THREE.Vector3(0,1,0);this.moonDirection=new THREE.Vector3(0,-1,0);this.lightDirection=new THREE.Vector3(0,1,0);this.manualSun=null;
+    this.sunColor=new THREE.Color(1,1,1);this.fogColor=new THREE.Color(.6,.7,.8);this.zenithColor=new THREE.Color(.3,.45,.8);this.ambientSky=new THREE.Color();this.ambientGround=new THREE.Color();this.night=0;this.isNight=false;this.cloudTime=0;this.windOffset=new THREE.Vector3();
+    this.face=0;this.envAge=1e9;this.envDirty=true;this.fullRefresh=true;this.frame=0;
+    const half=caps.halfRT?THREE.HalfFloatType:THREE.UnsignedByteType;
+    this.cubeSize=this.options.cubeSize||(this.options.clouds>=2?512:256);
+    this.cube=new THREE.WebGLCubeRenderTarget(this.cubeSize,{type:half,format:THREE.RGBAFormat,generateMipmaps:true,minFilter:THREE.LinearMipmapLinearFilter,magFilter:THREE.LinearFilter});
+    this.cubeCamera=new THREE.CubeCamera(.1,10,this.cube);this.cubeCamera.updateMatrixWorld(true);
+    // noise atlas generated once on the GPU
+    this.noise=new THREE.WebGLRenderTarget(512,512,{type:THREE.UnsignedByteType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,wrapS:THREE.ClampToEdgeWrapping,wrapT:THREE.ClampToEdgeWrapping,depthBuffer:false});
+    const nq=new KE.FullScreenQuad(THREE,new THREE.ShaderMaterial({vertexShader:KE.FULLSCREEN_VS,fragmentShader:NOISE_FS,depthTest:false,depthWrite:false}));nq.render(renderer,this.noise);nq.material.dispose();nq.dispose();
+    this.uniforms={uSun:{value:new THREE.Vector3(0,1,0)},uMoon:{value:new THREE.Vector3(0,-1,0)},uSunI:{value:this.options.sunIntensity},uMoonI:{value:0},uAltitude:{value:this.options.altitude},uGround:{value:new THREE.Vector3()},uSkyScale:{value:this.options.skyScale},uNightGlow:{value:0},
+      tNoise:{value:this.noise.texture},uClouds:{value:0},uCoverage:{value:this.options.coverage},uCloudDensity:{value:this.options.cloudDensity},uCloudLayer:{value:new THREE.Vector2(...this.options.cloudLayer)},uWindOffset:{value:this.windOffset},uCloudSun:{value:new THREE.Vector3()},
+      uCloudAmbTop:{value:new THREE.Vector3()},uCloudAmbBottom:{value:new THREE.Vector3()},uFrame:{value:0}};
+    this.skyMaterial=new THREE.ShaderMaterial({vertexShader:SKY_VS,fragmentShader:SKY_FS,uniforms:this.uniforms,side:THREE.BackSide,depthTest:false,depthWrite:false,toneMapped:false});this.setCloudQuality(this.options.clouds);
+    this.skyScene=new THREE.Scene();this.skyMesh=new THREE.Mesh(new THREE.BoxGeometry(2,2,2),this.skyMaterial);this.skyMesh.frustumCulled=false;this.skyScene.add(this.skyMesh);
+    this.pmrem=new THREE.PMREMGenerator(renderer);this.pmrem.compileCubemapShader();this.envTarget=null;
+    if(this.options.background)scene.background=this.cube.texture;
+    // Sun and moon discs, stars: drawn in the main scene far away so they receive bloom and light shafts.
+    this.group=new THREE.Group();this.group.name='ke-sky';this.group.userData.keNoGI=true;scene.add(this.group);
+    const disc=(size,fs,uniforms)=>{const m=new THREE.Mesh(new THREE.PlaneGeometry(size,size),new THREE.ShaderMaterial({uniforms,vertexShader:'varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',fragmentShader:fs,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,fog:false,toneMapped:false}));m.frustumCulled=false;m.renderOrder=-10;m.userData.keNoGI=true;this.group.add(m);return m;};
+    this.sunMesh=disc(1,'uniform vec3 uColor;uniform float uGlow;varying vec2 vUv;void main(){vec2 d=vUv-.5;float r=length(d)*2.;float core=smoothstep(.2,.17,r);float limb=mix(.75,1.,sqrt(max(1.-r*r*25.,0.)));float glow=exp(-r*6.)*uGlow+exp(-r*18.)*uGlow*2.;gl_FragColor=vec4(uColor*(core*limb*40.+glow),1.);}',{uColor:{value:new THREE.Color(1,1,1)},uGlow:{value:.6}});
+    this.moonTex=moonTexture(THREE);
+    this.moonMesh=disc(1,'uniform sampler2D map;uniform float uI;uniform vec3 uLit;varying vec2 vUv;void main(){vec4 t=texture2D(map,vUv);vec2 d=vUv-.5;float r=length(d)*2.;float glow=exp(-r*4.)*.08;vec3 n=vec3(d*2.,sqrt(max(1.-dot(d*2.,d*2.),0.)));float lit=clamp(dot(n,uLit)*1.4+.15,0.,1.);gl_FragColor=vec4((t.rgb*t.a*lit*2.2+vec3(.55,.62,.8)*glow)*uI,1.);}',{map:{value:this.moonTex},uI:{value:1},uLit:{value:new THREE.Vector3(.4,.2,1).normalize()}});
+    this.moonMesh.material.blending=THREE.NormalBlending;this.moonMesh.material.transparent=true;
+    if(this.options.stars){const n=2400,r=KE.random(4242),pos=new Float32Array(n*3),col=new Float32Array(n*3);for(let i=0;i<n;i++){const u=r()*2-1,a=r()*Math.PI*2,s=Math.sqrt(1-u*u);pos.set([s*Math.cos(a),Math.abs(u)*.98+.02,s*Math.sin(a)],i*3);const m=Math.pow(r(),6)*3+.25,t=r();col.set([m*(t<.2?.8:1),m*(t<.2?.85:t>.9?.85:1),m*(t>.9?.7:1)],i*3);}
+      const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(pos,3));g.setAttribute('color',new THREE.BufferAttribute(col,3));
+      this.stars=new THREE.Points(g,new THREE.ShaderMaterial({uniforms:{uOpacity:{value:0},uScale:{value:1},uTime:{value:0}},vertexColors:true,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,fog:false,toneMapped:false,
+        vertexShader:'uniform float uScale;uniform float uTime;varying vec3 vC;void main(){vC=color*(.75+.25*sin(uTime*2.3+position.x*91.+position.z*37.));vec4 mv=modelViewMatrix*vec4(position,1.);gl_Position=projectionMatrix*mv;gl_PointSize=max(1.2,2.2*uScale*length(color));}',
+        fragmentShader:'uniform float uOpacity;varying vec3 vC;void main(){vec2 d=gl_PointCoord-.5;float a=smoothstep(.5,.1,length(d));gl_FragColor=vec4(vC*a*uOpacity,1.);}'}));
+      this.stars.frustumCulled=false;this.stars.renderOrder=-11;this.group.add(this.stars);}
+    this._v=new THREE.Vector3();this._c=[0,0,0];this._t=[0,0,0];this.onSettings=KE.events.on('settings',s=>{if(s.clouds!==this.options.clouds)this.setCloudQuality(s.clouds);});
+    this.update(0,null);this.fullRefresh=true;
+  }
+  /* 0 = no clouds, 1 = fast (24 steps), 2 = rich (48 steps, 512² faces recommended). */
+  setCloudQuality(q){q=clamp(Math.round(q||0),0,2);this.options.clouds=q;const d=this.skyMaterial.defines;Object.assign(d,{VIEW_SAMPLES:q>=2?16:12,LIGHT_SAMPLES:q>=2?8:6,CLOUD_STEPS:q>=2?48:q===1?24:1});this.uniforms.uClouds.value=q>0?1:0;this.skyMaterial.needsUpdate=true;this.refresh();return this;}
+  refresh(){this.fullRefresh=true;this.envDirty=true;this.envAge=1e9;return this;}
+  /* Day fraction with the same convention as KE.dayCycle: 0 sunrise → .335 noon → .67 sunset, .67–1 night. */
+  setTime(t){this.time=((t%1)+1)%1;this.manualSun=null;return this;}
+  setSunDirection(v){this.manualSun=(this.manualSun||new this.THREE.Vector3()).copy(v).normalize();return this;}
+  setWeather({coverage,density,wind}={}){if(coverage!==undefined)this.options.coverage=coverage;if(density!==undefined)this.options.cloudDensity=density;if(wind)this.options.wind=wind;this.envDirty=true;return this;}
+  computeSun(){const d=this.time;let a;if(d<.67)a=d/.67*Math.PI;else a=Math.PI+(d-.67)/.33*Math.PI;
+    const s=this.sunDirection;if(this.manualSun)s.copy(this.manualSun);else s.set(Math.cos(a)*.78,Math.sin(a)*.82,-.42+Math.cos(a)*.18).normalize();
+    this.moonDirection.set(-s.x*.9+.15,Math.max(.12,-s.y*.85+.1),-s.z*.9-.2).normalize();}
+  update(dt=0,camera=null){const T=this.THREE,o=this.options,U=this.uniforms;this.frame++;
+    const prevSun=this._prevSun||(this._prevSun=new T.Vector3(0,-2,0));this.computeSun();const sun=this.sunDirection,elev=sun.y;
+    this.night=1-smooth(-.12,.04,elev);this.isNight=elev<-.04;
+    // Light: the sun by day, the moon by night, crossfading through twilight.
+    const sp=[0,RG+o.altitude,0];transmittance(sp,[sun.x,sun.y,sun.z],12,this._t);const dayK=smooth(-.06,.03,elev);
+    this.sunColor.setRGB(this._t[0],this._t[1],this._t[2]);const light=o.sun;
+    if(light){const moonK=o.moonLight?smooth(-.02,-.12,elev):0;if(dayK>=moonK){this.lightDirection.copy(sun);light.color.copy(this.sunColor);light.intensity=o.sunLightIntensity*dayK;}else{this.lightDirection.copy(this.moonDirection);light.color.setRGB(.62,.72,1);light.intensity=o.moonLightIntensity*moonK;}
+      const tgt=camera?camera.position:light.target.position;if(!light.target.parent)this.scene.add(light.target);light.target.position.set(tgt.x,0,tgt.z);light.position.copy(light.target.position).addScaledVector(this.lightDirection,o.lightDistance);light.target.updateMatrixWorld();}
+    // Fog, zenith and ambient colours from the CPU atmosphere model (throttled).
+    if(prevSun.distanceToSquared(sun)>1e-6||this.frame<3){const s=[sun.x,sun.y,sun.z],c=this._c;let fr=0,fg=0,fb=0;for(let k=0;k<4;k++){const a=k*Math.PI/2+.4,dir=[Math.cos(a)*.998,.05,Math.sin(a)*.998];scatter(dir,s,o.sunIntensity,o.altitude,c);fr+=c[0];fg+=c[1];fb+=c[2];}
+      const nightFog=[.012,.018,.035];this.fogColor.setRGB(fr/4*o.skyScale+nightFog[0]*this.night,fg/4*o.skyScale+nightFog[1]*this.night,fb/4*o.skyScale+nightFog[2]*this.night);
+      scatter([0,1,0],s,o.sunIntensity,o.altitude,c);this.zenithColor.setRGB(c[0]+.01*this.night,c[1]+.016*this.night,c[2]+.035*this.night);prevSun.copy(sun);}
+    this.ambientSky.copy(this.zenithColor).lerp(this.fogColor,.5);this.ambientGround.setRGB(o.groundColor[0],o.groundColor[1],o.groundColor[2]).multiplyScalar(4*Math.max(elev,0)+.15);
+    if(o.hemi){o.hemi.color.copy(this.ambientSky);o.hemi.groundColor.copy(this.ambientGround);}
+    // Publish the active light to shared scene uniforms (water/VFX use them even without a pipeline).
+    const SU=KE.sceneUniforms(T);SU.keSunDirection.value.copy(this.lightDirection);if(light)SU.keSunColor.value.copy(light.color).multiplyScalar(light.intensity);
+    // Shader uniforms.
+    this.cloudTime+=dt;this.windOffset.set(o.wind[0]*this.cloudTime,0,o.wind[1]*this.cloudTime);
+    U.uSun.value.copy(sun);U.uMoon.value.copy(this.moonDirection);U.uSunI.value=o.sunIntensity;U.uMoonI.value=o.sunIntensity*.0035*this.night;U.uNightGlow.value=this.night;U.uSkyScale.value=o.skyScale;U.uCoverage.value=o.coverage;U.uCloudDensity.value=o.cloudDensity;
+    U.uGround.value.set(o.groundColor[0],o.groundColor[1],o.groundColor[2]).multiplyScalar(Math.max(elev,0)*3+.08+.02*this.night);
+    const cl=elev>-.1?this.sunColor:null,li=elev>-.1?o.sunIntensity*Math.max(dayK,.02):o.sunIntensity*.0035;if(cl)U.uCloudSun.value.set(cl.r*li,cl.g*li,cl.b*li);else U.uCloudSun.value.set(.62*li,.72*li,li);
+    U.uCloudAmbTop.value.set(this.zenithColor.r,this.zenithColor.g,this.zenithColor.b).multiplyScalar(1.6);U.uCloudAmbBottom.value.copy(U.uCloudAmbTop.value).multiplyScalar(.62).add(this._v.set(this.ambientGround.r,this.ambientGround.g,this.ambientGround.b).multiplyScalar(.3));U.uFrame.value=this.frame%64;
+    // Discs and stars follow the camera.
+    if(camera){const far=camera.far*.8,p=camera.position;this.sunMesh.position.copy(p).addScaledVector(sun,far);this.sunMesh.scale.setScalar(far*.075);this.sunMesh.lookAt(p);this.sunMesh.visible=o.sunDisc&&elev>-.08;this.sunMesh.material.uniforms.uColor.value.copy(this.sunColor).multiplyScalar(dayK*1.4+.05);
+      this.moonMesh.position.copy(p).addScaledVector(this.moonDirection,far*.97);this.moonMesh.scale.setScalar(far*.045);this.moonMesh.lookAt(p);this.moonMesh.visible=o.moonDisc&&this.night>.01;this.moonMesh.material.uniforms.uI.value=.25+this.night*1.2;
+      if(this.stars){this.stars.position.copy(p);this.stars.scale.setScalar(far*.99);this.stars.material.uniforms.uOpacity.value=this.night*this.night*(1-o.coverage*.6);this.stars.material.uniforms.uTime.value+=dt;this.stars.visible=this.night>.02;}}
+    // Time-sliced cube capture: one face per frame (all six on a full refresh), then PMREM when a cycle completes.
+    const R=this.renderer,prev=R.getRenderTarget(),tm=R.toneMapping,ac=R.autoClear;R.toneMapping=T.NoToneMapping;R.autoClear=true;
+    const faces=this.fullRefresh?6:1;const cams=this.cubeCamera.children;
+    for(let i=0;i<faces;i++){R.setRenderTarget(this.cube,this.face);R.render(this.skyScene,cams[this.face]);this.face=(this.face+1)%6;}
+    R.setRenderTarget(prev);R.toneMapping=tm;R.autoClear=ac;
+    this.envAge+=dt;if(this.face===0||this.fullRefresh){if(o.environment&&(this.fullRefresh||this.envAge>=o.envInterval)){this.updateEnvironment();this.envAge=0;}}
+    this.fullRefresh=false;return this;}
+  updateEnvironment(){const R=this.renderer,prev=R.getRenderTarget();const rt=this.pmrem.fromCubemap(this.cube.texture);R.setRenderTarget(prev);
+    if(this.envTarget)this.envTarget.dispose();this.envTarget=rt;this.scene.environment=rt.texture;this.environment=rt.texture;return rt.texture;}
+  /* Recommended envMapIntensity for standard materials at the current time (dimmer at night). */
+  get envIntensity(){return this.options.envIntensityDay+(this.options.envIntensityNight-this.options.envIntensityDay)*this.night;}
+  dispose(){this.onSettings&&this.onSettings();if(this.scene.background===this.cube.texture)this.scene.background=null;if(this.envTarget&&this.scene.environment===this.envTarget.texture)this.scene.environment=null;
+    this.cube.dispose();this.noise.dispose();this.skyMaterial.dispose();this.skyMesh.geometry.dispose();if(this.envTarget)this.envTarget.dispose();this.pmrem.dispose();this.moonTex.dispose();KE.disposeObject(this.group);}
+};
+KE.registerModule('sky',{provides:['SkyAtmosphere','atmosphere']});
+})();
+
+/* ===== module: 14-shadows.js ===== */
+/* KE.CascadedShadows — stable cascaded shadow maps for the sun.
+   The sun DirectionalLight becomes cascade 0; N-1 shadow-only lights (intensity 0) carry the other cascades.
+   Each cascade fits a bounding sphere of its view-frustum slice (rotation invariant) and snaps its centre to
+   whole shadow texels, so shadows do not shimmer while the camera moves. Set-up materials evaluate lighting
+   once from the sun and blend the cascades' shadow terms across overlap bands (a partition of unity), then
+   fade out beyond the shadow distance. Materials that are not set up still light correctly (the extra
+   lights have zero intensity) and receive cascade-0 shadows. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+const MAX=4;
+function buildChunk(THREE){
+  const src=THREE.ShaderChunk.lights_fragment_begin,start=src.indexOf('#if ( NUM_DIR_LIGHTS > 0 ) && defined( RE_Direct )'),end=src.indexOf('#if ( NUM_RECT_AREA_LIGHTS > 0 )');
+  if(start<0||end<0)throw new Error('KE.CascadedShadows: unexpected lights_fragment_begin chunk (Three.js r128 required)');
+  const block=`#if ( NUM_DIR_LIGHTS > 0 ) && defined( RE_Direct )
+	DirectionalLight directionalLight;
+	#if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+	DirectionalLightShadow directionalLightShadow;
+	#endif
+	float keCsmShadow = 0.0, keCsmW = 0.0, keCsmZ = vViewPosition.z;
+	#pragma unroll_loop_start
+	for ( int i = 0; i < NUM_DIR_LIGHTS; i ++ ) {
+		#if ( UNROLLED_LOOP_INDEX < KE_CSM_CASCADES ) && defined( USE_SHADOWMAP ) && ( UNROLLED_LOOP_INDEX < NUM_DIR_LIGHT_SHADOWS )
+		keCsmCascade = keCascades[ i ];
+		keCsmWeight = smoothstep( keCsmCascade.x, keCsmCascade.y, keCsmZ ) * ( 1.0 - smoothstep( keCsmCascade.z, keCsmCascade.w, keCsmZ ) );
+		if ( keCsmWeight > 0.0 ) {
+			directionalLightShadow = directionalLightShadows[ i ];
+			#ifdef USE_KE_PCSS
+			keCsmShadow += keCsmWeight * ( receiveShadow ? keShadowPCSS( directionalShadowMap[ i ], directionalLightShadow.shadowBias, vDirectionalShadowCoord[ i ], kePcss[ i ] ) : 1.0 );
+			#else
+			keCsmShadow += keCsmWeight * ( receiveShadow ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0 );
+			#endif
+			keCsmW += keCsmWeight;
+		}
+		#endif
+	}
+	#pragma unroll_loop_end
+	keCsmShadow += 1.0 - keCsmW;
+	#pragma unroll_loop_start
+	for ( int i = 0; i < NUM_DIR_LIGHTS; i ++ ) {
+		#if ( UNROLLED_LOOP_INDEX == 0 ) || ( UNROLLED_LOOP_INDEX >= KE_CSM_CASCADES )
+		directionalLight = directionalLights[ i ];
+		getDirectionalDirectLightIrradiance( directionalLight, geometry, directLight );
+		#if ( UNROLLED_LOOP_INDEX == 0 )
+		directLight.color *= keCsmShadow;
+		#elif defined( USE_SHADOWMAP ) && ( UNROLLED_LOOP_INDEX < NUM_DIR_LIGHT_SHADOWS )
+		directionalLightShadow = directionalLightShadows[ i ];
+		directLight.color *= all( bvec2( directLight.visible, receiveShadow ) ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;
+		#endif
+		RE_Direct( directLight, geometry, material, reflectedLight );
+		#endif
+	}
+	#pragma unroll_loop_end
+#endif
+
+`;
+  return src.slice(0,start)+'vec4 keCsmCascade; float keCsmWeight;\n'+block+src.slice(end);
+}
+
+/* Percentage-closer soft shadows: blocker search, then a filter whose radius grows with the receiver-blocker
+   distance in world units (orthographic cascades store linear depth), giving contact-hardening penumbrae. */
+const PCSS_GLSL=`
+#ifdef USE_KE_PCSS
+uniform vec4 kePcss[${MAX}];
+float keIgn(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))));}
+vec2 keSpiral(int i,float n,float rot){float r=sqrt((float(i)+.5)/n);float a=float(i)*2.39996323+rot;return vec2(cos(a),sin(a))*r;}
+float keShadowPCSS(sampler2D map,float bias,vec4 coord,vec4 P){coord.xyz/=coord.w;coord.z+=bias;
+ if(coord.x<0.||coord.y<0.||coord.x>1.||coord.y>1.||coord.z>1.)return 1.;float rot=keIgn(gl_FragCoord.xy)*6.2831853;
+ float blockers=0.,sum=0.;for(int i=0;i<12;i++){float d=unpackRGBAToDepth(texture2D(map,coord.xy+keSpiral(i,12.,rot)*P.z));if(d<coord.z){sum+=d;blockers+=1.;}}
+ if(blockers<.5)return 1.;float pen=clamp((coord.z-sum/blockers)*P.x,P.w*1.5,P.y);float lit=0.;
+ for(int i=0;i<16;i++)lit+=step(coord.z,unpackRGBAToDepth(texture2D(map,coord.xy+keSpiral(i,16.,rot+1.7)*pen)));return lit/16.;}
+#endif
+`;
+KE.CascadedShadows=class{
+  constructor(THREE,scene,{sun,cascades=KE.settings.cascades||3,mapSize=KE.settings.shadowRes||2048,maxFar=null,lambda:splitLambda=.72,overlap=.12,margin=60,bias=-.0004,normalBias=1.2,fadeStart=.85,soft=KE.settings.preset!=='low'&&KE.settings.preset!=='medium',lightAngle=1.2,maxPenumbra=.9,searchDistance=6}={}){
+    if(!sun||!sun.isDirectionalLight)throw new TypeError('KE.CascadedShadows requires {sun: DirectionalLight}');
+    Object.assign(this,{THREE,scene,sun,lambda:splitLambda,overlap,margin,bias,normalBias,fadeStart,maxFar,soft:!!soft,lightAngle,maxPenumbra,searchDistance});
+    this.chunk=buildChunk(THREE);this.uniforms={keCascades:{value:Array.from({length:MAX},()=>new THREE.Vector4(-2,-1,1e9,1e9+1))},kePcss:{value:Array.from({length:MAX},()=>new THREE.Vector4(1,.01,.005,.001))}};
+    this.materials=new Set();this.restore=new Map();this.lights=[];this.splits=[];this.direction=new THREE.Vector3(0,-1,0);this.enabled=true;
+    this._m=new THREE.Matrix4();this._mi=new THREE.Matrix4();this._v=new THREE.Vector3();this._c=new THREE.Vector3();this._up=new THREE.Vector3(0,1,0);
+    this.configure(cascades,mapSize);
+    this.onSettings=KE.events.on('settings',s=>{if(s.cascades!==this.count||s.shadowRes!==this.mapSize)this.configure(s.cascades,s.shadowRes);});
+  }
+  configure(count,mapSize){const T=this.THREE;count=Math.max(1,Math.min(MAX,Math.round(count||1)));mapSize=mapSize||2048;
+    for(const l of this.lights.slice(1)){l.parent&&l.parent.remove(l);l.target.parent&&l.target.parent.remove(l.target);if(l.shadow.map){l.shadow.map.dispose();l.shadow.map=null;}}
+    this.lights=[this.sun];this.sun.castShadow=true;
+    for(let i=1;i<count;i++){const l=new T.DirectionalLight(0xffffff,0);l.castShadow=true;l.name='ke-csm-'+i;this.scene.add(l,l.target);this.lights.push(l);}
+    for(const l of this.lights){if(l.shadow.mapSize.x!==mapSize){l.shadow.mapSize.set(mapSize,mapSize);if(l.shadow.map){l.shadow.map.dispose();l.shadow.map=null;}}l.shadow.bias=this.bias;l.shadow.camera.near=.5;}
+    this.count=count;this.mapSize=mapSize;for(const m of this.materials){m.defines.KE_CSM_CASCADES=count;m.needsUpdate=true;}return this;}
+  /* Patch a lit material (Standard, Physical, Phong, Toon). Composes with existing onBeforeCompile hooks. */
+  setupMaterial(m){if(!m||this.materials.has(m)||m.userData.keNoCSM)return m;if(!(m.isMeshStandardMaterial||m.isMeshPhongMaterial||m.isMeshToonMaterial))return m;
+    const prev=m.onBeforeCompile,ownKey=Object.prototype.hasOwnProperty.call(m,'customProgramCacheKey')?m.customProgramCacheKey:null,prevKey=m.customProgramCacheKey.bind(m),chunk=this.chunk,U=this.uniforms;this.restore.set(m,{prev,ownKey});m.defines=m.defines||{};m.defines.USE_KE_CSM='';m.defines.KE_CSM_CASCADES=this.count;if(this.soft)m.defines.USE_KE_PCSS='';
+    m.onBeforeCompile=(sh,r)=>{if(prev)prev.call(m,sh,r);sh.uniforms.keCascades=U.keCascades;sh.uniforms.kePcss=U.kePcss;sh.fragmentShader='uniform vec4 keCascades['+MAX+'];\n'+sh.fragmentShader.replace('#include <shadowmap_pars_fragment>','#include <shadowmap_pars_fragment>\n'+PCSS_GLSL).replace('#include <lights_fragment_begin>',chunk);};
+    m.customProgramCacheKey=()=>prevKey()+':ke-csm';
+    m.needsUpdate=true;this.materials.add(m);return m;}
+  setupScene(root=this.scene){root.traverse(o=>{if(!o.material)return;for(const m of [o.material].flat())this.setupMaterial(m);});return this;}
+  /* Practical split scheme (log/uniform blend), then stable sphere fits per cascade. */
+  update(camera){if(!this.enabled)return;const T=this.THREE,n=camera.near,far=Math.min(camera.far,this.maxFar||KE.settings.view||camera.far),N=this.count;
+    this.direction.copy(this.sun.target.position).sub(this.sun.position).normalize();if(!Number.isFinite(this.direction.x))this.direction.set(0,-1,0);
+    const s=this.splits;s.length=0;s.push(n);for(let i=1;i<N;i++){const f=i/N;s.push(this.lambda*n*Math.pow(far/n,f)+(1-this.lambda)*(n+(far-n)*f));}s.push(far);
+    const fov=(camera.fov||50)*Math.PI/180,k2=1+Math.pow(Math.tan(fov/2),2)*(1+camera.aspect*camera.aspect),k=Math.sqrt(k2-1);
+    camera.updateMatrixWorld();const fwd=this._v.set(0,0,-1).transformDirection(camera.matrixWorld);
+    // Light view basis for texel snapping.
+    const up=Math.abs(this.direction.y)>.99?this._up.set(1,0,0):this._up.set(0,1,0);this._m.lookAt(this._c.set(0,0,0),this.direction,up);this._mi.copy(this._m).invert();
+    for(let i=0;i<N;i++){const b=i>0?(s[i]-s[i-1])*this.overlap:0,near=Math.max(n,s[i]-b),farI=s[i+1];
+      const zc=Math.min(farI,(near+farI)*.5*k2),r=Math.sqrt((farI-zc)**2+(farI*k)**2)*1.02,center=this._c.copy(camera.position).addScaledVector(fwd,zc);
+      const texel=2*r/this.mapSize;center.applyMatrix4(this._mi);center.x=Math.floor(center.x/texel)*texel;center.y=Math.floor(center.y/texel)*texel;center.applyMatrix4(this._m);
+      const l=this.lights[i],cam=l.shadow.camera;Object.assign(cam,{left:-r,right:r,top:r,bottom:-r,near:.5,far:2*r+2*this.margin});cam.updateProjectionMatrix();
+      l.position.copy(center).addScaledVector(this.direction,-(r+this.margin));l.target.position.copy(center);l.target.updateMatrixWorld();l.updateMatrixWorld();
+      l.shadow.normalBias=texel*this.normalBias;l.shadow.bias=this.bias*(1+i*.5);
+      {const uvPerWorld=1/(2*r),tanA=Math.tan(this.lightAngle*Math.PI/180),range=cam.far-cam.near;this.uniforms.kePcss.value[i].set(range*tanA*uvPerWorld,this.maxPenumbra*uvPerWorld,Math.max(this.searchDistance*tanA*uvPerWorld,2/this.mapSize),1/this.mapSize);}
+      if(i>0){l.color.copy(this.sun.color);l.intensity=0;}
+      const nb=i+1<N?(s[i+1]-s[i])*this.overlap:(far-s[i])*(1-this.fadeStart),v=this.uniforms.keCascades.value[i];
+      v.set(i===0?-2:s[i]-b,i===0?-1:s[i]+1e-4,s[i+1]-nb,s[i+1]+1e-4);}
+    for(let i=N;i<MAX;i++)this.uniforms.keCascades.value[i].set(-2,-1,1e9,1e9+1);}
+  dispose(){this.enabled=false;this.onSettings&&this.onSettings();for(const l of this.lights.slice(1)){l.parent&&l.parent.remove(l);l.target.parent&&l.target.parent.remove(l.target);if(l.shadow.map)l.shadow.map.dispose();}this.lights=[this.sun];
+    for(const m of this.materials){const r=this.restore.get(m);delete m.defines.USE_KE_CSM;delete m.defines.KE_CSM_CASCADES;delete m.defines.USE_KE_PCSS;m.onBeforeCompile=r.prev;if(r.ownKey)m.customProgramCacheKey=r.ownKey;else delete m.customProgramCacheKey;m.needsUpdate=true;}this.materials.clear();this.restore.clear();}
+};
+KE.registerModule('shadows',{provides:['CascadedShadows']});
+})();
+
+/* ===== module: 16-lights.js ===== */
+/* KE.LightPool — many dynamic point lights on a forward renderer.
+   Games register any number of virtual lights (lanterns, torches, spells); each frame the pool scores them
+   by visibility-weighted proximity to the camera and drives a fixed set of real PointLights. Keeping the
+   real light count constant avoids shader recompiles; assignments are sticky and intensities crossfade, so
+   lights do not pop as the ranking changes. Optional per-light flicker. The pool size follows
+   KE.settings.lights (0 disables every real light). */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+KE.LightPool=class{
+  constructor(THREE,scene,{max=KE.settings.lights??4,fade=6,shadows=0,shadowMapSize=256}={}){
+    Object.assign(this,{THREE,scene,fade,shadows,shadowMapSize});this.virtual=new Map();this.real=[];this.nextId=1;this.intensity=1;this.time=0;
+    this._frustum=new THREE.Frustum();this._pv=new THREE.Matrix4();this._sphere=new THREE.Sphere();this.resize(max);
+    this.onSettings=KE.events.on('settings',s=>{if(s.lights!==this.real.length)this.resize(s.lights);});}
+  resize(n){const T=this.THREE;n=Math.max(0,Math.min(16,Math.round(n||0)));
+    while(this.real.length>n){const r=this.real.pop();r.light.parent&&r.light.parent.remove(r.light);if(r.light.shadow&&r.light.shadow.map)r.light.shadow.map.dispose();if(r.id!==null){const v=this.virtual.get(r.id);if(v)v.slot=null;}}
+    while(this.real.length<n){const l=new T.PointLight(0xffffff,0,10,2);l.name='ke-pool-'+this.real.length;const i=this.real.length;if(i<this.shadows){l.castShadow=true;l.shadow.mapSize.set(this.shadowMapSize,this.shadowMapSize);l.shadow.bias=-.002;}this.scene.add(l);this.real.push({light:l,id:null,level:0});}
+    return this;}
+  /* Real lights stay visible (intensity 0 when idle): hiding them would change NUM_POINT_LIGHTS and recompile every lit material.
+     {position:[x,y,z]|Vector3, color, intensity:2, distance:10, decay:2, flicker:0, priority:1, enabled:true} → id */
+  add(o={}){const T=this.THREE,id=this.nextId++;const p=o.position&&o.position.isVector3?o.position.clone():new T.Vector3(...(o.position||[0,0,0]));
+    this.virtual.set(id,{id,position:p,color:new T.Color(o.color===undefined?0xffc27a:o.color),intensity:o.intensity??2,distance:o.distance??10,decay:o.decay??2,flicker:o.flicker||0,priority:o.priority??1,enabled:o.enabled!==false,phase:Math.random()*100,slot:null,score:0});return id;}
+  set(id,patch){const v=this.virtual.get(id);if(!v)return false;for(const [k,val] of Object.entries(patch)){if(k==='position')v.position.copy(val.isVector3?val:new this.THREE.Vector3(...val));else if(k==='color')v.color.set(val);else v[k]=val;}return true;}
+  remove(id){const v=this.virtual.get(id);if(!v)return false;if(v.slot!==null)this.real[v.slot].id=null;this.virtual.delete(id);return true;}
+  get count(){return this.virtual.size;}
+  update(dt,camera){this.time+=dt;if(!this.real.length)return;const cam=camera.position;camera.updateMatrixWorld();this._pv.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);this._frustum.setFromProjectionMatrix(this._pv);
+    const list=this._list||(this._list=[]);list.length=0;
+    for(const v of this.virtual.values()){if(!v.enabled||v.intensity<=0){v.score=0;continue;}this._sphere.set(v.position,v.distance);const inView=this._frustum.intersectsSphere(this._sphere);const d=v.position.distanceTo(cam);
+      v.score=v.priority*v.intensity*(inView?1:.25)/(1+Math.max(0,d-v.distance*.25)**2*.02)*(v.slot!==null?1.25:1);if(d>v.distance*6)v.score*=.1;list.push(v);}
+    list.sort((a,b)=>b.score-a.score);const keep=new Set(list.slice(0,this.real.length).filter(v=>v.score>1e-4).map(v=>v.id));
+    for(const r of this.real)if(r.id!==null&&!keep.has(r.id)){r.target=0;}
+    for(const id of keep){const v=this.virtual.get(id);if(v.slot!==null)continue;const free=this.real.findIndex(r=>r.id===null||(!keep.has(r.id)&&r.level<.02));if(free<0)continue;const r=this.real[free];if(r.id!==null){const old=this.virtual.get(r.id);if(old)old.slot=null;}r.id=id;r.level=0;v.slot=free;}
+    const k=1-Math.exp(-this.fade*dt);
+    for(const r of this.real){const v=r.id!==null?this.virtual.get(r.id):null;const want=v&&keep.has(v.id)?1:0;r.level+=(want-r.level)*k;
+      if(!v){r.light.intensity=0;continue;}if(r.level<.01&&!want){v.slot=null;r.id=null;r.light.intensity=0;continue;}
+      const fl=v.flicker?1-v.flicker*(.5+.5*Math.sin(this.time*13+v.phase)*Math.sin(this.time*7.3+v.phase*1.7)):1;
+      r.light.position.copy(v.position);r.light.color.copy(v.color);r.light.distance=v.distance;r.light.decay=v.decay;r.light.intensity=v.intensity*fl*r.level*this.intensity;}}
+  dispose(){this.onSettings&&this.onSettings();this.resize(0);this.virtual.clear();}
+};
+KE.registerModule('lights',{provides:['LightPool']});
+})();
+
+/* ===== module: 18-gi.js ===== */
+/* KE.ProbeVolume — dynamic diffuse global illumination from a grid of irradiance probes.
+   Probes are refreshed a few per frame (nearest to the camera first): each renders a small cube map of the
+   scene's GI layer (static geometry, sky background, direct light and — because lit materials themselves
+   sample the volume — previously gathered bounce light, so bounces accumulate over refreshes), which a GPU
+   pass projects onto order-1 spherical harmonics and blends into a probe atlas with hysteresis. Lit
+   materials that are set up replace their sky-only diffuse image lighting with trilinearly interpolated,
+   normal-weighted probe irradiance, and scale specular reflections by the probe/sky ratio so enclosed spaces
+   stop reflecting the open sky. Inspired by probe-based dynamic GI; there is no per-probe visibility
+   (depth) data, so thin walls can leak light, and probes cannot capture objects outside the GI layer. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+KE.LAYERS.GI=KE.LAYERS.GI||2;
+const TEXELS=5;// 4 SH (L0, L1y, L1z, L1x) + position/validity
+
+const PROJECT_FS=`uniform samplerCube tCube;uniform vec3 uPosition;uniform float uValid;uniform float uAlpha;uniform float uRow0;
+void main(){int k=int(floor(gl_FragCoord.y-uRow0));if(k>=4){gl_FragColor=vec4(uPosition,uValid);return;}
+ vec3 acc=vec3(0.);const int N=128;float ga=2.39996323;
+ for(int i=0;i<N;i++){float y=1.-(float(i)+.5)/float(N)*2.;float r=sqrt(max(1.-y*y,0.));float a=float(i)*ga;vec3 d=vec3(cos(a)*r,y,sin(a)*r);vec3 L=textureCube(tCube,d).rgb;
+  float Y=k==0?.282095:k==1?.488603*d.y:k==2?.488603*d.z:.488603*d.x;acc+=min(L,vec3(64.))*Y;}
+ gl_FragColor=vec4(acc*12.566371/float(N),uAlpha);}`;
+
+/* Irradiance lookup injected into lit materials. */
+const GI_PARS=`uniform sampler2D keProbeAtlas;uniform vec2 keProbeAtlasSize;uniform vec3 keProbeMin;uniform vec3 keProbeStep;uniform vec3 keProbeCount;uniform float keGIStrength;uniform float keGIOn;varying vec3 vKeWorld;
+vec4 keProbeTexel(vec3 c,float k){float col=c.x+c.z*keProbeCount.x;float row=c.y*${TEXELS}.+k;return texture2D(keProbeAtlas,(vec2(col,row)+.5)/keProbeAtlasSize);}
+vec3 keProbeIrradiance(vec3 P,vec3 N,out float valid){vec3 g=clamp((P+N*.35-keProbeMin)/keProbeStep,vec3(0.),keProbeCount-1.001);vec3 b=floor(g),f=g-b;vec3 E=vec3(0.);float ws=0.;valid=0.;
+ for(int i=0;i<8;i++){vec3 o=vec3(float(i-(i/2)*2),float((i/2)-(i/4)*2),float(i/4));vec3 c=b+o;vec3 tw=mix(1.-f,f,o);float w=tw.x*tw.y*tw.z;
+  vec4 pv=keProbeTexel(c,4.);if(pv.a<.01||w<1e-5)continue;vec3 dir=normalize(pv.xyz-P+1e-4);float bw=(dot(dir,N)+1.)*.5;w*=bw*bw+.08;w*=pv.a;
+  vec3 c0=keProbeTexel(c,0.).rgb,c1=keProbeTexel(c,1.).rgb,c2=keProbeTexel(c,2.).rgb,c3=keProbeTexel(c,3.).rgb;
+  vec3 e=3.141593*.282095*c0+2.094395*.488603*(c1*N.y+c2*N.z+c3*N.x);E+=max(e,vec3(0.))*w;ws+=w;valid+=pv.a*tw.x*tw.y*tw.z;}
+ return ws>1e-5?E/ws:vec3(0.);}`;
+function buildMapsChunk(THREE){const src=THREE.ShaderChunk.lights_fragment_maps;
+  const irr=/iblIrradiance \+= getLightProbeIndirectIrradiance\([^;]*\);/,rad=/radiance \+= (getLightProbeIndirectRadiance\([^;]*geometry\.normal[^;]*\);)/;
+  if(!irr.test(src)||!rad.test(src))throw new Error('KE.ProbeVolume: unexpected lights_fragment_maps chunk (Three.js r128 required)');
+  return 'float keSpecOcc=1.;\n'+src.replace(irr,`vec3 keSkyE=getLightProbeIndirectIrradiance( geometry, maxMipLevel );float keValid=0.;vec3 keWN=inverseTransformDirection(geometry.normal,viewMatrix);
+		vec3 keProbeE=keGIOn>.5?keProbeIrradiance(vKeWorld,keWN,keValid)*envMapIntensity*keGIStrength:vec3(0.);float keW=clamp(keValid,0.,1.)*keGIOn;
+		iblIrradiance+=mix(keSkyE,keProbeE,keW);float keLs=dot(keSkyE,vec3(.2126,.7152,.0722)),keLp=dot(keProbeE,vec3(.2126,.7152,.0722));keSpecOcc=mix(1.,clamp(keLp/max(keLs,1e-4),.08,1.),keW);`)
+    .replace(rad,'radiance += keSpecOcc * $1');}
+
+KE.ProbeVolume=class{
+  constructor(THREE,renderer,scene,{bounds,spacing=8,counts=null,heightAt=null,lift=.8,faceSize=16,probesPerFrame=2,hysteresis=.8,strength=1,far=80}={}){
+    if(!bounds||!bounds.isBox3)throw new TypeError('KE.ProbeVolume requires {bounds: THREE.Box3}');
+    Object.assign(this,{THREE,renderer,scene,heightAt,lift,probesPerFrame,hysteresis,enabled:true});
+    const size=bounds.getSize(new THREE.Vector3());this.count=counts?new THREE.Vector3(...counts):new THREE.Vector3(Math.max(2,Math.round(size.x/spacing)+1),Math.max(2,Math.round(size.y/spacing)+1),Math.max(2,Math.round(size.z/spacing)+1));
+    this.min=bounds.min.clone();this.step=new THREE.Vector3(size.x/(this.count.x-1),size.y/(this.count.y-1),size.z/(this.count.z-1));
+    const n=this.count.x*this.count.y*this.count.z;this.total=n;const W=this.count.x*this.count.z,H=this.count.y*TEXELS,caps=KE.capabilities(renderer);
+    this.atlas=new THREE.WebGLRenderTarget(W,H,{type:caps.floatRT?THREE.FloatType:THREE.HalfFloatType,format:THREE.RGBAFormat,minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter,depthBuffer:false,stencilBuffer:false,generateMipmaps:false});
+    this.cube=new THREE.WebGLCubeRenderTarget(faceSize,{type:caps.halfRT?THREE.HalfFloatType:THREE.UnsignedByteType,format:THREE.RGBAFormat,generateMipmaps:false,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter});
+    this.cubeCamera=new THREE.CubeCamera(.1,far,this.cube);this.cubeCamera.children.forEach(c=>c.layers.set(KE.LAYERS.GI));this.cubeCamera.updateMatrixWorld(true);
+    this.projectMaterial=new THREE.ShaderMaterial({vertexShader:KE.FULLSCREEN_VS,fragmentShader:PROJECT_FS,uniforms:{tCube:{value:this.cube.texture},uPosition:{value:new THREE.Vector3()},uValid:{value:1},uAlpha:{value:1},uRow0:{value:0}},depthTest:false,depthWrite:false,transparent:true,blending:THREE.CustomBlending,blendSrc:THREE.SrcAlphaFactor,blendDst:THREE.OneMinusSrcAlphaFactor,blendSrcAlpha:THREE.OneFactor,blendDstAlpha:THREE.ZeroFactor});
+    this.quad=new KE.FullScreenQuad(THREE,this.projectMaterial);
+    this.uniforms={keProbeAtlas:{value:this.atlas.texture},keProbeAtlasSize:{value:new THREE.Vector2(W,H)},keProbeMin:{value:this.min},keProbeStep:{value:this.step},keProbeCount:{value:this.count.clone()},keGIStrength:{value:strength},keGIOn:{value:1}};
+    this.mapsChunk=buildMapsChunk(THREE);this.materials=new Set();this.restore=new Map();this.probes=[];this.capturedCount=0;
+    for(let iy=0;iy<this.count.y;iy++)for(let iz=0;iz<this.count.z;iz++)for(let ix=0;ix<this.count.x;ix++){const p=new THREE.Vector3(this.min.x+ix*this.step.x,this.min.y+iy*this.step.y,this.min.z+iz*this.step.z);let valid=1;
+      if(heightAt){const g=heightAt(p.x,p.z);if(p.y<g+lift)p.y=g+lift;if(p.y>this.min.y+(iy+.999)*this.step.y&&iy<this.count.y-1)valid=0;}this.probes.push({ix,iy,iz,position:p,valid,col:ix+iz*this.count.x,row:iy*TEXELS});}
+    // Clear the atlas (validity 0 → materials fall back to the sky light until probes arrive).
+    const R=renderer,prev=R.getRenderTarget(),cc=R.getClearColor(new THREE.Color()),ca=R.getClearAlpha();R.setRenderTarget(this.atlas);R.setClearColor(0x000000,0);R.clear(true,false,false);R.setClearColor(cc,ca);R.setRenderTarget(prev);
+    this._order=[];this._v=new THREE.Vector3();this.onSettings=KE.events.on('settings',s=>{this.uniforms.keGIOn.value=s.gi===false?0:1;this.enabled=s.gi!==false;});this.uniforms.keGIOn.value=KE.settings.gi===false?0:1;this.enabled=KE.settings.gi!==false;
+  }
+  /* Put objects on the GI capture layer. Default filter: every mesh except points/lines, translucent-layer and tiny objects. */
+  tag(root=this.scene,{minRadius=.6,filter=null}={}){const T=this.THREE,s=new T.Sphere();root.updateMatrixWorld(true);
+    root.traverse(o=>{if(!o.isMesh||o.userData.keNoGI||(o.parent&&o.parent.userData.keNoGI)||o.layers.test({mask:1<<KE.LAYERS.TRANSLUCENT})&&!o.layers.test({mask:1}))return;if(filter&&!filter(o))return;
+      if(!o.isInstancedMesh){if(!o.geometry.boundingSphere)o.geometry.computeBoundingSphere();s.copy(o.geometry.boundingSphere).applyMatrix4(o.matrixWorld);if(s.radius<minRadius)return;}o.layers.enable(KE.LAYERS.GI);});return this;}
+  /* Patch lit Standard/Physical materials to use probe irradiance (composes with other onBeforeCompile hooks). */
+  setupMaterial(m){if(!m||this.materials.has(m)||!m.isMeshStandardMaterial||m.userData.keNoGI)return m;const prev=m.onBeforeCompile,ownKey=Object.prototype.hasOwnProperty.call(m,'customProgramCacheKey')?m.customProgramCacheKey:null,prevKey=m.customProgramCacheKey.bind(m),U=this.uniforms,chunk=this.mapsChunk;this.restore.set(m,{prev,ownKey});
+    m.onBeforeCompile=(sh,r)=>{if(prev)prev.call(m,sh,r);Object.assign(sh.uniforms,U);
+      sh.vertexShader='varying vec3 vKeWorld;\n'+sh.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\n{vec4 keP=vec4(transformed,1.);\n#ifdef USE_INSTANCING\nkeP=instanceMatrix*keP;\n#endif\nvKeWorld=(modelMatrix*keP).xyz;}');
+      sh.fragmentShader=GI_PARS+'\n'+sh.fragmentShader.replace('#include <lights_fragment_maps>',chunk);};
+    m.customProgramCacheKey=()=>prevKey()+':ke-gi';m.needsUpdate=true;this.materials.add(m);return m;}
+  setupScene(root=this.scene){root.traverse(o=>{if(o.material)for(const m of [o.material].flat())this.setupMaterial(m);});return this;}
+  /* Refresh probesPerFrame probes, nearest to the camera first (a full sweep restarts when the list is exhausted). */
+  update(camera,count=this.probesPerFrame){if(!this.enabled||!count)return 0;const R=this.renderer,T=this.THREE;
+    if(!this._order.length){const c=camera?camera.position:this._v.set(0,0,0);this._order=this.probes.filter(p=>p.valid).sort((a,b)=>a.position.distanceToSquared(c)-b.position.distanceToSquared(c));}
+    const prev=R.getRenderTarget(),tm=R.toneMapping,ac=R.autoClear,sm=R.shadowMap.autoUpdate,su=R.shadowMap.needsUpdate,fog=this.scene.fog;
+    R.toneMapping=T.NoToneMapping;R.autoClear=true;R.shadowMap.autoUpdate=false;R.shadowMap.needsUpdate=false;let done=0;
+    try{while(done<count&&this._order.length){const p=this._order.shift();this.cubeCamera.position.copy(p.position);this.cubeCamera.updateMatrixWorld(true);
+        const cams=this.cubeCamera.children;for(let f=0;f<6;f++){R.setRenderTarget(this.cube,f);R.render(this.scene,cams[f]);}
+        const u=this.projectMaterial.uniforms;u.uPosition.value.copy(p.position);u.uValid.value=1;u.uAlpha.value=p._seen?1-this.hysteresis:1;u.uRow0.value=p.row;
+        this.atlas.viewport.set(p.col,p.row,1,TEXELS);this.atlas.scissor.set(p.col,p.row,1,TEXELS);this.atlas.scissorTest=true;this.quad.render(R,this.atlas);this.atlas.scissorTest=false;this.atlas.viewport.set(0,0,this.atlas.width,this.atlas.height);
+        if(!p._seen){p._seen=true;this.capturedCount++;}done++;}}
+    finally{R.setRenderTarget(prev);R.toneMapping=tm;R.autoClear=ac;R.shadowMap.autoUpdate=sm;R.shadowMap.needsUpdate=su;this.scene.fog=fog;}
+    return done;}
+  /* Capture every valid probe now (blocking); use at load time or after large lighting changes. */
+  bake(camera){this._order.length=0;let n=0;do{n=this.update(camera,64);}while(n&&this._order.length);return this;}
+  get progress(){return this.capturedCount/Math.max(1,this.probes.filter(p=>p.valid).length);}
+  set strength(v){this.uniforms.keGIStrength.value=v;}get strength(){return this.uniforms.keGIStrength.value;}
+  dispose(){this.onSettings&&this.onSettings();this.atlas.dispose();this.cube.dispose();this.projectMaterial.dispose();this.quad.dispose();
+    for(const m of this.materials){const r=this.restore.get(m);m.onBeforeCompile=r.prev;if(r.ownKey)m.customProgramCacheKey=r.ownKey;else delete m.customProgramCacheKey;m.needsUpdate=true;}this.materials.clear();this.restore.clear();}
+};
+KE.registerModule('gi',{provides:['ProbeVolume','LAYERS.GI']});
+})();
+
+/* ===== module: 22-water.js ===== */
+/* KE.Water — ocean/lake surface in the spirit of a single-layer water shading model.
+   Geometry: a camera-following radial grid (dense near the viewer, geometric ring growth outward) displaced
+   by a sum of Gerstner waves generated from wind parameters, with analytic normals and a folding (Jacobian)
+   term for crest foam. Shading: Schlick Fresnel between reflection (screen-space reflections via
+   KE.GLSL.ssr, falling back to the sky cube map) and refraction of the opaque scene copy published by
+   KE.Pipeline, with Beer-Lambert absorption along the refracted path, in-scattering colour, animated
+   caustics on the submerged ground, shoreline and crest foam, a GGX-like sun glint, subsurface glow through
+   thin crests and optional rain ripples. The same Gerstner sum runs on the CPU (heightAt/normalAt) for
+   buoyancy and swimming. Without a pipeline the surface alpha-blends and uses an optional baked depth map. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+const MAXW=8,G=9.81;
+
+/* Deterministic wave set from wind: wavelengths spread around a dominant length, directions within a cone. */
+KE.waterWaves=({wind=[1,.35],wavelength=7,amplitude=.12,choppiness=.8,count=6,spread=.9,seed=3}={})=>{
+  const r=KE.random(seed),wl=Math.hypot(wind[0],wind[1])||1,wx=wind[0]/wl,wz=wind[1]/wl,out=[];
+  for(let i=0;i<count;i++){const L=wavelength*Math.pow(.62,i)*(1+(r()-.5)*.25),a=Math.atan2(wz,wx)+(r()-.5)*2*spread*(i===0?.35:1),k=2*Math.PI/L;
+    const A=amplitude*Math.pow(.66,i)*(.8+r()*.4),Q=Math.min(choppiness/(k*A*count+1e-6),1);out.push({dir:[Math.cos(a),Math.sin(a)],k,amplitude:A,steepness:Q,omega:Math.sqrt(G*k),phase:r()*Math.PI*2});}
+  return out;};
+
+function radialGrid(THREE,rings,segs,r0,rMax){const g=Math.pow(rMax/r0,1/(rings-1)),pos=[0,0,0],idx=[];
+  for(let i=0;i<rings;i++){const r=r0*Math.pow(g,i);for(let j=0;j<segs;j++){const a=j/segs*Math.PI*2;pos.push(Math.cos(a)*r,0,Math.sin(a)*r);}}
+  for(let j=0;j<segs;j++)idx.push(0,1+(j+1)%segs,1+j);
+  for(let i=0;i<rings-1;i++)for(let j=0;j<segs;j++){const a=1+i*segs+j,b=1+i*segs+(j+1)%segs,c=a+segs,d=b+segs;idx.push(a,b,c,b,d,c);}
+  const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));geo.setIndex(idx);geo.boundingSphere=new THREE.Sphere(new THREE.Vector3(),rMax);return geo;}
+
+function detailNormalTexture(THREE,S=256){const c=document.createElement('canvas');c.width=c.height=S;const g=c.getContext('2d'),d=g.createImageData(S,S),hf=(x,y)=>KE.tileNoise(x,y,S,8)*.6+KE.tileNoise(x+37,y+11,S,16)*.4;
+  for(let y=0;y<S;y++)for(let x=0;x<S;x++){const dx=hf(x+1,y)-hf(x-1,y),dy=hf(x,y+1)-hf(x,y-1),k=(y*S+x)*4;d.data[k]=128-dx*420;d.data[k+1]=128-dy*420;d.data[k+2]=255;d.data[k+3]=255;}
+  g.putImageData(d,0,0);const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=4;return t;}
+
+const VS=`uniform float uTime;uniform vec4 uWaveA[${MAXW}];uniform vec4 uWaveB[${MAXW}];uniform float uFadeStart;uniform float uFadeEnd;
+varying vec3 vWorld;varying vec3 vNormalW;varying float vJac;varying float vCrest;varying float vViewZ;
+void main(){vec4 wp=modelMatrix*vec4(position,1.);vec2 x0=wp.xz;vec3 disp=vec3(0.),n=vec3(0.,1.,0.);float jac=1.;
+ float fade=1.-smoothstep(uFadeStart,uFadeEnd,distance(x0,cameraPosition.xz));
+ for(int i=0;i<WAVES;i++){vec4 a=uWaveA[i],b=uWaveB[i];float th=a.z*dot(a.xy,x0)-b.y*uTime+b.z;float c=cos(th),s=sin(th);float A=a.w*fade;
+  disp.x+=b.x*A*a.x*c;disp.z+=b.x*A*a.y*c;disp.y+=A*s;n.x-=a.x*a.z*A*c;n.z-=a.y*a.z*A*c;n.y-=b.x*a.z*A*s;jac-=b.x*a.z*A*s;}
+ wp.xyz+=disp;vWorld=wp.xyz;vNormalW=normalize(n);vJac=jac;vCrest=disp.y;vec4 mv=viewMatrix*wp;vViewZ=-mv.z;gl_Position=projectionMatrix*mv;}`;
+
+const FS=`${KE.GLSL_SCENE_DECL}
+uniform float uTime;uniform samplerCube tSky;uniform float uHasSky;uniform sampler2D tNormal;uniform sampler2D tBaked;uniform float uHasBaked;uniform vec4 uBakedRect;uniform float uLevel;
+uniform vec3 uHorizon;uniform vec3 uZenith;uniform vec3 uScatter;uniform vec3 uAbsorb;uniform vec3 uFoamColor;uniform float uFoamDepth;uniform float uRefract;uniform float uDetail;uniform float uRain;uniform float uCaustics;uniform float uSunGlint;uniform float uUnder;uniform vec3 uAmbient;uniform float uOpacity;
+varying vec3 vWorld;varying vec3 vNormalW;varying float vJac;varying float vCrest;varying float vViewZ;
+${KE.GLSL.hash}
+${KE.GLSL.ssr}
+float ign(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))));}
+float voronoiEdge(vec2 p,float t){vec2 i=floor(p),f=fract(p);float d1=8.,d2=8.;for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){vec2 o=vec2(float(x),float(y));vec2 h=keHash22(i+o);h=.5+.45*sin(t+6.2831*h);float d=length(o+h-f);if(d<d1){d2=d1;d1=d;}else if(d<d2)d2=d;}return d2-d1;}
+float caustic(vec2 p,float t){float a=voronoiEdge(p*1.1,t),b=voronoiEdge(p*1.9+vec2(3.7,1.3),t*1.3);return pow(1.-smoothstep(0.,.18,a),2.)*.65+pow(1.-smoothstep(0.,.14,b),2.)*.45;}
+vec3 ripple(vec2 p,float t){vec3 n=vec3(0.);for(int k=0;k<3;k++){vec2 q=p*(1.6+float(k)*.7)+float(k)*7.3;vec2 i=floor(q),f=fract(q);float h=keHash12(i+float(k));float ph=fract(t*.9+h);vec2 c=.25+.5*keHash22(i+3.1);vec2 d=f-c;float r=length(d);float ring=sin((r-ph*.5)*55.)*smoothstep(.5*ph+.02,.5*ph-.06,r)*smoothstep(0.,.25,r)*(1.-ph);n.xz+=d/max(r,1e-3)*ring;}return n*.25;}
+vec3 skyAt(vec3 d){if(uHasSky>.5)return textureCube(tSky,d).rgb;return mix(uHorizon,uZenith,clamp(d.y,0.,1.));}
+void main(){vec3 V=normalize(cameraPosition-vWorld);float dist=length(cameraPosition-vWorld);float detailFade=1.-smoothstep(25.,120.,dist);
+ vec3 n1=texture2D(tNormal,vWorld.xz*.071+uTime*vec2(.021,.013)).xyz*2.-1.,n2=texture2D(tNormal,vWorld.xz*.19-uTime*vec2(.017,.031)).xyz*2.-1.;
+ vec3 N=normalize(vNormalW+vec3(n1.x+n2.x,0.,n1.y+n2.y)*uDetail*detailFade);if(uRain>0.)N=normalize(N+ripple(vWorld.xz,uTime)*uRain*detailFade);
+ bool below=!gl_FrontFacing;if(below)N=-N;float NdV=clamp(dot(N,V),0.,1.);float F=.02+.98*pow(1.-NdV,5.);vec3 sunI=keSunColor*max(keSunDirection.y,0.);
+ if(below){vec3 Tr=refract(-V,N,1.333);vec3 above=dot(Tr,Tr)>0.?skyAt(Tr):uScatter*(uAmbient+sunI*.3)*1.5;vec3 tr=exp(-uAbsorb*dist*.35);vec3 col=above*tr+uScatter*(uAmbient+sunI*.35)*(1.-tr);
+  gl_FragColor=vec4(col,1.);
+  #include <tonemapping_fragment>
+  #include <encodings_fragment>
+  return;}
+ vec3 R=reflect(-V,N);R.y=abs(R.y);vec3 refl=skyAt(R);
+ vec2 suv=gl_FragCoord.xy/keResolution;float thick=4.;vec3 below3=uScatter;vec3 underPos=vWorld-vec3(0.,4.,0.);
+ if(keHasScene>.5){float z0=texture2D(keSceneDepth,suv).r;vec2 ruv=suv+N.xz*uRefract*clamp((z0-vViewZ)*.35,0.,1.)/max(vViewZ*.15,1.);float z1=texture2D(keSceneDepth,ruv).r;if(z1<vViewZ){ruv=suv;z1=z0;}
+  thick=max(z1-vViewZ,0.);below3=texture2D(keSceneColor,ruv).rgb;vec4 vr=keInvProjection*vec4(ruv*2.-1.,1.,1.);vec3 vray=vr.xyz/vr.w;vray/=-vray.z;underPos=(keInvView*vec4(vray*z1,1.)).xyz;
+  vec3 vpos=(keViewMatrix*vec4(vWorld,1.)).xyz,vn=normalize((keViewMatrix*vec4(N,0.)).xyz);vec4 ssr=keTraceSSR(vpos,vn,.04,ign(gl_FragCoord.xy+keFrame));refl=mix(refl,ssr.rgb,ssr.a);}
+ else if(uHasBaked>.5){vec2 buv=(vWorld.xz-uBakedRect.xy)/uBakedRect.zw;float g=texture2D(tBaked,vec2(buv.x,1.-buv.y)).r*48.-24.;float vd=max(uLevel-g,0.);thick=vd/max(V.y,.15);underPos=vec3(vWorld.x,g,vWorld.z);}
+ float vdepth=max(vWorld.y-underPos.y,0.);
+ vec3 transm=exp(-uAbsorb*thick);
+ if(uCaustics>0.&&keHasScene>.5){float c=caustic(underPos.xz*.55,uTime*1.6)*exp(-vdepth*.45)*smoothstep(0.,.35,vdepth);below3+=below3*c*uCaustics*sunI*1.5;}
+ vec3 inscatter=uScatter*(uAmbient+sunI*.35);vec3 refr=below3*transm+inscatter*(1.-transm);
+ vec3 H=normalize(V+keSunDirection);float spec=pow(max(dot(N,H),0.),900.)*14.+pow(max(dot(N,H),0.),120.)*.35;vec3 glint=keSunColor*spec*uSunGlint;
+ float sss=pow(max(dot(V,-keSunDirection),0.),4.)*clamp(vCrest*3.+.2,0.,1.)*.6;vec3 subsurface=uScatter*keSunColor*sss;
+ float fn=texture2D(tNormal,vWorld.xz*.31+uTime*vec2(.011,.019)).r*.6+texture2D(tNormal,vWorld.xz*.83-uTime*vec2(.027,.013)).g*.4;fn=clamp((fn-.5)*2.5+.5,0.,1.);
+ float hasDepth=keHasScene>.5||uHasBaked>.5?1.:0.;float band=hasDepth*(1.-smoothstep(0.,uFoamDepth,vdepth));float lines=hasDepth*smoothstep(.62,.95,sin(vdepth*16.-uTime*2.4+fn*2.5)*.5+.5)*(1.-smoothstep(0.,uFoamDepth*2.5,vdepth));
+ float crest=smoothstep(.8,.4,vJac)*smoothstep(.45,.75,fn);float foam=clamp(band*smoothstep(.3,.7,fn+band*.45)+lines*smoothstep(.35,.6,fn)*.7+crest,0.,1.);
+ vec3 col=mix(refr,refl,F)+glint+subsurface;col=mix(col,uFoamColor*(uAmbient+sunI*.8),foam*.85);
+ float alpha=keHasScene>.5?1.:clamp(uOpacity*mix(1.,.8,exp(-thick*.8))+F*.3+foam,0.,1.);gl_FragColor=vec4(col,alpha);
+ #include <tonemapping_fragment>
+ #include <encodings_fragment>
+}`;
+
+KE.Water=class{
+  constructor(THREE,scene,o={}){
+    this.THREE=THREE;this.scene=scene;this.time=0;this.rain=0;this.underwater=false;
+    this.options=Object.assign({level:0,rings:null,segments:null,radius:1600,waves:null,wind:[1,.35],wavelength:7,amplitude:.12,choppiness:.8,waveCount:6,fadeStart:120,fadeEnd:420,
+      scatter:[.02,.16,.17],absorb:[.45,.09,.06],foamColor:[.85,.9,.9],foamDepth:.3,refraction:.035,detail:.35,sunGlint:1,caustics:1,sky:null,heightAt:null,bakedSize:160,bakedCenter:null,opacity:.9,
+      horizon:[.55,.7,.8],zenith:[.2,.4,.7],underwaterFog:{density:.18,falloff:0,color:[.02,.12,.14],maxOpacity:1,start:0,inscatter:.4}},o);
+    const q=KE.settings.preset,lo=q==='low',o2=this.options;this.waves=o2.waves||KE.waterWaves({wind:o2.wind,wavelength:o2.wavelength,amplitude:o2.amplitude,choppiness:o2.choppiness,count:o2.waveCount});
+    const U=KE.sceneUniforms(THREE);this.normalTex=detailNormalTexture(THREE);
+    this.uniforms={...U,uTime:{value:0},uWaveA:{value:Array.from({length:MAXW},()=>new THREE.Vector4())},uWaveB:{value:Array.from({length:MAXW},()=>new THREE.Vector4())},uFadeStart:{value:o2.fadeStart},uFadeEnd:{value:o2.fadeEnd},
+      tSky:{value:null},uHasSky:{value:0},tNormal:{value:this.normalTex},tBaked:{value:null},uHasBaked:{value:0},uBakedRect:{value:new THREE.Vector4()},uLevel:{value:o2.level},
+      uHorizon:{value:new THREE.Color(...o2.horizon)},uZenith:{value:new THREE.Color(...o2.zenith)},uScatter:{value:new THREE.Color(...o2.scatter)},uAbsorb:{value:new THREE.Vector3(...o2.absorb)},uFoamColor:{value:new THREE.Color(...o2.foamColor)},
+      uFoamDepth:{value:o2.foamDepth},uRefract:{value:o2.refraction},uDetail:{value:o2.detail},uRain:{value:0},uCaustics:{value:lo?0:o2.caustics},uSunGlint:{value:o2.sunGlint},uUnder:{value:0},uAmbient:{value:new THREE.Color(.25,.3,.35)},uOpacity:{value:o2.opacity}};
+    this.setWaves(this.waves);
+    if(o2.heightAt)this.bakeDepth(o2.heightAt,o2.bakedCenter||new THREE.Vector3(),o2.bakedSize);
+    this.material=new THREE.ShaderMaterial({vertexShader:VS,fragmentShader:FS,uniforms:this.uniforms,defines:{WAVES:this.waves.length},transparent:true,depthWrite:true,side:THREE.DoubleSide,toneMapped:true});
+    this.material.extensions={derivatives:true};
+    const rings=o2.rings||(lo?48:88),segs=o2.segments||(lo?96:176);this.mesh=new THREE.Mesh(radialGrid(THREE,rings,segs,.12,o2.radius),this.material);this.mesh.frustumCulled=false;this.mesh.name='ke-water';this.mesh.layers.set(KE.LAYERS.TRANSLUCENT);
+    this.mesh.position.y=o2.level;scene.add(this.mesh);this._v=new THREE.Vector3();this._n=new THREE.Vector3();this._fogSaved=null;
+    if(o2.sky)this.setSky(o2.sky);}
+  setWaves(list){this.waves=list.slice(0,MAXW);const A=this.uniforms.uWaveA.value,B=this.uniforms.uWaveB.value;for(let i=0;i<MAXW;i++){const w=this.waves[i];if(w){A[i].set(w.dir[0],w.dir[1],w.k,w.amplitude);B[i].set(w.steepness,w.omega,w.phase,0);}else{A[i].set(1,0,0,0);B[i].set(0,0,0,0);}}
+    if(this.material&&this.material.defines.WAVES!==this.waves.length){this.material.defines.WAVES=this.waves.length;this.material.needsUpdate=true;}return this;}
+  /* Use a KE.SkyAtmosphere (or any cube texture) for reflections. */
+  setSky(sky){const tex=sky&&sky.cube?sky.cube.texture:sky;this.sky=sky&&sky.cube?sky:null;this.uniforms.tSky.value=tex||null;this.uniforms.uHasSky.value=tex?1:0;return this;}
+  /* Fallback shoreline data for rendering without KE.Pipeline (same encoding as the 2.x water: -24..24 range). */
+  bakeDepth(heightAt,center,size,res=128){const T=this.THREE,b=new Uint8Array(res*res*4);for(let z=0;z<res;z++)for(let x=0;x<res;x++){const h=heightAt(center.x-size/2+x/(res-1)*size,center.z-size/2+z/(res-1)*size),k=(z*res+x)*4;b[k]=b[k+1]=b[k+2]=KE.clamp((h+24)/48*255,0,255);b[k+3]=255;}
+    if(this.uniforms.tBaked.value)this.uniforms.tBaked.value.dispose();const t=new T.DataTexture(b,res,res,T.RGBAFormat);t.minFilter=t.magFilter=T.LinearFilter;t.needsUpdate=true;this.uniforms.tBaked.value=t;this.uniforms.uHasBaked.value=1;this.uniforms.uBakedRect.value.set(center.x-size/2,center.z-size/2,size,size);return this;}
+  /* CPU Gerstner displacement of the undisplaced point (x0,z0). */
+  displacement(x0,z0,t=this.time,out=this._v){let dx=0,dy=0,dz=0;for(const w of this.waves){const th=w.k*(w.dir[0]*x0+w.dir[1]*z0)-w.omega*t+w.phase,c=Math.cos(th),s=Math.sin(th);dx+=w.steepness*w.amplitude*w.dir[0]*c;dz+=w.steepness*w.amplitude*w.dir[1]*c;dy+=w.amplitude*s;}return out.set(dx,dy,dz);}
+  /* Water surface height at world (x,z): fixed-point inversion of the horizontal Gerstner displacement. */
+  heightAt(x,z,t=this.time){let x0=x,z0=z;for(let i=0;i<4;i++){const d=this.displacement(x0,z0,t);x0=x-d.x;z0=z-d.z;}return this.options.level+this.displacement(x0,z0,t).y;}
+  normalAt(x,z,t=this.time,out=this._n){let nx=0,ny=1,nz=0;for(const w of this.waves){const th=w.k*(w.dir[0]*x+w.dir[1]*z)-w.omega*t+w.phase,c=Math.cos(th),s=Math.sin(th);nx-=w.dir[0]*w.k*w.amplitude*c;nz-=w.dir[1]*w.k*w.amplitude*c;ny-=w.steepness*w.k*w.amplitude*s;}return out.set(nx,ny,nz).normalize();}
+  isUnderwater(camera){return camera.position.y<this.heightAt(camera.position.x,camera.position.z)-.02;}
+  /* Advance time, follow the camera, drive ambient/sky and, while the camera is submerged, hold a pipeline's fog at
+     the underwater settings (call after the game updates fog each frame; the previous fog returns on surfacing). */
+  update(dt,camera,{pipeline=null,ambient=null}={}){this.time+=dt;const U=this.uniforms;U.uTime.value=this.time;U.uRain.value=this.rain;
+    if(camera){const s=.5;this.mesh.position.set(Math.round(camera.position.x/s)*s,this.options.level,Math.round(camera.position.z/s)*s);}
+    if(ambient)U.uAmbient.value.copy(ambient);else if(this.sky)U.uAmbient.value.copy(this.sky.zenithColor).lerp(this.sky.fogColor,.5);
+    U.uCaustics.value=KE.settings.preset==='low'?0:this.options.caustics;
+    const under=camera?this.isUnderwater(camera):false;
+    if(pipeline){const f=pipeline.options.fog;if(under){if(!this._fogSaved)this._fogSaved={...f,color:f.color.clone()};const u=this.options.underwaterFog;Object.assign(f,{enabled:true,density:u.density,falloff:u.falloff,maxOpacity:u.maxOpacity,start:u.start,inscatter:u.inscatter});f.color.setRGB(...u.color);}
+      else if(this._fogSaved){const saved=this._fogSaved,c=f.color;Object.assign(f,saved);f.color=c.copy(saved.color);this._fogSaved=null;}}
+    this.underwater=under;U.uUnder.value=under?1:0;return this;}
+  dispose(){this.mesh.parent&&this.mesh.parent.remove(this.mesh);this.mesh.geometry.dispose();this.material.dispose();this.normalTex.dispose();if(this.uniforms.tBaked.value)this.uniforms.tBaked.value.dispose();}
+};
+KE.registerModule('water',{provides:['Water','waterWaves']});
 })();
