@@ -191,7 +191,7 @@ KE.Pipeline=class{
     this.THREE=THREE;this.renderer=renderer;this.caps=KE.capabilities(renderer);const caps=this.caps;
     this.hdr=caps.halfRT&&o.hdr!==false;this.hdrType=this.hdr?THREE.HalfFloatType:THREE.UnsignedByteType;this.depthOK=caps.depthTexture;
     this.enabled=true;this.frame=0;this.historyValid=false;this.size=[0,0];this.targets=[];this.stats={passes:0,ms:0};
-    this.options={taa:true,taaBlend:.1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:1.2,giRadius:4,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,
+    this.options={taa:true,taaBlend:.1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,
       autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,fxaa:true,sharpen:.18,
       fog:{enabled:true,density:.012,falloff:.12,height:0,start:4,maxOpacity:.9,color:new THREE.Color(.55,.66,.78),inscatter:1.2,inscatterExponent:12,sky:.35,replaceSceneFog:true},
       volumetrics:true,shaftStrength:.25,dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},

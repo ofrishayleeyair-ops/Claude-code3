@@ -138,7 +138,7 @@ const collision=(x,z)=>x<2||z<2||x>94||z>94||ground(x,z)<.35||solids.some(o=>(o.
 const particle=new KE.Particles(T,scene,{capacity:200,size:.15,color:0xffda96,gravity:-1}),audio=new KE.Audio(),store=new KE.SaveStore('kitsune-enginev3-spirit-isle',1);
 const spiritMat=new T.MeshStandardMaterial({color:0x8ce4d9,emissive:0x2fd9c8,emissiveIntensity:1.6,roughness:.2,metalness:.1});
 const stoneLocations=[[48,59],[46,49],[49,40],[42,32],[58,34]],stones=stoneLocations.map(([x,z],i)=>{const m=mesh(new T.OctahedronGeometry(.42,0),spiritMat,x,ground(x,z)+1,z,scene);const ring=mesh(new T.TorusGeometry(.65,.015,4,32),gold,x,ground(x,z)+.1,z,scene);ring.rotation.x=-Math.PI/2;
- const light=lights.add({position:[x,ground(x,z)+1.1,z],color:0x6fe8ff,intensity:1.4,distance:4.5,priority:.8});return{m,ring,x,z,light,collected:false,id:i};});
+ const light=lights.add({position:[x,ground(x,z)+1.1,z],color:0x8fe8ff,intensity:.9,distance:3.5,priority:.8});return{m,ring,x,z,light,collected:false,id:i};});
 csm.setupMaterial(spiritMat);
 /* Rain is bounded around the player and only simulated when visible. */
 let raining=false,wet=0;const rainCount=500,rainPos=new Float32Array(rainCount*6),rainData=Array.from({length:rainCount},()=>({x:(rng()-.5)*26,z:(rng()-.5)*26,y:rng()*16,s:9+rng()*5})),rainGeometry=new T.BufferGeometry();rainGeometry.setAttribute('position',new T.BufferAttribute(rainPos,3).setUsage(T.DynamicDrawUsage));const rain=new T.LineSegments(rainGeometry,new T.LineBasicMaterial({color:0x9fb8c4,transparent:true,opacity:.35,depthWrite:false}));rain.frustumCulled=false;scene.add(rain);
