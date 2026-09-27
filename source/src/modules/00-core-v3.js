@@ -143,7 +143,9 @@ KE.GPUTimer=class{
 KE.sceneUniforms=THREE=>{if(KE._sceneUniforms)return KE._sceneUniforms;return KE._sceneUniforms={
   keSceneColor:{value:null},keSceneDepth:{value:null},keHasScene:{value:0},keResolution:{value:new THREE.Vector2(1,1)},keNearFar:{value:new THREE.Vector2(.1,1000)},
   keInvProjection:{value:new THREE.Matrix4()},keProjection:{value:new THREE.Matrix4()},keViewMatrix:{value:new THREE.Matrix4()},keInvView:{value:new THREE.Matrix4()},
-  keTime:{value:0},keSunDirection:{value:new THREE.Vector3(.3,.8,.2).normalize()},keSunColor:{value:new THREE.Color(1,1,1)},keExposure:{value:1}};};
+  keTime:{value:0},keFrame:{value:0},keSSR:{value:1},keSunDirection:{value:new THREE.Vector3(.3,.8,.2).normalize()},keSunColor:{value:new THREE.Color(1,1,1)},keExposure:{value:1}};};
+/* GLSL declarations matching KE.sceneUniforms; merge the uniform objects into a material with Object.assign(material.uniforms, KE.sceneUniforms(THREE)). */
+KE.GLSL_SCENE_DECL='uniform sampler2D keSceneColor;uniform sampler2D keSceneDepth;uniform float keHasScene;uniform vec2 keResolution;uniform vec2 keNearFar;uniform mat4 keInvProjection;uniform mat4 keProjection;uniform mat4 keViewMatrix;uniform mat4 keInvView;uniform float keTime;uniform float keFrame;uniform float keSSR;uniform vec3 keSunDirection;uniform vec3 keSunColor;uniform float keExposure;';
 
 /* ---------- full-screen pass helper ---------- */
 KE.FullScreenQuad=class{
