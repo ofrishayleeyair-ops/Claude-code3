@@ -35,6 +35,11 @@ const {openPage}=require('./harness.cjs');const path=require('path');const shots
   const lum=c=>c[0]*.2126+c[1]*.7152+c[2]*.0722,redness=c=>c[0]/Math.max(1,(c[1]+c[2])/2);
   console.log('  ',JSON.stringify({off:a,on:b}));
   if(!(lum(b.inside)<lum(a.inside)*.97))throw Error('interior not darker with GI');if(!(redness(b.floorLeft)>redness(a.floorLeft)*1.02))throw Error('no red bleeding');});
+ // Probes outside the room see sunlit ground; without the Chebyshev test they leak that light through the walls.
+ await test('probe visibility reduces light leaking through walls',async()=>{
+  const r=await page.evaluate(()=>{const u=t.gi.uniforms.keProbeVisOn,pt=()=>{t.pipeline.resetHistory();t.frame(3);return t.at(-2.2,1.6,-2.88);};u.value=0;const off=pt();u.value=1;const on=pt();return {off,on};});
+  const lum=c=>c[0]*.2126+c[1]*.7152+c[2]*.0722;console.log('  ',JSON.stringify(r));
+  if(!(lum(r.on)<lum(r.off)))throw Error('visibility did not reduce leaking');});
  await test('progress and incremental updates',async()=>{const r=await page.evaluate(()=>{const n=t.gi.update(t.camera,3);return {n,progress:t.gi.progress};});if(r.n!==3||r.progress<.99)throw Error(JSON.stringify(r));});
  await test('dispose restores material hooks',async()=>{const r=await page.evaluate(()=>{t.gi.dispose();t.frame(1);return window.redWall.material.customProgramCacheKey();});if(String(r).includes('ke-gi'))throw Error(r);});
  await close();
