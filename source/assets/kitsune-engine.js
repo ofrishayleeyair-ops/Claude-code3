@@ -1020,9 +1020,20 @@ const REDUCE_FS=`uniform sampler2D tSrc;uniform vec2 uTexel;varying vec2 vUv;voi
 const ADAPT_FS=`uniform sampler2D tCur;uniform sampler2D tPrev;uniform float uDt;uniform float uUp;uniform float uDown;uniform float uValid;varying vec2 vUv;
 void main(){vec2 c=texture2D(tCur,vec2(.5)).rg;float cur=c.x/max(c.y,1e-5);float prev=texture2D(tPrev,vec2(.5)).r;float speed=cur>prev?uUp:uDown;gl_FragColor=vec4(uValid>.5?prev+(cur-prev)*(1.-exp(-uDt*speed)):cur,0.,0.,1.);}`;
 
-/* Final: exposure, bloom, white balance, saturation/contrast, ACES, lift/gamma/gain, lens effects, debug views. */
+/* Local exposure (after UE5's): a 64-wide log-luminance grid of the scene, a blurred copy, and a cross-bilateral
+   lookup in the final pass. The local base luminance is pulled toward the adapted middle grey (separately for
+   highlights and shadows) while per-pixel detail above the base is kept, so bright skies and dark interiors
+   hold detail without flattening the image. */
+const LOCAL_LUM_FS=`uniform sampler2D tSrc;uniform vec2 uTexel;varying vec2 vUv;
+void main(){float s=0.;for(int y=0;y<4;y++)for(int x=0;x<4;x++){vec3 c=texture2D(tSrc,vUv+(vec2(float(x),float(y))-1.5)*uTexel*.25).rgb;s+=log2(max(dot(c,vec3(.2126,.7152,.0722)),1e-5));}gl_FragColor=vec4(s/16.,0.,0.,1.);}`;
+const LOCAL_BLUR_FS=`uniform sampler2D tSrc;uniform vec2 uDir;varying vec2 vUv;
+void main(){float s=texture2D(tSrc,vUv).r*.227;s+=(texture2D(tSrc,vUv+uDir).r+texture2D(tSrc,vUv-uDir).r)*.195;s+=(texture2D(tSrc,vUv+uDir*2.).r+texture2D(tSrc,vUv-uDir*2.).r)*.122;
+ s+=(texture2D(tSrc,vUv+uDir*3.).r+texture2D(tSrc,vUv-uDir*3.).r)*.054;s+=(texture2D(tSrc,vUv+uDir*4.).r+texture2D(tSrc,vUv-uDir*4.).r)*.016;gl_FragColor=vec4(s,0.,0.,1.);}`;
+
+/* Final: exposure, local exposure, bloom, white balance, saturation/contrast, ACES, lift/gamma/gain, lens effects, debug views. */
 const FINAL_FS=`uniform sampler2D tInput;uniform sampler2D tBloom;uniform sampler2D tExposure;uniform sampler2D tAO;uniform sampler2D tGI;uniform sampler2D tDepth;uniform sampler2D tScene;
 uniform float uAuto;uniform float uManual;uniform float uComp;uniform float uKey;uniform vec2 uExpRange;uniform float uBloom;uniform vec3 uWB;uniform float uSat;uniform float uContrast;uniform vec3 uLift;uniform vec3 uGamma;uniform vec3 uGain;
+uniform sampler2D tLocal;uniform sampler2D tLocalBlur;uniform vec2 uLocalTexel;uniform vec4 uLocal;uniform float uLocalOn;
 uniform float uVignette;uniform float uGrain;uniform float uCA;uniform float uFlare;uniform float uSharpen;uniform vec2 uTexel;uniform float uTime;uniform float uEncode;uniform int uDebug;uniform float uNear;uniform float uFar;varying vec2 vUv;
 ${KE.GLSL.color}
 float ign(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))));}
@@ -1033,9 +1044,12 @@ void main(){vec2 uv=vUv;vec3 c;
  c+=texture2D(tBloom,uv).rgb*uBloom;
  if(uFlare>0.){vec2 fuv=1.-uv,gv=(vec2(.5)-fuv)*.38;vec3 fl=vec3(0.);for(int i=1;i<5;i++){vec2 o=fract(fuv+gv*float(i));float w=pow(max(1.-length(vec2(.5)-o)/.7071,0.),5.);vec3 tint=mix(vec3(1.,.72,.45),vec3(.5,.75,1.),fract(float(i)*.37));fl+=texture2D(tBloom,o).rgb*w*tint;}
   vec2 hv=normalize(gv+1e-5)*.46;vec2 ho=fract(fuv+hv);float hw=pow(max(1.-length(vec2(.5)-ho)/.7071,0.),5.);fl+=texture2D(tBloom,ho).rgb*hw*vec3(.8,.9,1.)*.6;c+=fl*uFlare;}
- float ex=uAuto>.5?clamp(uKey/exp2(texture2D(tExposure,vec2(.5)).r),uExpRange.x,uExpRange.y):uManual;c*=ex*exp2(uComp)*uWB;
+ float ex=uAuto>.5?clamp(uKey/exp2(texture2D(tExposure,vec2(.5)).r),uExpRange.x,uExpRange.y):uManual;float lx=1.;
+ if(uLocalOn>.5){float pl=log2(max(keLuma(c),1e-5));float ws=0.,bs=0.;for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){float L=texture2D(tLocal,uv+vec2(float(x),float(y))*uLocalTexel).r;float w=exp(-(L-pl)*(L-pl)*.5);ws+=w;bs+=L*w;}
+  float base=mix(bs/max(ws,1e-4),texture2D(tLocalBlur,uv).r,uLocal.w);float mid=log2(uKey/ex);float nb=mid+(base-mid)*(base>mid?uLocal.x:uLocal.y);lx=exp2(clamp(nb+(pl-base)*uLocal.z-pl,-4.,4.));c*=lx;}
+ c*=ex*exp2(uComp)*uWB;
  if(uDebug==1||uDebug==2){c=uDebug==1?vec3(texture2D(tAO,uv).r):vec3(fract(log2(linz(texture2D(tDepth,uv).x))*.5));gl_FragColor=vec4(uEncode>.5?keLinearToSRGB(c):c,1.);return;}
- if(uDebug==3)c=texture2D(tBloom,uv).rgb*uBloom*ex*4.;else if(uDebug==4)c=texture2D(tGI,uv).rgb*ex;else if(uDebug==5)c=texture2D(tScene,uv).rgb*ex;else if(uDebug==6)c=vec3(keLuma(c));
+ if(uDebug==3)c=texture2D(tBloom,uv).rgb*uBloom*ex*4.;else if(uDebug==4)c=texture2D(tGI,uv).rgb*ex;else if(uDebug==5)c=texture2D(tScene,uv).rgb*ex;else if(uDebug==6)c=vec3(keLuma(c));else if(uDebug==7){c=vec3(clamp(.5+log2(lx)*.25,0.,1.));gl_FragColor=vec4(c,1.);return;}
  float l=keLuma(c);c=max(mix(vec3(l),c,uSat),0.);c=.18*pow(c/.18+1e-6,vec3(uContrast));
  c=keACES(c);c=pow(max(c*uGain+uLift*(1.-c),0.),1./uGamma);
  vec2 d=uv-.5;c*=1.-uVignette*smoothstep(.2,.9,length(d*vec2(1.25,1.)));
@@ -1047,7 +1061,7 @@ void main(){vec3 luma=vec3(.299,.587,.114);vec3 rgbM=texture2D(tSrc,vUv).rgb;flo
  vec2 dir=vec2(-((lNW+lNE)-(lSW+lSE)),(lNW+lSW)-(lNE+lSE));float rd=max((lNW+lNE+lSW+lSE)*.03125,.0078125);dir=clamp(dir/(min(abs(dir.x),abs(dir.y))+rd),vec2(-8.),vec2(8.))*uTexel;
  vec3 a=.5*(texture2D(tSrc,vUv+dir*(-1./6.)).rgb+texture2D(tSrc,vUv+dir*(1./6.)).rgb);vec3 b=a*.5+.25*(texture2D(tSrc,vUv-dir*.5).rgb+texture2D(tSrc,vUv+dir*.5).rgb);float lb=dot(b,luma);gl_FragColor=vec4(lb<lo||lb>hi?a:b,1.);}`;
 
-const DEBUG_VIEWS={lit:0,ao:1,depth:2,bloom:3,ssgi:4,unlit:5,raw:5,lighting:6};
+const DEBUG_VIEWS={lit:0,ao:1,depth:2,bloom:3,ssgi:4,unlit:5,raw:5,lighting:6,localexposure:7};
 
 KE.Pipeline=class{
   constructor(THREE,renderer,o={}){
@@ -1055,7 +1069,7 @@ KE.Pipeline=class{
     this.hdr=caps.halfRT&&o.hdr!==false;this.hdrType=this.hdr?THREE.HalfFloatType:THREE.UnsignedByteType;this.depthOK=caps.depthTexture;
     this.enabled=true;this.frame=0;this.historyValid=false;this.size=[0,0];this.internal=[0,0];this.targets=[];this.stats={passes:0,ms:0};
     this.options={taa:true,taaBlend:.1,upscale:1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,lensFlare:.035,
-      autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,fxaa:true,sharpen:.18,
+      autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,localExposure:{enabled:true,highlightContrast:.75,shadowContrast:.9,detail:1,blurredBlend:.4},fxaa:true,sharpen:.18,
       fog:{enabled:true,density:.012,falloff:.12,height:0,start:4,maxOpacity:.9,color:new THREE.Color(.55,.66,.78),inscatter:1.2,inscatterExponent:12,sky:.35,replaceSceneFog:true},
       volumetrics:true,shaftStrength:.25,volumetricFog:{enabled:true,density:.012,falloff:.22,height:0,anisotropy:.45,intensity:1,maxDistance:50,steps:20},dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
       grading:{saturation:1.05,contrast:1.04,temperature:0,tint:0,lift:[0,0,0],gamma:[1,1,1],gain:[1,1,1],vignette:.22,grain:.012,chromaticAberration:.15},sun:null,debugView:'lit'};
@@ -1085,18 +1099,23 @@ KE.Pipeline=class{
       bloomUp:M(BLOOM_UP_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()},uRadius:{value:1}}),
       lum:M(LUM_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()}}),
       reduce:M(REDUCE_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()}}),
+      localLum:M(LOCAL_LUM_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()}}),
+      localBlur:M(LOCAL_BLUR_FS,{tSrc:{value:null},uDir:{value:new THREE.Vector2()}}),
       adapt:M(ADAPT_FS,{tCur:{value:null},tPrev:{value:null},uDt:{value:.016},uUp:{value:2},uDown:{value:1},uValid:{value:0}}),
       volume:M(VOLUME_FS,{...depthU(),tShadow0:{value:null},tShadow1:{value:null},tShadow2:{value:null},tShadow3:{value:null},uShadowM0:{value:new THREE.Matrix4()},uShadowM1:{value:new THREE.Matrix4()},uShadowM2:{value:new THREE.Matrix4()},uShadowM3:{value:new THREE.Matrix4()},uSplits:{value:new THREE.Vector4()},uCascades:{value:0},
         uInvView:{value:new THREE.Matrix4()},uCamPos:{value:new THREE.Vector3()},uSunDir:{value:new THREE.Vector3(0,1,0)},uSunColor:{value:new THREE.Color()},uDensity:{value:.02},uFalloff:{value:.15},uHeight:{value:0},uG:{value:.6},uMaxDist:{value:60},uFrame:{value:0}},{STEPS:20}),
       final:M(FINAL_FS,{tInput:{value:null},tBloom:{value:null},tExposure:{value:null},tAO:{value:null},tGI:{value:null},tDepth:{value:null},tScene:{value:null},uAuto:{value:1},uManual:{value:1},uComp:{value:0},uKey:{value:.2},uExpRange:{value:new THREE.Vector2(.25,4)},
         uBloom:{value:.05},uFlare:{value:0},uWB:{value:new THREE.Vector3(1,1,1)},uSat:{value:1},uContrast:{value:1},uLift:{value:new THREE.Vector3()},uGamma:{value:new THREE.Vector3(1,1,1)},uGain:{value:new THREE.Vector3(1,1,1)},uVignette:{value:.2},uGrain:{value:.01},uCA:{value:0},uSharpen:{value:0},
-        uTexel:{value:new THREE.Vector2()},uTime:{value:0},uEncode:{value:1},uDebug:{value:0},uNear:{value:.1},uFar:{value:1000}}),
+        uTexel:{value:new THREE.Vector2()},uTime:{value:0},uEncode:{value:1},uDebug:{value:0},uNear:{value:.1},uFar:{value:1000},
+        tLocal:{value:null},tLocalBlur:{value:null},uLocalTexel:{value:new THREE.Vector2()},uLocal:{value:new THREE.Vector4(1,1,1,0)},uLocalOn:{value:0}}),
       fxaa:M(FXAA_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()}}),
     };
     this.m.bloomUp.blending=THREE.AdditiveBlending;this.m.bloomUp.transparent=true;
     this._black=new THREE.DataTexture(new Uint8Array([0,0,0,255]),1,1,THREE.RGBAFormat);this._black.needsUpdate=true;
     this._white=new THREE.DataTexture(new Uint8Array([255,255,255,255]),1,1,THREE.RGBAFormat);this._white.needsUpdate=true;
     this.onSettings=KE.events.on('settings',s=>this.applySettings(s));
+    if(!KE.cvars.find('r.LocalExposure'))KE.cvars.register('r.LocalExposure',{value:true,type:'boolean',help:'Local exposure: compress highlight/shadow contrast around middle grey'});
+    const lcv=KE.cvars.find('r.LocalExposure');lcv.onChange=v=>{this.options.localExposure.enabled=!!v;};
     const cv=KE.cvars.find('r.ViewMode');if(cv){cv.options=[...new Set([...(cv.options||[]),...Object.keys(DEBUG_VIEWS)])];cv.onChange=v=>{this.options.debugView=v;};}
     if(o.applySettings!==false)this.applySettings(KE.settings);
   }
@@ -1120,6 +1139,7 @@ KE.Pipeline=class{
     this.shafts=[this.target(w2,h2),this.target(w2,h2)];this.vol=[this.target(w2,h2),this.target(w2,h2)];this.dofBlur=this.target(dw2,dh2);
     this.bloomMips=[];let bw=dw2,bh=dh2;for(let i=0;i<6&&bw>=4&&bh>=4;i++){this.bloomMips.push(this.target(bw,bh));bw>>=1;bh>>=1;}
     this.lumTargets=[64,16,4,1].map(n=>this.target(n,n,{type:this.caps.floatRT?T.FloatType:this.hdrType,filter:T.NearestFilter}));this.adapt=[0,1].map(()=>this.target(1,1,{type:this.caps.floatRT?T.FloatType:this.hdrType,filter:T.NearestFilter}));
+    const lh=clamp(Math.round(64*IH/IW),8,128);this.localLum=[0,1,2].map(()=>this.target(64,lh));
     this.historyValid=false;this.adaptValid=false;this.giValid=false;}
   /* Use a KE.CascadedShadows (or any object with lights[] and splits[]) for shadowed volumetric fog. */
   setShadowSource(csm){this.shadowSource=csm||null;return this;}
@@ -1192,11 +1212,16 @@ KE.Pipeline=class{
       let expTex=this._white;if(o.autoExposure){const l=this.m.lum,r=this.m.reduce;l.uniforms.tSrc.value=current.texture;l.uniforms.uTexel.value.set(1/64,1/64);this.pass(l,this.lumTargets[0]);
         for(let i=1;i<4;i++){const s=this.lumTargets[i-1];r.uniforms.tSrc.value=s.texture;r.uniforms.uTexel.value.set(1/s.width,1/s.height);this.pass(r,this.lumTargets[i]);}
         const ad=this.m.adapt,ai=this.frame&1;ad.uniforms.tCur.value=this.lumTargets[3].texture;ad.uniforms.tPrev.value=this.adapt[ai^1].texture;ad.uniforms.uDt.value=clamp(dt,0,.25);ad.uniforms.uUp.value=o.adaptUp;ad.uniforms.uDown.value=o.adaptDown;ad.uniforms.uValid.value=this.adaptValid?1:0;this.pass(ad,this.adapt[ai]);this.adaptValid=true;expTex=this.adapt[ai].texture;}
+      // 10b. Local exposure grid: log luminance at 64×N, then a separable blur.
+      const le=o.localExposure,localOn=!!(le&&le.enabled&&this.hdr&&this.localLum);
+      if(localOn){const [la,lb,lc]=this.localLum,ll=this.m.localLum,bl=this.m.localBlur;ll.uniforms.tSrc.value=current.texture;ll.uniforms.uTexel.value.set(1/la.width,1/la.height);this.pass(ll,la);
+        bl.uniforms.tSrc.value=la.texture;bl.uniforms.uDir.value.set(1.5/la.width,0);this.pass(bl,lb);bl.uniforms.tSrc.value=lb.texture;bl.uniforms.uDir.value.set(0,1.5/la.height);this.pass(bl,lc);}
       // 11. Final grade to the screen (or through FXAA).
       const fm=this.m.final,fu=fm.uniforms,g=o.grading;fu.tInput.value=current.texture;fu.tBloom.value=bloomTex;fu.tExposure.value=expTex;fu.tAO.value=o.gtao?this.ao[0].texture:this._white;fu.tGI.value=giTex;fu.tDepth.value=this.scene.depthTexture;fu.tScene.value=this.colorCopy.texture;
       fu.uAuto.value=o.autoExposure?1:0;fu.uManual.value=o.exposure*(R.toneMappingExposure||1);fu.uComp.value=o.exposureCompensation;fu.uKey.value=o.exposureKey;fu.uExpRange.value.set(o.minExposure,o.maxExposure);fu.uBloom.value=o.bloom?o.bloomStrength:0;fu.uFlare.value=o.bloom?o.lensFlare:0;
       fu.uWB.value.copy(this.whiteBalance(g.temperature,g.tint));fu.uSat.value=g.saturation;fu.uContrast.value=g.contrast;fu.uLift.value.fromArray(g.lift);fu.uGamma.value.fromArray(g.gamma);fu.uGain.value.fromArray(g.gain);fu.uVignette.value=g.vignette;fu.uGrain.value=g.grain;fu.uCA.value=g.chromaticAberration;
       fu.uSharpen.value=o.taa?o.sharpen*(IW<W?1.6:1):0;fu.uTexel.value.copy(dtexel);fu.uTime.value=(fu.uTime.value+dt)%1000;fu.uEncode.value=R.outputEncoding===T.sRGBEncoding?1:0;fu.uDebug.value=DEBUG_VIEWS[o.debugView]||0;fu.uNear.value=near;fu.uFar.value=far;
+      fu.uLocalOn.value=localOn?1:0;if(localOn){fu.tLocal.value=this.localLum[0].texture;fu.tLocalBlur.value=this.localLum[2].texture;fu.uLocalTexel.value.set(1/this.localLum[0].width,1/this.localLum[0].height);fu.uLocal.value.set(le.highlightContrast,le.shadowContrast,le.detail,le.blurredBlend);}else{fu.tLocal.value=fu.tLocalBlur.value=this._black;}
       if(o.fxaa){this.pass(fm,this.ldr);this.m.fxaa.uniforms.tSrc.value=this.ldr.texture;this.m.fxaa.uniforms.uTexel.value.copy(dtexel);this.pass(this.m.fxaa,prevTarget);}else this.pass(fm,prevTarget);
     }finally{
       camera.layers.mask=prevMask;scene.background=prevBg;scene.fog=prevFog;R.toneMapping=prevTone;R.autoClear=prevAutoClear;R.setRenderTarget(prevTarget);R.info.autoReset=prevInfo;
@@ -1824,6 +1849,1048 @@ KE.Water=class{
 KE.registerModule('water',{provides:['Water','waterWaves']});
 })();
 
+/* ===== module: 24-foliage.js ===== */
+/* kitsune enginev3 foliage (module 24): shared hierarchical wind with identical shadow-pass deformation,
+   procedural trees (recursive growth, parallel-transport bark tubes, clustered leaf cards), canvas
+   leaf/bark textures, world-anchored interactive grass, shell-texture fur and a deterministic
+   instanced foliage spawner. All animation runs in vertex shaders; CPU work happens only when
+   grass/spawner cells change. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+const clamp=(v,a,b)=>v<a?a:v>b?b:v,lerp=(a,b,t)=>a+(b-a)*t,smooth=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t);};
+const TAU=Math.PI*2,GOLDEN=2.399963229728653,MAX_INTERACTORS=8;
+
+/* ---------- shared wind state ---------- */
+/* One set of uniform objects shared by reference by every foliage, grass and fur material. */
+let shared=null;
+function foliageUniforms(THREE){
+  if(shared)return shared;THREE=THREE||window.THREE;if(!THREE)return null;
+  const inter=[];for(let i=0;i<MAX_INTERACTORS;i++)inter.push(new THREE.Vector4(0,-1e4,0,0));
+  shared={keTime:{value:0},keWindDir:{value:new THREE.Vector2(.8,.6)},keWindStrength:{value:1},keGustScale:{value:1},keInteractors:{value:inter},keInteractorCount:{value:0}};
+  return shared;
+}
+Object.defineProperty(KE,'foliageUniforms',{configurable:true,enumerable:true,get(){return foliageUniforms(window.THREE);}});
+function setWindDir(target,d){let x,z;
+  if(typeof d==='number'){x=Math.cos(d);z=Math.sin(d);}else if(Array.isArray(d)){x=d[0];z=d.length>2?d[2]:d[1];}else if(d&&typeof d==='object'){x=d.x;z=d.z!==undefined?d.z:d.y;}
+  if(!Number.isFinite(x)||!Number.isFinite(z))return;const l=Math.hypot(x,z);if(l>1e-6)target.set(x/l,z/l);}
+const sharedRefs=U=>({keTime:U.keTime,keWindDir:U.keWindDir,keWindStrength:U.keWindStrength,keGustScale:U.keGustScale});
+const srgb=(THREE,c,fallback)=>{const col=new THREE.Color(c===undefined||c===null?fallback:c);return col.convertSRGBToLinear();};
+
+/* ---------- shared GLSL ---------- */
+const NOISE_GLSL=()=>`#ifndef KF_NOISE
+#define KF_NOISE
+${KE.GLSL.hash}
+${KE.GLSL.noise}
+#endif
+`;
+const WIND_UNIFORMS='uniform float keTime;uniform vec2 keWindDir;uniform float keWindStrength;uniform float keGustScale;\n';
+/* Gusts: two octaves of value noise scrolled along the wind direction, so bright/strong bands travel
+   across grass and forests at roughly 7 m/s (scaled by keGustScale). Returns 0..1. */
+const GUST_GLSL=`float kfGust(vec2 p){vec2 q=p*(.045*keGustScale)-keWindDir*(keTime*.32);
+float g=keNoise2(q)*.65+keNoise2(q*2.9+vec2(17.3,5.1)-keWindDir*(keTime*.45))*.35;return smoothstep(.28,.82,g);}
+`;
+/* Hierarchical plant wind (after the GPU Gems 3 ch.16 / CryEngine scheme):
+   1. main bend: the whole plant leans along the wind, quadratic in normalized height (windWeight.x),
+      length-preserving about the root so the top dips instead of stretching;
+   2. branch bend: vertical+along-wind oscillation weighted by windWeight.y (0 at trunk, 1 at twig tips),
+      phase windWeight.w shared by a branch and everything attached to it so joints never separate;
+   3. leaf flutter: fast motion along the vertex normal weighted by windWeight.z with a per-vertex phase.
+   The same function is compiled into the colour, depth and distance materials, so shadows match. */
+const TREE_WIND_GLSL=`uniform vec3 kfWindAmp;uniform float kfRefHeight;
+#ifdef KF_WIND_ATTRIBUTE
+attribute vec4 windWeight;
+#endif
+vec3 kfWind(vec3 pos,vec3 nrm,mat4 M){
+#ifdef KF_WIND_ATTRIBUTE
+ vec4 w=windWeight;
+#else
+ float hh=clamp(pos.y/kfRefHeight,0.,1.);vec4 w=vec4(hh,hh*hh,hh,0.);
+#endif
+ vec3 root=M[3].xyz;vec3 rel=(M*vec4(pos,1.)).xyz-root;
+ float S=keWindStrength,t=keTime;
+ vec3 wd=vec3(keWindDir.x,0.,keWindDir.y),sd=vec3(-wd.z,0.,wd.x);
+ float ph=keHash12(floor(root.xz*4.)+.5)*6.2831853;
+ float gust=kfGust(root.xz);
+ float bend=kfWindAmp.x*S*(.4+1.6*gust+.3*sin(t*1.21+ph));
+ float across=kfWindAmp.x*S*.35*sin(t*.87+ph*1.7);
+ vec3 nrel=rel+(wd*bend+sd*across)*(max(rel.y,0.)*w.x);
+ nrel*=length(rel)/max(length(nrel),1e-5);
+ float bph=w.w*6.2831853+ph;
+ float bo=sin(t*(1.65+.3*S)+bph)*(.5+gust)+sin(t*2.83+bph*1.37)*.22;
+ nrel+=(vec3(0.,.75*bo,0.)+wd*(.25+.95*gust)+sd*(.35*cos(t*2.13+bph)))*(kfWindAmp.y*S*w.y);
+ vec3 dw=nrel-rel;mat3 m=mat3(M);
+ vec3 dl=vec3(dot(m[0],dw),dot(m[1],dw),dot(m[2],dw))/vec3(dot(m[0],m[0]),dot(m[1],m[1]),dot(m[2],m[2]));
+ float vph=fract(w.w*7.13+dot(pos,vec3(1.37,2.11,1.73)))*6.2831853;
+ float fl=sin(t*(6.3+1.8*S)+vph)*(.35+gust)+sin(t*10.7+vph*2.3)*.18;
+ dl+=nrm*(fl*kfWindAmp.z*S*w.z);
+ return pos+dl;
+}
+`;
+const WIND_APPLY=`{mat4 kfM=modelMatrix;
+#ifdef USE_INSTANCING
+kfM=modelMatrix*instanceMatrix;
+#endif
+transformed=kfWind(transformed,normal,kfM);}
+#include <project_vertex>`;
+/* Cards seen edge-on smear their texture into streaks: fade their alpha by the true (derivative) face
+   normal against the view direction so the alpha test removes them (colour pass only). */
+const EDGE_FADE=`#if defined(ALPHATEST)&&defined(USE_MAP)
+{vec3 kfFN=normalize(cross(dFdx(vViewPosition),dFdy(vViewPosition)));float kfNdv=abs(dot(kfFN,normalize(vViewPosition)));diffuseColor.a*=mix(1.,smoothstep(.06,.34,kfNdv),kfEdgeFade);}
+#endif
+`;
+/* Alpha-tested cutouts lose coverage in small mips; scale alpha up with the mip level (Golus 2017). */
+const ALPHA_MIP=`#if defined(ALPHATEST)&&defined(USE_MAP)
+{vec2 kfT=vUv*kfMapSize;vec2 kfDx=dFdx(kfT),kfDy=dFdy(kfT);float kfLod=.5*log2(max(max(dot(kfDx,kfDx),dot(kfDy,kfDy)),1e-8));diffuseColor.a*=1.+max(kfLod,0.)*kfAlphaMip;}
+#endif
+#include <alphatest_fragment>`;
+/* Thin-leaf transmission and wrap lighting, added for every direct light. It is injected by redefining
+   the RE_Direct macro (not by rewriting lights_fragment_begin), so light loops patched by other systems
+   (KE.CascadedShadows replaces that chunk) still call it, with their shadowing already applied. */
+const TRANSLUCENT_GLSL=`
+void kfTranslucent(const in IncidentLight L,const in GeometricContext g,const in PhysicalMaterial m,inout ReflectedLight r){
+ float ndl=dot(g.normal,L.direction);
+ float back=pow(saturate(dot(g.viewDir,-L.direction)),4.);
+ float thru=saturate(.35-ndl*.65);
+ vec3 t=kfTransColor*(kfTranslucency*(back*.9+thru*.45))+vec3((saturate((ndl+.45)/1.45)-saturate(ndl))*.55);
+#ifdef PHYSICALLY_CORRECT_LIGHTS
+ t*=RECIPROCAL_PI;
+#endif
+ r.directDiffuse+=L.color*m.diffuseColor*t;
+}
+void kfRE_Direct(const in IncidentLight L,const in GeometricContext g,const in PhysicalMaterial m,inout ReflectedLight r){RE_Direct_Physical(L,g,m,r);kfTranslucent(L,g,m,r);}
+#undef RE_Direct
+#define RE_Direct kfRE_Direct
+`;
+/* String patch with a clear failure: minified three.js strips chunk comments, so only #include lines are targeted. */
+function inject(src,target,replacement,what){if(src.indexOf(target)<0)throw new Error('KE.foliage: shader patch target '+target+' missing in '+what+' (Three.js r128 required)');return src.replace(target,replacement);}
+function patchFoliage(THREE,sh,cfg,kind){
+  const U=foliageUniforms(THREE);Object.assign(sh.uniforms,sharedRefs(U),cfg.uniforms);const f=cfg.flags;
+  const defs=(f.attr?'#define KF_WIND_ATTRIBUTE\n':'');
+  let vs=inject(sh.vertexShader,'#include <project_vertex>',WIND_APPLY,kind+' vertex shader');
+  if(kind==='main'&&cfg.uniforms.kfNormalsUp.value>0)vs=inject(vs,'#include <beginnormal_vertex>','#include <beginnormal_vertex>\nobjectNormal=normalize(mix(objectNormal,vec3(0.,1.,0.),kfNormalsUp*.5));',kind+' vertex shader');
+  sh.vertexShader=defs+NOISE_GLSL()+WIND_UNIFORMS+GUST_GLSL+TREE_WIND_GLSL+'uniform float kfNormalsUp;\n'+vs;
+  let fs='uniform float kfTranslucency;uniform vec3 kfTransColor;uniform float kfMapSize;uniform float kfAlphaMip;uniform float kfEdgeFade;\n'+sh.fragmentShader;
+  if(f.alpha)fs=inject(fs,'#include <alphatest_fragment>',(kind==='main'?EDGE_FADE:'')+ALPHA_MIP,kind+' fragment shader');
+  if(kind==='main'){
+    /* Keep the (outward-bent) interpolated normal on back faces: canopy lighting stays volumetric. */
+    if(f.unflip)fs=inject(fs,'#include <normal_fragment_begin>','#include <normal_fragment_begin>\n#if defined(DOUBLE_SIDED)&&!defined(FLAT_SHADED)\nnormal=normalize(vNormal);geometryNormal=normal;\n#endif',kind+' fragment shader');
+    if(f.trans)fs=inject(fs,'#include <lights_physical_pars_fragment>','#include <lights_physical_pars_fragment>\n'+TRANSLUCENT_GLSL,kind+' fragment shader');
+  }
+  sh.fragmentShader=fs;
+}
+const flagKey=f=>(f.attr?'A':'a')+(f.trans?'T':'t')+(f.unflip?'U':'u')+(f.alpha?'P':'p')+(f.up?'N':'n');
+/* Install the foliage hook on a material, chaining whatever onBeforeCompile / cache key it already had,
+   so other systems (KE.surface, KE.CascadedShadows, KE.ProbeVolume) compose in either order. */
+function installHook(THREE,mat,cfg,kind){
+  const prev=Object.prototype.hasOwnProperty.call(mat,'onBeforeCompile')?mat.onBeforeCompile:null;
+  const prevKey=Object.prototype.hasOwnProperty.call(mat,'customProgramCacheKey')?mat.customProgramCacheKey.bind(mat):null;
+  mat.onBeforeCompile=function(sh,renderer){if(prev)prev.call(this,sh,renderer);patchFoliage(THREE,sh,cfg,kind);};
+  const key='ke-foliage-2-'+kind+':'+flagKey(cfg.flags);
+  mat.customProgramCacheKey=()=>prevKey?prevKey()+'|'+key:key;
+}
+
+/* ---------- foliage material ---------- */
+KE.foliageMaterial=(THREE,o={})=>{
+  foliageUniforms(THREE);
+  const wind=Object.assign({trunk:.02,branch:.06,leaf:.12},o.wind||{}),map=o.map||null;
+  const alphaTest=o.alphaTest!==undefined?o.alphaTest:(map?.4:0),translucency=o.translucency!==undefined?o.translucency:.6,doubleSided=o.doubleSided!==undefined?!!o.doubleSided:true;
+  const mat=new THREE.MeshStandardMaterial({map,color:srgb(THREE,o.color,0xffffff),alphaTest,roughness:o.roughness!==undefined?o.roughness:.78,metalness:0,side:doubleSided?THREE.DoubleSide:THREE.FrontSide,vertexColors:!!o.vertexColors});
+  if(o.bumpMap){mat.bumpMap=o.bumpMap;mat.bumpScale=o.bumpScale!==undefined?o.bumpScale:.03;}
+  if(o.normalMap)mat.normalMap=o.normalMap;
+  const normalsUp=o.normalsUp!==undefined?o.normalsUp:(doubleSided?.5:0);
+  const uniforms={kfWindAmp:{value:new THREE.Vector3(wind.trunk,wind.branch,wind.leaf)},kfRefHeight:{value:Math.max(1e-3,o.height||1)},kfTranslucency:{value:translucency},
+    kfTransColor:{value:srgb(THREE,o.translucencyColor,0xd2e67a)},kfNormalsUp:{value:normalsUp},
+    kfMapSize:{value:map&&map.image?Math.max(map.image.width||256,map.image.height||256):256},kfAlphaMip:{value:o.alphaMip!==undefined?o.alphaMip:.25},
+    kfEdgeFade:{value:o.edgeFade!==undefined?o.edgeFade:1}};
+  const flags={attr:o.windAttribute!==undefined?!!o.windAttribute:true,trans:translucency>0,unflip:doubleSided&&o.keepNormals!==false,alpha:alphaTest>0,up:normalsUp>0};
+  const cfg={THREE,uniforms,flags,wind,depth:null,distance:null};
+  mat.userData.keFoliage=cfg;mat.userData.keTextures=[map,o.bumpMap].filter(Boolean);
+  /* geometry without windWeight reads a constant zero weight (static) instead of failing */
+  mat.defaultAttributeValues={windWeight:[0,0,0,0],color:[1,1,1],uv:[0,0]};
+  installHook(THREE,mat,cfg,'main');
+  return mat;
+};
+/* Depth/distance materials with the identical vertex deformation and alpha cutout, for shadow maps.
+   Cached per source material; the uniforms are shared by reference, so changing wind amplitudes on the
+   colour material also moves its shadow. */
+KE.foliageDepthMaterial=(material,{distance=false}={})=>{
+  const cfg=material&&material.userData&&material.userData.keFoliage;if(!cfg)throw new TypeError('foliageDepthMaterial expects a material made by KE.foliageMaterial, KE.barkMaterial or KE.foliage.applyWind');
+  const key=distance?'distance':'depth';if(cfg[key])return cfg[key];const THREE=cfg.THREE;
+  const opts={map:material.alphaTest>0?material.map:null,alphaTest:material.alphaTest};
+  const d=distance?new THREE.MeshDistanceMaterial(opts):new THREE.MeshDepthMaterial(Object.assign({depthPacking:THREE.RGBADepthPacking},opts));
+  d.extensions={derivatives:true};d.userData.keFoliageDepthOf=material;d.defaultAttributeValues=material.defaultAttributeValues;
+  installHook(THREE,d,cfg,key);
+  cfg[key]=d;return d;
+};
+/* Release a foliage material together with its cached shadow materials. */
+function disposeFoliageMaterial(m){if(!m)return;const c=m.userData&&m.userData.keFoliage;if(c){if(c.depth)c.depth.dispose();if(c.distance)c.distance.dispose();c.depth=c.distance=null;}m.dispose();}
+
+/* ---------- procedural textures ---------- */
+const canvas2d=(w,h)=>{const c=document.createElement('canvas');c.width=w;c.height=h;return c;},ctx2d=c=>c.getContext('2d',{willReadFrequently:true});
+const hsl=(h,s,l,a=1)=>`hsla(${h.toFixed(1)},${s.toFixed(1)}%,${l.toFixed(1)}%,${a})`;
+/* Half-width profiles (0..1) along a leaf from base (t=0) to tip (t=1). */
+const LEAF_PROFILES={
+  ovate:t=>Math.pow(Math.sin(Math.PI*Math.pow(t,.75)),.9),
+  round:t=>Math.sqrt(Math.max(0,1-(2*t-1)*(2*t-1)))*(1-.12*t),
+  birch:t=>Math.sin(Math.PI*Math.pow(t,.6))*(1-.1*t),
+  lance:t=>Math.pow(Math.sin(Math.PI*t),.7)*(1-.35*t),
+};
+function drawLeaf(g,r,x,y,ang,len,wid,st,dark=1){
+  const prof=LEAF_PROFILES[st.shape]||LEAF_PROFILES.ovate,N=26,up=[],dn=[],teeth=st.teeth||0,ser=st.serrate||0;
+  for(let i=0;i<=N;i++){const t=i/N;let w=prof(t)*wid*.5;if(ser)w*=1-ser*(.5+.5*Math.sin(t*teeth*TAU));up.push([t*len,-w]);dn.push([t*len,w]);}
+  const h=lerp(st.hue[0],st.hue[1],r()),s=lerp(st.sat[0],st.sat[1],r()),l=lerp(st.lig[0],st.lig[1],r())*dark;
+  g.save();g.translate(x,y);g.rotate(ang);
+  const pet=len*(st.petiole||.12);g.strokeStyle=hsl(h-12,s*.7,l*.8);g.lineWidth=Math.max(1,wid*.09);g.beginPath();g.moveTo(-pet,0);g.lineTo(0,0);g.stroke();
+  const path=()=>{g.beginPath();g.moveTo(0,0);for(const p of up)g.lineTo(p[0],p[1]);for(let i=dn.length-1;i>=0;i--)g.lineTo(dn[i][0],dn[i][1]);g.closePath();};
+  const gr=g.createLinearGradient(0,0,len,0);gr.addColorStop(0,hsl(h,s,l*.78));gr.addColorStop(.55,hsl(h+2,s,l*1.08));gr.addColorStop(1,hsl(h+(st.tipShift||-6),s*.95,l*1.18));
+  path();g.fillStyle=gr;g.fill();
+  g.save();path();g.clip();
+  g.fillStyle=`rgba(0,18,0,${.24*dark})`;g.fillRect(0,0,len,wid);                       // fold shadow on the lower half
+  const hl=g.createLinearGradient(0,-wid*.5,0,0);hl.addColorStop(0,'rgba(255,255,230,0)');hl.addColorStop(1,`rgba(255,255,220,${st.gloss?.2:.1})`);g.fillStyle=hl;g.fillRect(0,-wid*.5,len,wid*.5);
+  g.strokeStyle=hsl(h+8,s*.6,Math.min(88,l*1.6),.55);g.lineWidth=Math.max(.6,wid*.05);g.beginPath();g.moveTo(0,0);g.lineTo(len*.96,0);g.stroke();
+  g.lineWidth=Math.max(.5,wid*.025);g.strokeStyle=hsl(h+8,s*.5,Math.min(85,l*1.45),.32);
+  for(let k=1;k<7;k++){const t=k/7.5,x0=len*t;for(const sg of [-1,1]){g.beginPath();g.moveTo(x0,0);g.quadraticCurveTo(x0+len*.07,sg*prof(t)*wid*.25,x0+len*.15,sg*prof(Math.min(1,t+.12))*wid*.42);g.stroke();}}
+  g.restore();
+  path();g.strokeStyle=`rgba(10,30,5,${.35*dark})`;g.lineWidth=Math.max(.6,wid*.03);g.stroke();
+  g.restore();
+}
+function twigPoint(b,c,e,t){const u=1-t;return [u*u*b[0]+2*u*t*c[0]+t*t*e[0],u*u*b[1]+2*u*t*c[1]+t*t*e[1]];}
+function twigAngle(b,c,e,t){const dx=2*(1-t)*(c[0]-b[0])+2*t*(e[0]-c[0]),dy=2*(1-t)*(c[1]-b[1])+2*t*(e[1]-c[1]);return Math.atan2(dy,dx);}
+function drawTwig(g,b,c,e,w0,w1,color){const n=12;g.strokeStyle=color;g.lineCap='round';for(let i=0;i<n;i++){const a=twigPoint(b,c,e,i/n),z=twigPoint(b,c,e,(i+1)/n);g.lineWidth=lerp(w0,w1,i/n);g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(z[0],z[1]);g.stroke();}}
+/* A leaf spray: a curved main twig rooted at the bottom-centre of the cell (where cards attach) plus
+   side shoots, leaves alternating along each; back leaves are drawn darker first for depth. */
+function drawLeafCluster(g,r,W,H,st,f){
+  const b=[W*.5,H*.985],e=[W*(.5+(r()-.5)*.16),H*(.1+r()*.06)],c=[W*(.5+(r()-.5)*.3),H*.55],twigs=[[b,c,e,1]],ns=st.side!==undefined?st.side:2;
+  for(let k=0;k<ns;k++){const t=.26+.36*k/Math.max(1,ns-1)+(r()-.5)*.08,p=twigPoint(b,c,e,t),sg=(k%2?1:-1)*(r()<.5?1:-1),a=twigAngle(b,c,e,t)+sg*(.6+r()*.3),L=H*(.36-.14*t)*(.8+.3*r());
+    const end=[clamp(p[0]+Math.cos(a)*L,W*.16,W*.84),clamp(p[1]+Math.sin(a)*L,H*.12,H*.9)],mid=[(p[0]+end[0])*.5-sg*W*.03,(p[1]+end[1])*.5-H*.03];twigs.push([p,mid,end,.62]);}
+  const leaves=[];
+  for(const [tb,tc,te,sc] of twigs){const n=Math.max(3,Math.round(lerp(st.count[0],st.count[1],r())*sc));
+    for(let k=0;k<n;k++){const t=(sc<1?.2:.16)+.8*Math.pow(k/(n-1),.9),p=twigPoint(tb,tc,te,t),a=twigAngle(tb,tc,te,t),side=k%2?1:-1;
+      const spread=(st.spread||62)*(1-.3*t)*Math.PI/180*(.8+.4*r()),len=W*lerp(st.len[0],st.len[1],r())*(.72+.4*Math.sin(Math.PI*(.25+.7*t)))*(sc<1?.9:1);leaves.push([p[0],p[1],a+side*spread,len,r()<.42]);}
+    leaves.push([te[0],te[1],twigAngle(tb,tc,te,1)+(r()-.5)*.3,W*st.len[1]*(sc<1?.8:.95),false]);}
+  if(st.droop)for(const L of leaves)L[2]+=.35*Math.cos(L[2]);
+  for(const L of leaves)if(L[4])drawLeaf(g,r,L[0],L[1],L[2],L[3],L[3]*st.wid,st,.74);
+  for(const [tb,tc,te,sc] of twigs)drawTwig(g,tb,tc,te,5*f*sc,1.2*f,st.twig);
+  for(const L of leaves)if(!L[4])drawLeaf(g,r,L[0],L[1],L[2],L[3],L[3]*st.wid,st,1);
+}
+function drawBlossom(g,r,x,y,R,rot){
+  for(let p=0;p<5;p++){const a=rot+p*TAU/5;g.save();g.translate(x,y);g.rotate(a);
+    const gr=g.createLinearGradient(0,0,R,0);gr.addColorStop(0,'#b83f68');gr.addColorStop(.3,'#ec94b1');gr.addColorStop(1,r()<.5?'#f9c4d4':'#f4b0c6');g.fillStyle=gr;
+    g.beginPath();g.moveTo(0,0);g.bezierCurveTo(R*.35,-R*.55,R*.95,-R*.55,R,-R*.12);g.lineTo(R*.86,0);g.lineTo(R,R*.12);g.bezierCurveTo(R*.95,R*.55,R*.35,R*.55,0,0);g.fill();
+    g.strokeStyle='rgba(150,40,80,.25)';g.lineWidth=.8;g.stroke();g.restore();}
+  g.fillStyle='#b83a64';g.beginPath();g.arc(x,y,R*.2,0,TAU);g.fill();
+  g.strokeStyle='rgba(250,220,150,.9)';g.lineWidth=Math.max(.6,R*.03);for(let i=0;i<9;i++){const a=r()*TAU,l=R*(.3+r()*.2);g.beginPath();g.moveTo(x,y);g.lineTo(x+Math.cos(a)*l,y+Math.sin(a)*l);g.stroke();g.fillStyle='#f6cf6a';g.beginPath();g.arc(x+Math.cos(a)*l,y+Math.sin(a)*l,Math.max(.8,R*.045),0,TAU);g.fill();}
+}
+function drawSakuraCluster(g,r,W,H,f){
+  const b=[W*.5,H*.985],e=[W*(.5+(r()-.5)*.3),H*.12],c=[W*(.5+(r()-.5)*.5),H*.55];
+  const leafSt={shape:'ovate',hue:[70,95],sat:[30,45],lig:[28,38],serrate:.05,teeth:16,petiole:.1};
+  for(let k=0;k<4;k++){const t=.25+.6*r(),p=twigPoint(b,c,e,t);drawLeaf(g,r,p[0],p[1],twigAngle(b,c,e,t)+(r()<.5?-1:1)*1.1,W*.17,W*.07,leafSt,.85);}
+  drawTwig(g,b,c,e,5*f,1.4*f,'#4a2b26');
+  const spurs=[];for(let k=0;k<7;k++){const t=.2+.8*k/6,p=twigPoint(b,c,e,t),a=twigAngle(b,c,e,t)+(k%2?1:-1)*(.6+r()*.5),l=W*(.07+r()*.06);spurs.push([p[0]+Math.cos(a)*l,p[1]+Math.sin(a)*l]);g.strokeStyle='#5a3530';g.lineWidth=1.6*f;g.beginPath();g.moveTo(p[0],p[1]);g.lineTo(p[0]+Math.cos(a)*l,p[1]+Math.sin(a)*l);g.stroke();}
+  for(const s of spurs){const m=2+Math.floor(r()*3);for(let i=0;i<m;i++){const a=r()*TAU,d=W*.04*r();drawBlossom(g,r,s[0]+Math.cos(a)*d,s[1]+Math.sin(a)*d,W*(.07+r()*.035),r()*TAU);}}
+  for(let i=0;i<5;i++){const p=twigPoint(b,c,e,.3+.7*r());g.fillStyle='#e58aa6';g.beginPath();g.ellipse(p[0]+(r()-.5)*W*.2,p[1]+(r()-.5)*W*.1,W*.018,W*.028,r()*3,0,TAU);g.fill();}
+}
+function drawNeedles(g,r,x0,y0,x1,y1,len,f,dark){
+  const L=Math.hypot(x1-x0,y1-y0),a=Math.atan2(y1-y0,x1-x0),n=Math.floor(L/(2.6*f));g.lineCap='round';
+  for(let i=0;i<n;i++){const t=i/n,x=lerp(x0,x1,t),y=lerp(y0,y1,t),l=len*(.55+.45*Math.sin(Math.PI*(.15+.85*t)))*(.85+.3*r());
+    for(const s of [-1,1]){const na=a+s*(.9+r()*.35)-.25*s*t,ex=x+Math.cos(na)*l,ey=y+Math.sin(na)*l,h=130+r()*22,lg=(20+r()*12)*dark;
+      g.strokeStyle=hsl(h,38+r()*14,lg);g.lineWidth=1.9*f;g.beginPath();g.moveTo(x,y);g.lineTo(ex,ey);g.stroke();
+      g.strokeStyle=hsl(h-10,40,lg*1.55,.8);g.lineWidth=1.2*f;g.beginPath();g.moveTo(lerp(x,ex,.6),lerp(y,ey,.6));g.lineTo(ex,ey);g.stroke();}}
+}
+function drawConiferCluster(g,r,W,H,f){
+  const bx=W*.5,by=H*.985,ex=W*(.5+(r()-.5)*.12),ey=H*.06;
+  const twigs=[];for(let k=0;k<7;k++){const t=.18+.72*k/6,x=lerp(bx,ex,t),y=lerp(by,ey,t),s=k%2?1:-1,a=-Math.PI/2+s*(.75+r()*.25),l=W*(.3-.18*t)*(.8+.4*r());twigs.push([x,y,x+Math.cos(a)*l,y+Math.sin(a)*l]);}
+  for(const t of twigs)drawNeedles(g,r,t[0],t[1],t[2],t[3],W*.07,f,.8);
+  g.strokeStyle='#5b4030';g.lineWidth=3.2*f;g.beginPath();g.moveTo(bx,by);g.lineTo(ex,ey);g.stroke();
+  for(const t of twigs){g.lineWidth=1.8*f;g.beginPath();g.moveTo(t[0],t[1]);g.lineTo(t[2],t[3]);g.stroke();}
+  drawNeedles(g,r,bx,by-H*.05,ex,ey,W*.085,f,1);
+}
+function drawFrond(g,r,W,H,f){
+  const cx=W*.5,by=H*.995,ty=H*.02,n=46;
+  for(let side=-1;side<=1;side+=2)for(let i=0;i<n;i++){const t=.04+.94*i/n,y=lerp(by,ty,t),L=Math.min((W*.5-4*f)/.87,W*.62*Math.pow(Math.sin(Math.PI*(.08+.9*t)),.55))*(.85+.2*r());
+    drawLeaf(g,r,cx,y,-Math.PI/2+side*(1.05-.25*t),L,Math.max(5*f,L*.13),{shape:'lance',hue:[88,108],sat:[40,58],lig:[24,36],petiole:0,tipShift:-10},i%2?.9:1);}
+  g.strokeStyle='#8c7a3c';g.lineCap='round';for(let i=0;i<10;i++){g.lineWidth=lerp(7,1.5,i/10)*f;g.beginPath();g.moveTo(cx,lerp(by,ty,i/10));g.lineTo(cx,lerp(by,ty,(i+1)/10));g.stroke();}
+}
+const LEAF_STYLES={
+  broadleaf:{shape:'ovate',count:[8,11],len:[.19,.26],wid:.52,hue:[84,106],sat:[38,56],lig:[24,38],serrate:.06,teeth:14,twig:'#5b4632',spread:66},
+  bush:{shape:'round',count:[12,16],len:[.13,.18],wid:.62,hue:[96,122],sat:[34,52],lig:[18,30],gloss:true,twig:'#4a3a2a',spread:70,side:3},
+  birch:{shape:'birch',count:[9,13],len:[.14,.2],wid:.72,hue:[66,86],sat:[48,68],lig:[32,46],serrate:.1,teeth:18,twig:'#6b5a4a',spread:68,droop:true},
+};
+/* Returns a mip-mapped sRGB atlas (DataTexture) of leaf clusters with straight (dilated) alpha edges.
+   texture.userData.layout={cols,rows}; cards map one cell each, twig base at the cell's bottom-centre. */
+KE.leafTexture=(THREE,o={})=>{
+  const species=o.species||'broadleaf',S=clamp(Math.round(o.size||512),64,2048),f=S/512,r=KE.random((o.seed||1)*977+species.length*131);
+  const layout=species==='palm'?{cols:2,rows:1}:{cols:2,rows:2},c=canvas2d(S,S),g=ctx2d(c),cw=S/layout.cols,ch=S/layout.rows,pad=Math.max(2,Math.round(4*f));
+  g.clearRect(0,0,S,S);
+  for(let cy=0;cy<layout.rows;cy++)for(let cx=0;cx<layout.cols;cx++){
+    g.save();g.translate(cx*cw,cy*ch);g.beginPath();g.rect(pad,pad,cw-pad*2,ch-pad*2);g.clip();
+    if(species==='sakura')drawSakuraCluster(g,r,cw,ch,f);else if(species==='conifer')drawConiferCluster(g,r,cw,ch,f);else if(species==='palm')drawFrond(g,r,cw,ch,f);else drawLeafCluster(g,r,cw,ch,LEAF_STYLES[species]||LEAF_STYLES.broadleaf,f);
+    g.restore();}
+  const tex=imageToTexture(THREE,g.getImageData(0,0,S,S),S,S,true);tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping;tex.userData={layout,species,kind:'leafAtlas'};return tex;
+};
+/* Copy canvas pixels into a DataTexture: push opaque colours into transparent texels (so mips have no
+   dark fringes), flip rows to the CanvasTexture convention (v=1 at the canvas top). */
+function imageToTexture(THREE,img,W,H,dilate){
+  const d=img.data,out=new Uint8Array(W*H*4);out.set(d);
+  if(dilate){const filled=new Uint8Array(W*H);let sr=0,sg=0,sb=0,sn=0;
+    for(let i=0;i<W*H;i++)if(d[i*4+3]>24){filled[i]=1;sr+=d[i*4];sg+=d[i*4+1];sb+=d[i*4+2];sn++;}
+    const next=new Uint8Array(W*H);
+    for(let pass=0;pass<8;pass++){next.set(filled);let changed=0;
+      for(let y=0;y<H;y++)for(let x=0;x<W;x++){const i=y*W+x;if(filled[i])continue;let r=0,gg=0,b=0,n=0;
+        for(let k=0;k<4;k++){const nx=x+(k===0?1:k===1?-1:0),ny=y+(k===2?1:k===3?-1:0);if(nx<0||ny<0||nx>=W||ny>=H)continue;const j=ny*W+nx;if(!filled[j])continue;r+=out[j*4];gg+=out[j*4+1];b+=out[j*4+2];n++;}
+        if(n){out[i*4]=r/n;out[i*4+1]=gg/n;out[i*4+2]=b/n;next[i]=1;changed++;}}
+      filled.set(next);if(!changed)break;}
+    const ar=sn?sr/sn:60,ag=sn?sg/sn:90,ab=sn?sb/sn:40;for(let i=0;i<W*H;i++)if(!filled[i]){out[i*4]=ar;out[i*4+1]=ag;out[i*4+2]=ab;}
+    for(let i=0;i<W*H;i++)if(d[i*4+3]<=24)out[i*4+3]=d[i*4+3];}
+  const flipped=new Uint8Array(W*H*4);for(let y=0;y<H;y++)flipped.set(out.subarray((H-1-y)*W*4,(H-y)*W*4),y*W*4);
+  const t=new THREE.DataTexture(flipped,W,H,THREE.RGBAFormat);t.minFilter=THREE.LinearMipmapLinearFilter;t.magFilter=THREE.LinearFilter;t.generateMipmaps=true;
+  t.encoding=THREE.sRGBEncoding;t.anisotropy=Math.min(8,KE.settings.aniso||4);t.needsUpdate=true;return t;
+}
+/* Tileable value noise with integer periods (for seamless bark). */
+function periodicNoise(seed){
+  const rnd=KE.random(seed),perm=new Uint8Array(512),vals=new Float32Array(256);for(let i=0;i<256;i++){perm[i]=i;vals[i]=rnd();}
+  for(let i=255;i>0;i--){const j=Math.floor(rnd()*(i+1)),t=perm[i];perm[i]=perm[j];perm[j]=t;}for(let i=0;i<256;i++)perm[256+i]=perm[i];
+  const h=(x,y)=>vals[perm[perm[x&255]+(y&255)]];
+  const noise=(x,y,px,py)=>{const xi=Math.floor(x),yi=Math.floor(y),fx=x-xi,fy=y-yi,x0=((xi%px)+px)%px,y0=((yi%py)+py)%py,x1=(x0+1)%px,y1=(y0+1)%py,u=fx*fx*(3-2*fx),v=fy*fy*(3-2*fy);
+    return lerp(lerp(h(x0,y0),h(x1,y0),u),lerp(h(x0,y1),h(x1,y1),u),v);};
+  noise.noise=noise;
+  noise.fbm=(x,y,px,py,oct=4)=>{let s=0,a=.5,n=0;for(let i=0;i<oct;i++){s+=a*noise(x,y,px,py);n+=a;x*=2;y*=2;px*=2;py*=2;a*=.5;}return s/n;};
+  noise.cell=(x,y,px,py,out)=>{/* periodic Worley F1/F2 with one jittered point per cell */let f1=9,f2=9,id=0;const xi=Math.floor(x),yi=Math.floor(y);
+    for(let j=-1;j<=1;j++)for(let i=-1;i<=1;i++){const cx=((xi+i)%px+px)%px,cy=((yi+j)%py+py)%py,hx=h(cx*7+1,cy*13+3),hy=h(cx*11+5,cy*3+7),dx=xi+i+hx-x,dy=yi+j+hy-y,dd=Math.sqrt(dx*dx+dy*dy);
+      if(dd<f1){f2=f1;f1=dd;id=h(cx*5+2,cy*17+1);}else if(dd<f2)f2=dd;}out[0]=f1;out[1]=f2;out[2]=id;return out;};
+  return noise;
+}
+const BARK_KINDS={broadleaf:'oak',oak:'oak',bush:'oak',conifer:'pine',pine:'pine',birch:'birch',sakura:'cherry',cherry:'cherry',palm:'palm'};
+/* Tileable procedural bark: returns a mip-mapped sRGB DataTexture (use with RepeatWrapping UVs). */
+KE.barkTexture=(THREE,o={})=>{
+  const kind=BARK_KINDS[o.species||o.kind||'broadleaf']||'oak',S=clamp(Math.round(o.size||256),32,1024),N=periodicNoise((o.seed||3)*31+kind.length*7),data=new Uint8Array(S*S*4),cell=[0,0,0];
+  for(let y=0;y<S;y++)for(let x=0;x<S;x++){const u=x/S,v=y/S;let r,g,b;
+    if(kind==='oak'){const warp=(N.fbm(u*3,v*2,3,2)-.5)*2.4,f=u*10+warp+(N.noise(u*20,v*3,20,3)-.5)*.6,p=Math.abs((f-Math.floor(f))-.5)*2;
+      const crack=smooth(.62,.95,p)*(.75+.25*N.noise(u*10,v*24,10,24)),cross=smooth(.78,.9,N.noise(u*10,v*18,10,18))*.5,fib=.86+.28*N.noise(u*64,v*8,64,8),tone=N.fbm(u*4,v*4,4,4);
+      const k=clamp(1-Math.max(crack,cross*(1-p))*.8,0,1)*fib;r=(.36+.14*tone)*k;g=(.29+.11*tone)*k;b=(.23+.08*tone)*k;}
+    else if(kind==='pine'){N.cell(u*6,v*4,6,4,cell);const edge=smooth(0,.12,cell[1]-cell[0]),id=cell[2],tone=N.fbm(u*8,v*8,8,8);
+      const k=lerp(.18,1,edge)*(.85+.3*tone);r=(.46+.14*id)*k;g=(.27+.07*id)*k;b=(.19+.04*id)*k;}
+    else if(kind==='birch'){const tone=N.fbm(u*4,v*4,4,4),dash=smooth(.66,.8,N.noise(u*7,v*56,7,56))*smooth(.35,.6,N.noise(u*24,v*56,24,56)),patch=smooth(.72,.8,N.fbm(u*3,v*5,3,5)),peel=smooth(.6,.75,N.noise(u*5,v*9,5,9))*.25;
+      const k=1-Math.max(dash*.85,patch*.9);r=(.86-.12*tone+peel*.05)*k+.06;g=(.84-.12*tone-peel*.05)*k+.06;b=(.78-.1*tone-peel*.12)*k+.06;}
+    else if(kind==='cherry'){const tone=N.fbm(u*4,v*6,4,6),len=smooth(.62,.74,N.noise(u*5,v*64,5,64))*smooth(.3,.55,N.noise(u*20,v*64,20,64)),sheen=.9+.2*N.noise(u*3,v*1,3,1);
+      r=lerp((.3+.08*tone)*sheen,.62,len*.75);g=lerp((.18+.05*tone)*sheen,.55,len*.75);b=lerp((.16+.04*tone)*sheen,.48,len*.75);}
+    else{const ringF=v*8+(N.noise(u*4,v*8,4,8)-.5)*.35,ring=smooth(.8,.97,ringF-Math.floor(ringF)),fib=.82+.3*N.noise(u*72,v*6,72,6),tone=N.fbm(u*4,v*4,4,4);
+      const k=(1-ring*.55)*fib;r=(.47+.1*tone)*k;g=(.41+.08*tone)*k;b=(.33+.06*tone)*k;}
+    const i=(y*S+x)*4;data[i]=clamp(r*255,0,255);data[i+1]=clamp(g*255,0,255);data[i+2]=clamp(b*255,0,255);data[i+3]=255;}
+  const t=new THREE.DataTexture(data,S,S,THREE.RGBAFormat);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.minFilter=THREE.LinearMipmapLinearFilter;t.magFilter=THREE.LinearFilter;t.generateMipmaps=true;
+  t.encoding=THREE.sRGBEncoding;t.anisotropy=Math.min(8,KE.settings.aniso||4);t.needsUpdate=true;t.userData={kind:'bark',bark:kind};return t;
+};
+KE.barkMaterial=(THREE,o={})=>{
+  const map=o.map||KE.barkTexture(THREE,{species:o.species,size:o.textureSize||256,seed:o.seed});
+  const m=KE.foliageMaterial(THREE,{map,color:o.color!==undefined?o.color:0xffffff,alphaTest:0,translucency:0,doubleSided:false,roughness:o.roughness!==undefined?o.roughness:.93,
+    wind:o.wind,normalsUp:0,vertexColors:!!o.vertexColors,bumpMap:o.bump===0?null:map,bumpScale:o.bump!==undefined?o.bump:.035,windAttribute:o.windAttribute});
+  m.userData.keOwnsMap=!o.map;return m;
+};
+
+/* ---------- procedural trees ---------- */
+/* Species presets. angle: [min,max] degrees from the parent axis per level; start: first child position
+   along the parent; shape: crown silhouette controlling child length by attachment height. */
+const SPECIES={
+  broadleaf:{height:5,trunkRadius:.25,levels:3,branches:[6,4,3],lengthFalloff:.62,start:[.36,.28,.22],angle:[[38,68],[30,55],[25,50]],gravity:.035,phototropism:.07,wobble:.16,trunkTop:.74,tipRatio:.32,childRadius:.62,shape:'round',segs:[10,6,5,3],radial:[10,7,5,4],leafCount:190,cross:.55,leafSize:1.2,flare:.5,leafMinT:.35,lean:.06,normalBend:.72,barkColor:0xc9b09a,transColor:0xd8ec7a},
+  conifer:{height:7.5,trunkRadius:.22,levels:2,branches:[30,5],lengthFalloff:.34,start:[.1,.2],angle:[[78,102],[40,62]],gravity:.07,phototropism:.05,wobble:.08,trunkTop:1,tipRatio:.12,childRadius:.3,shape:'cone',segs:[12,5,3],radial:[9,5,4],leafCount:300,leafSize:1.1,flare:.3,leafMinT:.1,lean:.02,normalBend:.55,flatCards:true,barkColor:0xc4a08a,transColor:0xb6d66a},
+  sakura:{height:4.3,trunkRadius:.24,levels:3,branches:[5,4,3],lengthFalloff:.7,start:[.3,.25,.2],angle:[[45,75],[30,58],[25,50]],gravity:.02,phototropism:.05,wobble:.3,trunkTop:.55,tipRatio:.3,childRadius:.66,shape:'umbrella',segs:[10,7,5,3],radial:[10,7,5,4],leafCount:210,cross:.6,leafSize:1.05,flare:.45,leafMinT:.3,lean:.14,normalBend:.72,barkColor:0xd8c0b8,transColor:0xffc2d8},
+  birch:{height:6.5,trunkRadius:.15,levels:3,branches:[10,4,3],lengthFalloff:.5,start:[.32,.25,.2],angle:[[26,44],[28,50],[35,65]],gravity:.07,phototropism:.07,wobble:.12,trunkTop:.94,tipRatio:.18,childRadius:.5,shape:'oval',segs:[12,6,4,3],radial:[9,6,4,3],leafCount:190,cross:.45,leafSize:.85,flare:.25,leafMinT:.3,lean:.05,normalBend:.7,barkColor:0xffffff,transColor:0xe4f07a},
+  palm:{height:6,trunkRadius:.2,levels:0,branches:[11],lengthFalloff:.45,start:[1],angle:[[0,0]],gravity:.1,phototropism:.05,wobble:.02,trunkTop:.95,tipRatio:.72,childRadius:.3,shape:'palm',segs:[14],radial:[10],leafCount:0,leafSize:2.6,flare:.35,leafMinT:1,lean:.3,normalBend:.4,barkColor:0xffffff,transColor:0xd6e878},
+  bush:{height:1.4,trunkRadius:.05,levels:2,branches:[5,4],stems:5,lengthFalloff:.55,start:[.25,.2],angle:[[30,60],[30,55]],gravity:.03,phototropism:.08,wobble:.2,trunkTop:.8,tipRatio:.3,childRadius:.6,shape:'round',segs:[6,4,3],radial:[5,4,3],leafCount:120,cross:.5,leafSize:.62,flare:0,leafMinT:.12,lean:.4,normalBend:.8,barkColor:0xb8a088,transColor:0xc8e070},
+};
+KE.TREE_SPECIES=Object.keys(SPECIES);
+function crownShape(shape,t,level){
+  if(level>1)return 1-.35*t;
+  if(shape==='cone')return Math.max(.08,Math.pow(1-t,1.05)*1.15);
+  if(shape==='umbrella')return .75+.35*Math.sin(Math.PI*Math.min(1,t*1.1));
+  if(shape==='oval')return .45+.55*Math.sin(Math.PI*(.15+.85*t));
+  return .6+.4*Math.sin(Math.PI*(.35+.65*t));
+}
+/* Minimal vector helpers on plain arrays keep generation independent of the Three revision. */
+const v3={add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],mul:(a,s)=>[a[0]*s,a[1]*s,a[2]*s],dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],len:a=>Math.hypot(a[0],a[1],a[2]),norm:a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l];},
+  lerp:(a,b,t)=>[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t]};
+function perpBasis(t){const ref=Math.abs(t[1])<.95?[0,1,0]:[1,0,0],a=v3.norm(v3.cross(t,ref));return [a,v3.cross(t,a)];}
+function randUnit(r){const z=r()*2-1,a=r()*TAU,s=Math.sqrt(1-z*z);return [Math.cos(a)*s,z,Math.sin(a)*s];}
+function sampleBranch(br,t){const n=br.pts.length-1,f=clamp(t,0,1)*n,i=Math.min(n-1,Math.floor(f)),u=f-i;
+  return {p:v3.lerp(br.pts[i],br.pts[i+1],u),r:lerp(br.radii[i],br.radii[i+1],u),w:lerp(br.weights[i],br.weights[i+1],u),d:v3.norm(v3.sub(br.pts[i+1],br.pts[i]))};}
+const WEIGHT_STEP=[0,.45,.35,.25,.2];
+
+/* Recursive growth: each branch is a polyline bent by gravity, phototropism and seeded wobble; children
+   attach along it with a golden-angle spiral, length shaped by the species crown profile. */
+function growTree(sp,o,r){
+  const levels=clamp(Math.round(o.levels!==undefined?o.levels:sp.levels),0,4),counts=o.branches||sp.branches,detail=o.detail,branches=[];
+  const lengthFalloff=o.lengthFalloff!==undefined?o.lengthFalloff:sp.lengthFalloff,gravity=o.gravity!==undefined?o.gravity:sp.gravity,photo=o.phototropism!==undefined?o.phototropism:sp.phototropism;
+  const H=o.height!==undefined?o.height:sp.height,R0=o.trunkRadius!==undefined?o.trunkRadius:sp.trunkRadius;
+  const grow=(level,start,dir,length,radius,w0,phase,parentR)=>{
+    const segs=Math.max(2,Math.round((sp.segs[Math.min(level,sp.segs.length-1)]||3)*clamp(detail,.5,1.5))),step=length/segs;
+    let d=v3.norm(dir),p=level?v3.sub(start,v3.mul(d,parentR*.6)):start.slice();
+    const pts=[p],radii=[radius],weights=[w0],tip=radius*sp.tipRatio,ws=WEIGHT_STEP[Math.min(level,4)];
+    for(let i=1;i<=segs;i++){const t=i/segs;
+      d=v3.add(d,[(r()-.5)*sp.wobble,(r()-.5)*sp.wobble*.5-gravity*(level?1+t:.15)+photo*(level?1-t*.3:.5),(r()-.5)*sp.wobble]);d=v3.norm(d);
+      p=v3.add(p,v3.mul(d,step+(i===1&&level?parentR*.6/segs:0)));pts.push(p);radii.push(lerp(radius,tip,Math.pow(t,.9)));weights.push(Math.min(1,w0+ws*t));}
+    const br={level,pts,radii,weights,phase,length,children:0};branches.push(br);
+    if(level<levels){const n=Math.max(1,Math.round((counts[level]||3)*(.8+.4*r())*(level===0&&sp.shape==='cone'?1:1)));const st=o.start?o.start[level]:sp.start[Math.min(level,sp.start.length-1)];
+      const ang=sp.angle[Math.min(level,sp.angle.length-1)];let az=r()*TAU;
+      for(let k=0;k<n;k++){const t=st+(1-st)*((k+.25+r()*.5)/n);az+=GOLDEN+(r()-.5)*.35;
+        const s=sampleBranch(br,t),[A,B]=perpBasis(s.d),angle=lerp(ang[1],ang[0],level===0?t:r())*Math.PI/180,radial=v3.add(v3.mul(A,Math.cos(az)),v3.mul(B,Math.sin(az)));
+        const cdir=v3.add(v3.mul(s.d,Math.cos(angle)),v3.mul(radial,Math.sin(angle))),clen=length*lengthFalloff*crownShape(sp.shape,t,level+1)*(.8+.4*r())*(level===0?H/Math.max(1e-3,length)*.55:1);
+        const cr=Math.max(.006,s.r*sp.childRadius*(.85+.3*r()));br.children++;
+        grow(level+1,s.p,cdir,clen,cr,s.w,level===0?r():(phase+(r()-.5)*.16+1)%1,s.r);}}
+    return br;};
+  const stems=sp.stems||1;
+  for(let s=0;s<stems;s++){const a=r()*TAU,lean=stems>1?sp.lean*(.6+.6*r()):sp.lean*r(),dir=v3.norm([Math.cos(a)*Math.sin(lean),Math.cos(lean),Math.sin(a)*Math.sin(lean)]);
+    grow(0,stems>1?[Math.cos(a)*R0*1.5,0,Math.sin(a)*R0*1.5]:[0,0,0],dir,H*sp.trunkTop*(stems>1?.7+.3*r():1),R0,0,r(),0);}
+  return branches;
+}
+function makeGeometry(THREE,a,idx){
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(a.p,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(a.n,3));
+  g.setAttribute('uv',new THREE.Float32BufferAttribute(a.uv,2));g.setAttribute('color',new THREE.Float32BufferAttribute(a.c,3));g.setAttribute('windWeight',new THREE.Float32BufferAttribute(a.w,4));
+  g.setIndex(idx);g.computeBoundingBox();g.computeBoundingSphere();return g;}
+const buffers=()=>({p:[],n:[],uv:[],c:[],w:[]});
+/* Bark tubes with parallel-transport frames (no twisting), root flare lobes, tip caps and bark UVs
+   (u around the circumference, v along the arc length at a matching texel density). */
+function buildTubes(branches,sp,detail,H,canopy,r){
+  const a=buffers(),idx=[],tile=1.1;
+  for(const br of branches){const L=br.level,radial=Math.max(3,Math.round((sp.radial[Math.min(L,sp.radial.length-1)]||4)*clamp(detail,.5,1.5))),n=br.pts.length;
+    const base=a.p.length/3,uRep=Math.max(1,Math.round(TAU*br.radii[0]/tile)),vScale=uRep/(TAU*Math.max(br.radii[0],.02));
+    let T=v3.norm(v3.sub(br.pts[1],br.pts[0])),[N]=perpBasis(T),vAcc=0,lobe=r()*TAU;
+    for(let i=0;i<n;i++){
+      const Ti=v3.norm(v3.sub(br.pts[Math.min(n-1,i+1)],br.pts[Math.max(0,i-1)]));N=v3.norm(v3.sub(N,v3.mul(Ti,v3.dot(N,Ti))));const B=v3.cross(Ti,N);T=Ti;
+      if(i>0)vAcc+=v3.len(v3.sub(br.pts[i],br.pts[i-1]));const t=i/(n-1),P=br.pts[i];
+      const inCanopy=canopy?clamp(Math.hypot((P[0]-canopy.c[0])/canopy.R[0],(P[1]-canopy.c[1])/canopy.R[1],(P[2]-canopy.c[2])/canopy.R[2]),0,1.2):1.2;
+      const ao=clamp((L===0?1-.28*Math.exp(-P[1]*3):1)*(inCanopy<1?.55+.45*smooth(.15,1,inCanopy):1),0,1);
+      for(let j=0;j<=radial;j++){const th=j/radial*TAU,dir=v3.add(v3.mul(N,Math.cos(th)),v3.mul(B,Math.sin(th)));
+        let rad=br.radii[i];if(L===0&&sp.flare&&t<.14)rad*=1+sp.flare*Math.pow(1-t/.14,2)*(.65+.35*Math.cos(5*th+lobe));if(L<2)rad*=1+.05*Math.sin(th*3+i*1.7+lobe);
+        const q=v3.add(P,v3.mul(dir,rad));a.p.push(q[0],q[1],q[2]);a.n.push(dir[0],dir[1],dir[2]);a.uv.push(j/radial*uRep,vAcc*vScale);a.c.push(ao,ao,ao);
+        a.w.push(clamp(q[1]/H,0,1),br.weights[i],0,br.phase);}}
+    for(let i=0;i<n-1;i++)for(let j=0;j<radial;j++){const k=base+i*(radial+1)+j,k2=k+radial+1;idx.push(k,k2,k+1,k+1,k2,k2+1);}
+    const P=br.pts[n-1],tipP=v3.add(P,v3.mul(T,br.radii[n-1]*1.2)),ti=a.p.length/3;a.p.push(tipP[0],tipP[1],tipP[2]);a.n.push(T[0],T[1],T[2]);a.uv.push(.5,(vAcc+br.radii[n-1])*vScale);a.c.push(1,1,1);a.w.push(clamp(tipP[1]/H,0,1),br.weights[n-1],0,br.phase);
+    const last=base+(n-1)*(radial+1);for(let j=0;j<radial;j++)idx.push(last+j,ti,last+j+1);}
+  return {a,idx};
+}
+/* Leaf cards: 2x3-vertex quads (so they can droop) attached to terminal twigs, oriented outward from
+   the crown, normals bent toward the crown ellipsoid normal, AO darker toward the crown core. */
+function buildLeaves(branches,sp,o,H,r,layout){
+  const a=buffers(),idx=[],attach=[],levels=Math.max(...branches.map(b=>b.level));
+  for(const br of branches){const terminal=br.level===levels,pre=br.level===levels-1&&levels>0&&!br.children;if(!terminal&&!pre&&!(sp.flatCards&&br.level>=1))continue;
+    const k=Math.max(1,Math.round(br.length*(terminal?3:2)));for(let i=0;i<k;i++){const t=lerp(terminal?sp.leafMinT:.55,1,(i+r())/k);attach.push(sampleBranch(br,t).p.concat([t]),br);}}
+  if(!attach.length)return null;
+  const pts=[];for(let i=0;i<attach.length;i+=2)pts.push([attach[i],attach[i+1]]);
+  let mn=[1e9,1e9,1e9],mx=[-1e9,-1e9,-1e9];for(const [p] of pts)for(let k=0;k<3;k++){mn[k]=Math.min(mn[k],p[k]);mx[k]=Math.max(mx[k],p[k]);}
+  const leafSize=(o.leafCards&&o.leafCards.size)||sp.leafSize,c=v3.mul(v3.add(mn,mx),.5),R=[0,1,2].map(k=>Math.max(.3,(mx[k]-mn[k])*.5+leafSize*.4));
+  const detail=clamp(o.detail,.3,1.5),count=Math.max(8,Math.round(((o.leafCards&&o.leafCards.count)||sp.leafCount)*detail)),size=leafSize/Math.sqrt(clamp(detail,.3,1)),bend=sp.normalBend;
+  const cols=layout.cols,rows=layout.rows,inset=.004;let cards=0;
+  /* One 2x3-vertex card: rooted slightly behind p, extending along out, drooping with t^2; vertex
+     normals bend toward the crown ellipsoid normal; AO darkens toward the crown core and underside. */
+  const emitCard=(p,out,right,nrm,sz,ci,flip,tint,droop,bw,phase)=>{const cx=ci%cols,cy=Math.floor(ci/cols),base=a.p.length/3;
+    for(let row=0;row<3;row++){const t=row/2;for(let col=0;col<2;col++){const x=col-.5;
+      let v=v3.add(v3.add(v3.sub(p,v3.mul(out,sz*.06)),v3.mul(out,sz*t)),v3.mul(right,sz*x));v[1]-=sz*droop*t*t;
+      const en=v3.norm([(v[0]-c[0])/(R[0]*R[0]),(v[1]-c[1])/(R[1]*R[1]),(v[2]-c[2])/(R[2]*R[2])]),vn=v3.norm(v3.add(v3.mul(nrm,1-bend),v3.mul(en,bend)));
+      const rn=Math.hypot((v[0]-c[0])/R[0],(v[1]-c[1])/R[1],(v[2]-c[2])/R[2]),ao=(.42+.58*smooth(.05,1,rn))*(.78+.22*clamp((v[1]-(c[1]-R[1]))/(2*R[1]),0,1));
+      a.p.push(v[0],v[1],v[2]);a.n.push(vn[0],vn[1],vn[2]);
+      const uu=(cx+(flip?1-(x+.5):(x+.5))*(1-2*inset)+inset)/cols,vv=1-(cy+1)/rows+(inset+t*(1-2*inset))/rows;a.uv.push(uu,vv);
+      a.c.push(ao*tint[0],ao*tint[1],ao*tint[2]);a.w.push(clamp(v[1]/H,0,1),bw,t,phase);}}
+    for(let row=0;row<2;row++){const k=base+row*2;idx.push(k,k+1,k+2,k+1,k+3,k+2);}};
+  for(let q=0;q<count;q++){const [ap,br]=pts[Math.floor(r()*pts.length)],p=[ap[0],ap[1],ap[2]],s=sampleBranch(br,ap[3]),radialDir=v3.norm(v3.sub(p,c));
+    let out,right,nrm;
+    if(sp.flatCards){out=v3.norm(v3.add(v3.mul(s.d,1),v3.mul(randUnit(r),.3)));out[1]*=.5;out=v3.norm(out);right=v3.norm(v3.cross(out,[0,1,0]));nrm=v3.cross(right,out);
+      const roll=(r()-.5)*.7;nrm=v3.norm(v3.add(v3.mul(nrm,Math.cos(roll)),v3.mul(right,Math.sin(roll))));right=v3.norm(v3.cross(out,nrm));right=v3.mul(right,-1);}
+    else{out=v3.norm(v3.add(v3.add(v3.mul(s.d,.65),v3.mul(radialDir,.8)),v3.mul(randUnit(r),.55)));out[1]-=.12;out=v3.norm(out);
+      /* Face the card outward from the crown (shingle-like) with a random roll about its axis, so from
+         outside most cards are seen face-on while silhouettes stay irregular. */
+      let face=v3.sub(radialDir,v3.mul(out,v3.dot(radialDir,out)));face=v3.len(face)<.2?perpBasis(out)[0]:v3.norm(face);
+      const side=v3.cross(out,face),roll=(r()-.5)*(sp.cardRoll!==undefined?sp.cardRoll:1.5);nrm=v3.norm(v3.add(v3.mul(face,Math.cos(roll)),v3.mul(side,Math.sin(roll))));right=v3.cross(out,nrm);}
+    if(v3.dot(nrm,radialDir)<0){nrm=v3.mul(nrm,-1);right=v3.mul(right,-1);}
+    const sz=size*(.72+.5*r()),tint=[1+(r()-.5)*.14,1+(r()-.5)*.12,1+(r()-.5)*.18],droop=sp.flatCards?.08:.16;
+    emitCard(p,out,right,nrm,sz,Math.floor(r()*cols*rows),r()<.5,tint,droop,s.w,br.phase);
+    /* optional crossed second card (rotated 90 degrees about the card axis): no gaps when the first is edge-on */
+    if(!sp.flatCards&&r()<(sp.cross||0)){const n2=v3.dot(right,radialDir)>=0?right:v3.mul(right,-1);emitCard(p,out,v3.cross(out,n2),n2,sz*.9,Math.floor(r()*cols*rows),r()<.5,tint,droop,s.w,br.phase);cards++;}
+    cards++;}
+  return {a,idx,canopy:{c,R},cards};
+}
+/* Palm fronds: arching 3-wide strips (V-folded along the rachis) textured with one atlas cell each. */
+function buildFronds(trunkTop,sp,o,H,r,layout){
+  const a=buffers(),idx=[],n=Math.max(3,Math.round(((o.branches&&o.branches[0])||sp.branches[0])*clamp(o.detail,.5,1.3))),segs=Math.max(5,Math.round(9*clamp(o.detail,.5,1.5)));
+  const top=trunkTop.p,c=[top[0],top[1]-.3,top[2]],cols=layout.cols;let az=r()*TAU;
+  for(let f=0;f<n;f++){az+=GOLDEN+(r()-.5)*.3;const elev=lerp(.75,-.25,((f*7)%n)/n)+(r()-.5)*.15,L=((o.leafCards&&o.leafCards.size)||sp.leafSize)*(.85+.3*r()),phase=r(),cell=Math.floor(r()*cols);
+    let d=v3.norm([Math.cos(az)*Math.cos(elev),Math.sin(elev),Math.sin(az)*Math.cos(elev)]),p=top.slice();const base=a.p.length/3;
+    for(let i=0;i<=segs;i++){const t=i/segs;if(i>0){d=v3.norm(v3.add(d,[0,-(sp.gravity*2.2+.05)*(.6+t),0]));p=v3.add(p,v3.mul(d,L/segs));}
+      const right=v3.norm(v3.cross(d,[0,1,0])),up=v3.norm(v3.cross(right,d)),w=L*.2*Math.pow(Math.sin(Math.PI*(.08+.92*t)),.55);
+      for(let k=0;k<3;k++){const x=k-1,v=v3.add(v3.add(p,v3.mul(right,x*w)),v3.mul(up,-Math.abs(x)*w*.28)),en=v3.norm(v3.sub(v,c)),vn=v3.norm(v3.add(v3.mul(up,1-sp.normalBend),v3.mul(en,sp.normalBend)));
+        a.p.push(v[0],v[1],v[2]);a.n.push(vn[0],vn[1],vn[2]);a.uv.push((cell+.02+.96*(k/2))/cols,.01+.98*t);const ao=.6+.4*t;a.c.push(ao,ao,ao);a.w.push(clamp(v[1]/H,0,1),t,t*Math.abs(x),phase);}}
+    for(let i=0;i<segs;i++)for(let k=0;k<2;k++){const q=base+i*3+k;idx.push(q,q+3,q+1,q+1,q+3,q+4);}}
+  return {a,idx,canopy:{c,R:[H*.35,H*.2,H*.35]},cards:n};
+}
+/* Deterministic procedural tree. Returns {trunk, leaves, bounds, stats}; both geometries carry
+   position/normal/uv/color(AO)/windWeight(vec4: height, branch weight, flutter, phase). */
+KE.treeGeometry=(THREE,o={})=>{
+  const species=SPECIES[o.species]?o.species:'broadleaf',sp=SPECIES[species],r=KE.random((o.seed===undefined?1:o.seed)*7919+species.length*101+13);
+  const opts=Object.assign({},o,{detail:o.detail!==undefined?o.detail:clamp(KE.settings.lod||1,.5,1.25)}),H=o.height!==undefined?o.height:sp.height;
+  const layout=(o.leafCards&&o.leafCards.texture&&o.leafCards.texture.userData&&o.leafCards.texture.userData.layout)||(species==='palm'?{cols:2,rows:1}:{cols:2,rows:2});
+  const branches=growTree(sp,opts,r);
+  /* Normalise the skeleton to the requested height (radii are kept) so every seed matches its size. */
+  let top=0;for(const b of branches)for(const p of b.pts)top=Math.max(top,p[1]);const target=species==='palm'?H*sp.trunkTop:H-(sp.leafSize*.35*(species==='conifer'?.2:1));
+  const k=clamp(target/Math.max(top,1e-3),.6,1.6);for(const b of branches){for(const p of b.pts){p[0]*=k;p[1]*=k;p[2]*=k;}b.length*=k;}
+  const leaves=species==='palm'?buildFronds(sampleBranch(branches[0],1),sp,opts,H,r,layout):buildLeaves(branches,sp,opts,H,r,layout);
+  const tubes=buildTubes(branches,sp,opts.detail,H,leaves&&leaves.canopy,r);
+  /* Second pass: fit the finished tree (bark and leaf cards) to exactly the requested height, then
+     re-derive the normalised-height wind weight so the main bend is 0 at the root and 1 at the top. */
+  let maxY=0;for(const a of [tubes.a,leaves&&leaves.a])if(a)for(let i=1;i<a.p.length;i+=3)maxY=Math.max(maxY,a.p[i]);
+  const fit=clamp(H/Math.max(maxY,1e-3),.5,2);
+  for(const a of [tubes.a,leaves&&leaves.a]){if(!a)continue;for(let i=0;i<a.p.length;i++)a.p[i]*=fit;for(let i=0,j=0;i<a.p.length;i+=3,j+=4)a.w[j]=clamp(a.p[i+1]/H,0,1);}
+  if(leaves){leaves.canopy.c=v3.mul(leaves.canopy.c,fit);leaves.canopy.R=v3.mul(leaves.canopy.R,fit);}
+  const trunk=makeGeometry(THREE,tubes.a,tubes.idx),leafGeo=leaves?makeGeometry(THREE,leaves.a,leaves.idx):null;
+  const box=trunk.boundingBox.clone();if(leafGeo)box.union(leafGeo.boundingBox);const sphere=box.getBoundingSphere(new THREE.Sphere());
+  const stats={species,branches:branches.length,leafCards:leaves?leaves.cards:0,trunkTriangles:tubes.idx.length/3,leafTriangles:leaves?leaves.idx.length/3:0};
+  trunk.userData.keTree=stats;if(leafGeo)leafGeo.userData.keTree=stats;
+  return {trunk,leaves:leafGeo,bounds:{box,sphere,height:box.max.y,canopy:leaves?{center:new THREE.Vector3(...leaves.canopy.c),radius:new THREE.Vector3(...leaves.canopy.R)}:null},stats,species,layout};
+};
+/* Convenience: geometry + textures + materials + shadow materials in one Group. */
+KE.tree=(THREE,o={})=>{
+  const species=SPECIES[o.species]?o.species:'broadleaf',sp=SPECIES[species],leafTex=o.leafTexture||KE.leafTexture(THREE,{species,size:o.textureSize||(KE.settings.tex>=512?512:256),seed:o.textureSeed||1});
+  const geo=KE.treeGeometry(THREE,Object.assign({},o,{species,leafCards:Object.assign({},o.leafCards||{},{texture:leafTex})}));
+  const wind=Object.assign({trunk:.02,branch:.06,leaf:.12},o.wind||{});
+  const leafMat=o.leafMaterial||KE.foliageMaterial(THREE,{map:leafTex,color:o.leafColor,vertexColors:true,wind,translucency:o.translucency,translucencyColor:o.translucencyColor!==undefined?o.translucencyColor:sp.transColor,alphaTest:o.alphaTest,roughness:.72});
+  const barkMat=o.barkMaterial||KE.barkMaterial(THREE,{species,color:o.barkColor!==undefined?o.barkColor:sp.barkColor,vertexColors:true,wind});
+  const group=new THREE.Group();group.name='ke-tree-'+species;
+  const trunk=new THREE.Mesh(geo.trunk,barkMat);trunk.castShadow=trunk.receiveShadow=true;trunk.customDepthMaterial=KE.foliageDepthMaterial(barkMat);group.add(trunk);
+  let leaves=null;if(geo.leaves){leaves=new THREE.Mesh(geo.leaves,leafMat);leaves.castShadow=leaves.receiveShadow=true;leaves.customDepthMaterial=KE.foliageDepthMaterial(leafMat);leaves.customDistanceMaterial=KE.foliageDepthMaterial(leafMat,{distance:true});group.add(leaves);}
+  return {group,trunk,leaves,geometry:{trunk:geo.trunk,leaves:geo.leaves},material:{trunk:barkMat,leaves:leafMat},bounds:geo.bounds,stats:geo.stats,
+    dispose(){if(group.parent)group.parent.remove(group);geo.trunk.dispose();if(geo.leaves)geo.leaves.dispose();
+      if(!o.leafMaterial)disposeFoliageMaterial(leafMat);if(!o.barkMaterial)disposeFoliageMaterial(barkMat);
+      if(!o.leafTexture&&!o.leafMaterial)leafTex.dispose();if(!o.barkMaterial&&barkMat.userData.keOwnsMap&&barkMat.map)barkMat.map.dispose();}};
+};
+
+/* ---------- shared light loop for the custom grass/fur shaders ---------- */
+/* Directional lights with shadows. When a KE.CascadedShadows instance is bound (KF_CSM = cascade count)
+   the cascade shadow terms are blended across overlap bands exactly like set-up standard materials,
+   applied to the sun (light 0), and the zero-intensity cascade lights are skipped. */
+const CSM_PARS=`#ifdef KF_CSM
+uniform vec4 keCascades[4];
+#endif
+`;
+const dirLightLoop=body=>`#if NUM_DIR_LIGHTS>0
+ DirectionalLight dl;vec3 lc;
+#if defined(USE_SHADOWMAP)&&NUM_DIR_LIGHT_SHADOWS>0
+ DirectionalLightShadow ds;
+#endif
+#ifdef KF_CSM
+ float kfSh=0.,kfSw=0.,kfWt;vec4 kfC;
+#pragma unroll_loop_start
+ for(int i=0;i<NUM_DIR_LIGHTS;i++){
+#if defined(USE_SHADOWMAP)&&(UNROLLED_LOOP_INDEX<KF_CSM)&&(UNROLLED_LOOP_INDEX<NUM_DIR_LIGHT_SHADOWS)
+  kfC=keCascades[i];kfWt=smoothstep(kfC.x,kfC.y,vViewPosition.z)*(1.-smoothstep(kfC.z,kfC.w,vViewPosition.z));
+  if(kfWt>0.){ds=directionalLightShadows[i];kfSh+=kfWt*(receiveShadow?getShadow(directionalShadowMap[i],ds.shadowMapSize,ds.shadowBias,ds.shadowRadius,vDirectionalShadowCoord[i]):1.);kfSw+=kfWt;}
+#endif
+ }
+#pragma unroll_loop_end
+ kfSh+=1.-kfSw;
+#endif
+#pragma unroll_loop_start
+ for(int i=0;i<NUM_DIR_LIGHTS;i++){
+  dl=directionalLights[i];lc=dl.color;
+#if defined(KF_CSM)&&(UNROLLED_LOOP_INDEX==0)
+  lc*=kfSh;
+#elif defined(KF_CSM)&&(UNROLLED_LOOP_INDEX<KF_CSM)
+  lc*=0.;
+#elif defined(USE_SHADOWMAP)&&(UNROLLED_LOOP_INDEX<NUM_DIR_LIGHT_SHADOWS)
+  ds=directionalLightShadows[i];lc*=receiveShadow?getShadow(directionalShadowMap[i],ds.shadowMapSize,ds.shadowBias,ds.shadowRadius,vDirectionalShadowCoord[i]):1.;
+#endif
+  ${body}
+ }
+#pragma unroll_loop_end
+#endif`;
+/* Keep a custom ShaderMaterial in sync with a cascaded-shadow source (cheap; call every frame). */
+function syncShadowSource(mat,csm){
+  const want=csm&&csm.lights&&csm.lights.length&&csm.uniforms&&csm.uniforms.keCascades?Math.max(1,csm.count|0):0,cur=mat.defines.KF_CSM|0;
+  if(want)mat.uniforms.keCascades=csm.uniforms.keCascades;
+  if(want!==cur){if(want)mat.defines.KF_CSM=want;else delete mat.defines.KF_CSM;mat.needsUpdate=true;}
+}
+const liveSystems=new Set();
+
+/* ---------- interactive grass ---------- */
+const GRASS_VS=`
+#include <common>
+#include <fog_pars_vertex>
+#include <shadowmap_pars_vertex>
+uniform vec4 keInteractors[${MAX_INTERACTORS}];uniform int keInteractorCount;
+uniform vec2 uCenter;uniform float uRadius;uniform float uLodRadius;uniform float uFarFraction;uniform float uFarWiden;uniform float uInteract;
+attribute vec4 aRoot;attribute vec4 aShape;attribute vec4 aColor;
+varying vec3 vColor;varying vec2 vBlade;varying vec3 vNormal;varying vec3 vViewPosition;
+void main(){
+ vec3 root=aRoot.xyz;float rnd=aRoot.w,dist=length(root.xz-uCenter);
+ /* aColor.w is the blade's rank in its cell (0..1): the ring beyond the LOD radius keeps only the first
+    uFarFraction ranks (the same set outer cells are filled with), thinned smoothly over the band */
+ float lodT=smoothstep(uLodRadius*.72,uLodRadius,dist),keep=mix(1.,uFarFraction,lodT)+.04;
+ float fade=(1.-smoothstep(uRadius*.8,uRadius,dist))*(1.-smoothstep(keep-.04,keep,aColor.w));
+ float h=aShape.y*fade,w=aShape.z*mix(1.,uFarWiden,lodT),yaw=aShape.x;
+ vec2 face=vec2(cos(yaw),sin(yaw));vec3 side=vec3(-face.y,0.,face.x);
+ float S=keWindStrength,gust=kfGust(root.xz);
+ float sway=sin(keTime*(1.7+rnd*.9)+rnd*6.2831853+dot(root.xz,keWindDir)*.4);
+ vec2 bend=keWindDir*(S*(.1+.8*gust+.14*sway))+vec2(-keWindDir.y,keWindDir.x)*(S*.1*sin(keTime*2.3+rnd*9.))+face*aShape.w;
+ for(int i=0;i<${MAX_INTERACTORS};i++){if(i>=keInteractorCount)break;vec4 it=keInteractors[i];
+  vec2 d=root.xz-it.xz;float dl=length(d),r=max(it.w,.05);
+  float vert=1.-smoothstep(0.,r*.6+.3,(it.y-r)-(root.y+aShape.y));
+  float inf=(1.-smoothstep(r*.35,r*1.6+.08,dl))*vert*uInteract;
+  bend+=(dl>1e-4?d/dl:face)*(inf*2.6);}
+ float a=length(bend);vec2 bd=a>1e-5?bend/a:face;a=clamp(a,1e-3,1.45);
+ vec3 b3=vec3(bd.x,0.,bd.y);
+ /* circular-arc blade approximated by a quadratic Bezier: tangent vertical at the root, length h */
+ float R=h/a;vec3 p1=vec3(0.,R*tan(a*.5),0.),p2=b3*(R*(1.-cos(a)))+vec3(0.,R*sin(a),0.);
+ float t=position.y,x=position.x;
+ vec3 c=2.*(1.-t)*t*p1+t*t*p2,tg=normalize(2.*(1.-t)*p1+2.*t*(p2-p1)+vec3(0.,1e-4,0.));
+ float wt=w*(1.-t*t*.85);
+ vec3 pos=root+c+side*(x*wt);
+ vec3 n=normalize(cross(tg,side));n=normalize(n+side*(x*1.6));n=normalize(n*.6+vec3(0.,.55,0.));
+ vColor=pow(aColor.rgb,vec3(2.2));vBlade=vec2(t,rnd);
+ vec4 mvPosition=viewMatrix*vec4(pos,1.);gl_Position=projectionMatrix*mvPosition;
+#ifndef KF_DEPTH
+ vViewPosition=-mvPosition.xyz;vNormal=normalize((viewMatrix*vec4(n,0.)).xyz);
+ vec4 worldPosition=vec4(pos,1.);vec3 transformedNormal=vNormal;
+#include <shadowmap_vertex>
+#include <fog_vertex>
+#endif
+}`;
+const GRASS_FS=`
+#include <common>
+#include <packing>
+#include <fog_pars_fragment>
+#include <bsdfs>
+#include <lights_pars_begin>
+#include <shadowmap_pars_fragment>
+${CSM_PARS}uniform vec3 uTipColor;uniform float uTipMix;uniform float uTranslucency;uniform float uAmbient;uniform float uRootShade;
+varying vec3 vColor;varying vec2 vBlade;varying vec3 vNormal;varying vec3 vViewPosition;
+void main(){
+ float t=vBlade.x;vec3 base=vColor*(.92+.16*vBlade.y);
+ vec3 tip=mix(base*1.2,uTipColor,uTipMix);
+ vec3 albedo=mix(base*.6,base,smoothstep(0.,.45,t));albedo=mix(albedo,tip,smoothstep(.45,1.,t));
+ vec3 v=normalize(vViewPosition),n=normalize(vNormal),upV=normalize((viewMatrix*vec4(0.,1.,0.,0.)).xyz);
+ if(!gl_FrontFacing)n=normalize(2.*dot(n,upV)*upV-n);
+ vec3 direct=vec3(0.),spec=vec3(0.);float ndl,trans;
+${dirLightLoop('ndl=dot(n,dl.direction);trans=pow(saturate(dot(v,-dl.direction)),4.)*uTranslucency*(.2+.8*t);direct+=lc*(saturate((ndl+.6)/1.6)+trans);spec+=lc*(pow(saturate(dot(n,normalize(dl.direction+v))),28.)*.07*t);')}
+#if NUM_POINT_LIGHTS>0
+ PointLight pl;vec3 pv;float pd;
+#pragma unroll_loop_start
+ for(int i=0;i<NUM_POINT_LIGHTS;i++){
+  pl=pointLights[i];pv=pl.position+vViewPosition;pd=length(pv);
+  direct+=pl.color*punctualLightIntensityToIrradianceFactor(pd,pl.distance,pl.decay)*saturate((dot(n,pv/pd)+.6)/1.6);
+ }
+#pragma unroll_loop_end
+#endif
+ GeometricContext gc;gc.position=-vViewPosition;gc.normal=n;gc.viewDir=v;
+ vec3 amb=ambientLightColor+getLightProbeIrradiance(lightProbe,gc)/PI;
+#if NUM_HEMI_LIGHTS>0
+#pragma unroll_loop_start
+ for(int i=0;i<NUM_HEMI_LIGHTS;i++){
+  amb+=mix(hemisphereLights[i].groundColor,hemisphereLights[i].skyColor,dot(n,hemisphereLights[i].direction)*.5+.5);
+ }
+#pragma unroll_loop_end
+#endif
+ /* dense grass self-occludes: both direct and ambient light fall off toward the root */
+ float occ=mix(uRootShade,1.,smoothstep(0.,.8,t)),ao=mix(.35,1.,smoothstep(0.,.65,t));
+ gl_FragColor=vec4(albedo*(direct*occ+amb*uAmbient*ao)+spec*occ,1.);
+#include <tonemapping_fragment>
+#include <encodings_fragment>
+#include <fog_fragment>
+}`;
+const GRASS_DEPTH_FS=`
+#include <packing>
+void main(){gl_FragColor=packDepthToRGBA(gl_FragCoord.z);}`;
+function hash3i(x,z,s){let h=Math.imul(x|0,0x27d4eb2d)^Math.imul(z|0,0x165667b1)^Math.imul(s|0,0x9e3779b1);h=Math.imul(h^(h>>>15),0x85ebca6b);h=Math.imul(h^(h>>>13),0xc2b2ae35);return (h^(h>>>16))>>>0;}
+let rs=1;const rnext=()=>{rs=(rs+0x6D2B79F5)|0;let t=rs;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296;};
+/* World-anchored grass. The ground is divided into square cells; the cells near the viewer hold
+   bladesNear each and outer cells hold a thinner set (same hashed positions, the first ranks). Each
+   cell owns a fixed slot of the instance buffers, so moving the camera only regenerates cells that
+   entered the window (or changed ring) and uploads that sub-range. Blades are procedural arcs bent by
+   travelling gusts and pushed by up to 8 interactors in the vertex shader. */
+KE.grassField=(THREE,scene,o={})=>{
+  const U=foliageUniforms(THREE),count=Math.max(0,Math.floor(o.count!==undefined?o.count:(KE.settings.grass||7000)));
+  const radius=Math.max(2,o.radius||25),cellSize=o.cellSize||clamp(radius/7,1.5,8),lodRadius=clamp(o.lodRadius!==undefined?o.lodRadius:radius*.4,cellSize,radius),farFraction=clamp(o.farFraction!==undefined?o.farFraction:.28,.05,1);
+  const heightAt=o.heightAt||(()=>0),density=o.density||(()=>1),colorFn=o.color||null,bh=o.bladeHeight||[.35,.8],bw=o.bladeWidth!==undefined?o.bladeWidth:.05,segments=clamp(Math.round(o.segments||4),1,8),seed=o.seed||1;
+  const stub={mesh:null,count:0,update(){return 0;},setVisible(){},dispose(){}};if(!count)return stub;
+  /* window offsets: cells whose nearest point to the camera cell lies inside radius (conservative) */
+  const Hc=Math.ceil(radius/cellSize)+1,W=2*Hc+1,ring=new Uint8Array(W*W),nearOff=[],farOff=[];
+  for(let dz=-Hc;dz<=Hc;dz++)for(let dx=-Hc;dx<=Hc;dx++){const ex=Math.max(0,Math.abs(dx)-1)*cellSize,ez=Math.max(0,Math.abs(dz)-1)*cellSize,d=Math.hypot(ex,ez);
+    if(d<lodRadius){ring[(dz+Hc)*W+dx+Hc]=1;nearOff.push(dx,dz);}else if(d<radius){ring[(dz+Hc)*W+dx+Hc]=2;farOff.push(dx,dz);}}
+  const nearSlots=nearOff.length/2,farSlots=farOff.length/2,kNear=Math.max(1,Math.floor(count/(nearSlots+farSlots*farFraction))),kFar=Math.max(1,Math.round(kNear*farFraction));
+  const capacity=nearSlots*kNear+farSlots*kFar,slots=nearSlots+farSlots;
+  /* blade template: rows of two vertices plus a single tip vertex */
+  const tp=[],ti=[];for(let s=0;s<segments;s++)tp.push(-.5,s/segments,0,.5,s/segments,0);tp.push(0,1,0);
+  for(let s=0;s<segments-1;s++){const k=s*2;ti.push(k,k+1,k+2,k+1,k+3,k+2);}ti.push((segments-1)*2,(segments-1)*2+1,segments*2);
+  const geo=new THREE.InstancedBufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(tp,3));geo.setIndex(ti);
+  const root=new Float32Array(capacity*4),shape=new Float32Array(capacity*4),color=new Uint8Array(capacity*4);
+  const aRoot=new THREE.InstancedBufferAttribute(root,4),aShape=new THREE.InstancedBufferAttribute(shape,4),aColor=new THREE.InstancedBufferAttribute(color,4,true);
+  for(const a of [aRoot,aShape,aColor])a.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('aRoot',aRoot);geo.setAttribute('aShape',aShape);geo.setAttribute('aColor',aColor);geo.instanceCount=capacity;
+  const own={uCenter:{value:new THREE.Vector2()},uRadius:{value:radius},uLodRadius:{value:lodRadius},uFarFraction:{value:kFar/kNear},uFarWiden:{value:o.farWiden!==undefined?o.farWiden:1.8},uInteract:{value:o.interact===false?0:1},
+    uTipColor:{value:srgb(THREE,o.tipColor,0xc9cf7a)},uTipMix:{value:o.tipColor===null?0:(o.tipMix!==undefined?o.tipMix:.4)},uTranslucency:{value:o.translucency!==undefined?o.translucency:.6},uAmbient:{value:o.ambient!==undefined?o.ambient:1},
+    uRootShade:{value:o.rootShade!==undefined?o.rootShade:.4}};
+  const uniforms=THREE.UniformsUtils.merge([THREE.UniformsLib.lights,THREE.UniformsLib.fog]);Object.assign(uniforms,sharedRefs(U),{keInteractors:U.keInteractors,keInteractorCount:U.keInteractorCount},own);
+  const vs=NOISE_GLSL()+WIND_UNIFORMS+GUST_GLSL+GRASS_VS;
+  const mat=new THREE.ShaderMaterial({uniforms,vertexShader:vs,fragmentShader:GRASS_FS,lights:true,fog:true,side:THREE.DoubleSide});
+  const mesh=new THREE.Mesh(geo,mat);mesh.frustumCulled=false;mesh.receiveShadow=o.receiveShadow!==false;mesh.castShadow=!!o.castShadow;mesh.name='ke-grass-field';
+  mesh.raycast=()=>{};
+  if(mesh.castShadow){const dm=new THREE.ShaderMaterial({uniforms,vertexShader:'#define KF_DEPTH\n'+vs,fragmentShader:GRASS_DEPTH_FS,side:THREE.DoubleSide});mesh.customDepthMaterial=dm;}
+  if(scene)scene.add(mesh);
+  const slotX=new Int32Array(slots),slotZ=new Int32Array(slots),slotUsed=new Uint8Array(slots),slotBase=new Int32Array(slots),slotK=new Int32Array(slots),keep=new Uint8Array(W*W);
+  for(let s=0;s<slots;s++){slotBase[s]=s<nearSlots?s*kNear:nearSlots*kNear+(s-nearSlots)*kFar;slotK[s]=s<nearSlots?kNear:kFar;}
+  const freeNear=new Int32Array(nearSlots),freeFar=new Int32Array(farSlots),col=[1,1,1];let nFreeNear=0,nFreeFar=0,ccx=1e9,ccz=1e9,dirtyMin=1e9,dirtyMax=-1;
+  const stats={cellsFilled:0,lastFilled:0,bladesPerNearCell:kNear,bladesPerFarCell:kFar,capacity,slots};
+  /* Tufts: each cell holds nClumps clump centres on a jittered low-discrepancy (R2) pattern; blade i
+     belongs to clump i % nClumps, so any prefix of the blade list (the sparser outer rings) still covers
+     every clump. Blades splay outward from their clump centre (yaw faces away, lean grows with offset)
+     and share the clump's height, tint and lean bias, which reads as natural grass tussocks. */
+  const clumpSize=clamp(o.clumpSize!==undefined?o.clumpSize:5,1,16),nClumps=Math.max(1,Math.round(kNear/clumpSize)),clumpR=o.clumpRadius!==undefined?o.clumpRadius:Math.min(.22,cellSize/Math.sqrt(nClumps)*.75);
+  const clumps=new Float32Array(nClumps*6);
+  const fillCell=(slot,gx,gz)=>{
+    const base=slotBase[slot],k=slotK[slot];rs=hash3i(gx,gz,seed);const ou=rnext(),ov=rnext();
+    for(let q=0;q<nClumps;q++){const u=(ou+q*.7548776662)%1,v=(ov+q*.5698402910)%1,jit=.35/Math.sqrt(nClumps);
+      clumps[q*6]=(gx+clamp(u+(rnext()-.5)*jit,0,1))*cellSize;clumps[q*6+1]=(gz+clamp(v+(rnext()-.5)*jit,0,1))*cellSize;
+      clumps[q*6+2]=.7+.45*rnext();clumps[q*6+3]=rnext()*TAU;clumps[q*6+4]=rnext()*.25;clumps[q*6+5]=rnext();}
+    for(let i=0;i<k;i++){const j=base+i,q=i%nClumps,a=rnext()*TAU,rad=clumpR*Math.sqrt(rnext()),rr=rnext(),hr=rnext(),wr=rnext(),cr=rnext(),yr=rnext();
+      const x=clumps[q*6]+Math.cos(a)*rad,z=clumps[q*6+1]+Math.sin(a)*rad,off=rad/Math.max(clumpR,1e-4);
+      const d=clamp(density(x,z),0,1),ch=clumps[q*6+2];
+      /* splay: face away from the clump centre (with some spread), plus the clump's shared lean direction */
+      const lx=Math.cos(a)*(.12+.5*off)+Math.cos(clumps[q*6+3])*clumps[q*6+4],lz=Math.sin(a)*(.12+.5*off)+Math.sin(clumps[q*6+3])*clumps[q*6+4];
+      root[j*4]=x;root[j*4+1]=heightAt(x,z);root[j*4+2]=z;root[j*4+3]=rr;
+      shape[j*4]=Math.atan2(lz,lx)+(yr-.5)*.9;shape[j*4+1]=d>rr?lerp(bh[0],bh[1],hr)*ch*(1-.35*off)*(.55+.45*d):0;shape[j*4+2]=bw*(.75+.5*wr);shape[j*4+3]=Math.hypot(lx,lz)+.06;
+      let c=null;if(colorFn){c=colorFn(x,z,col);if(!c)c=col;}else{const n=.5+.5*Math.sin(x*.21+Math.sin(z*.17)*2.)*Math.cos(z*.19-x*.07);col[0]=lerp(.26,.42,n*.6+cr*.4);col[1]=lerp(.44,.55,n);col[2]=lerp(.14,.2,cr);c=col;}
+      const shade=(.9+.2*cr)*(.82+.3*clumps[q*6+5]);color[j*4]=clamp(c[0]*shade*255,0,255);color[j*4+1]=clamp(c[1]*shade*255,0,255);color[j*4+2]=clamp(c[2]*(.9+.2*clumps[q*6+5])*255,0,255);color[j*4+3]=Math.min(255,Math.floor(i/kNear*255));}
+    slotX[slot]=gx;slotZ[slot]=gz;slotUsed[slot]=1;dirtyMin=Math.min(dirtyMin,base);dirtyMax=Math.max(dirtyMax,base+k);stats.cellsFilled++;stats.lastFilled++;};
+  const upload=()=>{if(dirtyMax<0)return;for(const [attr,n] of [[aRoot,4],[aShape,4],[aColor,4]]){attr.updateRange.offset=dirtyMin*n;attr.updateRange.count=(dirtyMax-dirtyMin)*n;attr.needsUpdate=true;}dirtyMin=1e9;dirtyMax=-1;};
+  let visible=true,shadowSource=o.shadows||KE.foliage.shadowSource||null;
+  const api={mesh,material:mat,geometry:geo,cellSize,radius,lodRadius,stats,
+    /* Bind a KE.CascadedShadows instance so blades receive every cascade (null unbinds). */
+    setShadowSource(csm){shadowSource=csm||null;syncShadowSource(mat,shadowSource);return api;},
+    /* Returns the number of cells regenerated this call (0 while the camera stays inside its cell). */
+    update(camX,camZ){if(camX&&typeof camX==='object'){camZ=camX.z;camX=camX.x;}if(!Number.isFinite(camX)||!Number.isFinite(camZ))return 0;syncShadowSource(mat,shadowSource);own.uCenter.value.set(camX,camZ);const cx=Math.floor(camX/cellSize),cz=Math.floor(camZ/cellSize);
+      stats.lastFilled=0;if(cx===ccx&&cz===ccz)return 0;ccx=cx;ccz=cz;keep.fill(0);nFreeNear=nFreeFar=0;
+      for(let s=0;s<slots;s++){const want=s<nearSlots?1:2;let ok=false;if(slotUsed[s]){const dx=slotX[s]-cx,dz=slotZ[s]-cz;if(dx>=-Hc&&dx<=Hc&&dz>=-Hc&&dz<=Hc){const gi=(dz+Hc)*W+dx+Hc;if(ring[gi]===want&&!keep[gi]){keep[gi]=1;ok=true;}}}
+        if(!ok){slotUsed[s]=0;if(s<nearSlots)freeNear[nFreeNear++]=s;else freeFar[nFreeFar++]=s;}}
+      for(let q=0;q<nearOff.length;q+=2){const dx=nearOff[q],dz=nearOff[q+1],gi=(dz+Hc)*W+dx+Hc;if(!keep[gi])fillCell(freeNear[--nFreeNear],cx+dx,cz+dz);}
+      for(let q=0;q<farOff.length;q+=2){const dx=farOff[q],dz=farOff[q+1],gi=(dz+Hc)*W+dx+Hc;if(!keep[gi])fillCell(freeFar[--nFreeFar],cx+dx,cz+dz);}
+      upload();return stats.lastFilled;},
+    /* Force regeneration (e.g. after terrain edits or a density change). */
+    refresh(){ccx=ccz=1e9;slotUsed.fill(0);},
+    setVisible(v){visible=!!v;mesh.visible=visible;},
+    get visible(){return visible;},
+    dispose(){liveSystems.delete(api);if(mesh.parent)mesh.parent.remove(mesh);geo.dispose();mat.dispose();if(mesh.customDepthMaterial)mesh.customDepthMaterial.dispose();}};
+  syncShadowSource(mat,shadowSource);liveSystems.add(api);
+  return api;
+};
+
+/* ---------- shell fur ---------- */
+/* 3D tileable Worley (F1) strand field: R = strand profile (1 at a strand centre), G/B = per-strand
+   random values (length and colour variation). Sampled at the unextruded surface point, so each strand
+   is a continuous column through the shells regardless of mesh UVs. */
+let strandTex=null,strandUsers=0;
+function strandTexture(THREE){
+  if(strandTex){strandUsers++;return strandTex;}
+  const N=48,C=12,per=N/C,r=KE.random(4242),fp=new Float32Array(C*C*C*3),ids=new Float32Array(C*C*C*2);
+  for(let i=0;i<C*C*C;i++){fp[i*3]=r();fp[i*3+1]=r();fp[i*3+2]=r();ids[i*2]=r();ids[i*2+1]=r();}
+  const data=new Uint8Array(N*N*N*4);
+  for(let z=0;z<N;z++)for(let y=0;y<N;y++)for(let x=0;x<N;x++){const px=(x+.5)/per,py=(y+.5)/per,pz=(z+.5)/per,cx=Math.floor(px),cy=Math.floor(py),cz=Math.floor(pz);let best=9,bi=0;
+    for(let k=-1;k<=1;k++)for(let j=-1;j<=1;j++)for(let i=-1;i<=1;i++){const gx=cx+i,gy=cy+j,gz=cz+k,wx=((gx%C)+C)%C,wy=((gy%C)+C)%C,wz=((gz%C)+C)%C,ci=(wz*C+wy)*C+wx;
+      const dx=gx+fp[ci*3]-px,dy=gy+fp[ci*3+1]-py,dz=gz+fp[ci*3+2]-pz,d=dx*dx+dy*dy+dz*dz;if(d<best){best=d;bi=ci;}}
+    const o=((z*N+y)*N+x)*4,s=clamp(1-Math.sqrt(best)/.72,0,1);data[o]=s*255;data[o+1]=ids[bi*2]*255;data[o+2]=ids[bi*2+1]*255;data[o+3]=255;}
+  const t=new THREE.DataTexture3D(data,N,N,N);t.format=THREE.RGBAFormat;t.type=THREE.UnsignedByteType;t.minFilter=t.magFilter=THREE.LinearFilter;t.wrapS=t.wrapT=t.wrapR=THREE.RepeatWrapping;t.unpackAlignment=1;t.needsUpdate=true;
+  t.userData={cells:C};strandTex=t;strandUsers=1;return t;
+}
+function releaseStrands(){if(--strandUsers<=0&&strandTex){strandTex.dispose();strandTex=null;strandUsers=0;}}
+const FUR_VS=`
+#include <common>
+#include <fog_pars_vertex>
+#include <shadowmap_pars_vertex>
+attribute vec2 aShell;// x: shell index, y: per-mesh length multiplier
+uniform float uShells;uniform float uLength;uniform float uDensity;uniform float uDroop;uniform float uWindResponse;uniform float uCurl;
+uniform vec3 uGravity;uniform vec3 uInertia;
+varying vec3 vCoord;varying float vH;varying float vShell;varying vec3 vNormal;varying vec3 vViewPosition;varying vec3 vDirV;
+#ifdef USE_FUR_MAP
+varying vec2 vFurUv;
+#endif
+void main(){
+ float h=(aShell.x+1.)/uShells;
+ mat3 m=mat3(modelMatrix);vec3 sc=vec3(length(m[0]),length(m[1]),length(m[2]));
+ vec3 wn=normalize(m*(normal/(sc*sc)));vec4 wp=modelMatrix*vec4(position,1.);
+ vec3 wd=vec3(keWindDir.x,0.,keWindDir.y);float gust=kfGust(wp.xz);
+ vec3 force=uGravity+uInertia+wd*(keWindStrength*uWindResponse*(.3+gust+.25*sin(keTime*4.3+dot(wp.xyz,vec3(3.1,1.7,2.3)))));
+ force-=wn*(min(dot(force,wn),0.)*.6);
+ vec3 dir=normalize(wn+force*(h*uDroop));
+ vec3 p=wp.xyz+dir*(uLength*aShell.y*h);
+ vec3 lp=position*sc;
+ vCoord=lp*uDensity+vec3(sin(h*5.1+lp.y*37.),cos(h*4.3+lp.x*31.),sin(h*3.7+lp.z*29.))*(uCurl*h*.012);
+ vH=h;vShell=aShell.x;
+#ifdef USE_FUR_MAP
+ vFurUv=uv;
+#endif
+ vec4 mvPosition=viewMatrix*vec4(p,1.);gl_Position=projectionMatrix*mvPosition;
+ vViewPosition=-mvPosition.xyz;vNormal=normalize((viewMatrix*vec4(wn,0.)).xyz);vDirV=normalize((viewMatrix*vec4(dir,0.)).xyz);
+ vec4 worldPosition=vec4(p,1.);vec3 transformedNormal=vNormal;
+#include <shadowmap_vertex>
+#include <fog_vertex>
+}`;
+const FUR_FS=`
+#if __VERSION__>=300
+precision highp sampler3D;
+uniform sampler3D uStrands;
+#endif
+#include <common>
+#include <packing>
+#include <fog_pars_fragment>
+#include <bsdfs>
+#include <lights_pars_begin>
+#include <shadowmap_pars_fragment>
+${CSM_PARS}uniform vec3 uColor;uniform vec3 uTipColor;uniform float uThickness;uniform float uColorVar;uniform float uRim;uniform float uLengthVar;uniform float uUnder;
+#ifdef USE_FUR_MAP
+uniform sampler2D uFurMap;varying vec2 vFurUv;
+#endif
+varying vec3 vCoord;varying float vH;varying float vShell;varying vec3 vNormal;varying vec3 vViewPosition;varying vec3 vDirV;
+vec4 kfStrand(vec3 p){
+#if __VERSION__>=300
+ return texture(uStrands,p);
+#else
+ vec3 q=p*12.;vec3 i=floor(q),f=fract(q);float best=9.;vec2 id=vec2(0.);
+ for(int z=-1;z<=1;z++)for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){vec3 g=vec3(float(x),float(y),float(z));vec3 o=keHash33(i+g);vec3 d=g+o-f;float dd=dot(d,d);if(dd<best){best=dd;id=o.xy;}}
+ return vec4(clamp(1.-sqrt(best)/.72,0.,1.),id,1.);
+#endif
+}
+void main(){
+ vec4 s=kfStrand(vCoord);float h=vH,len=1.-uLengthVar*s.g;
+ vec3 V=normalize(vViewPosition),N=normalize(vNormal);float ndv=abs(dot(N,V));
+ if(vShell>.5){
+  float under=0.;
+  if(h<uUnder){vec4 s2=kfStrand(vCoord*2.63+vec3(.37,.11,.71));under=step(1.-uThickness*1.25*(1.-h/uUnder),s2.r);}
+  if(h>len&&under<.5)discard;
+  float rad=uThickness*(1.-h/max(len,1e-3))*mix(1.55,1.,ndv);
+  if(s.r<1.-rad&&under<.5)discard;
+ }
+ vec3 base=uColor*(1.+(s.b-.5)*2.*uColorVar);
+#ifdef USE_FUR_MAP
+ base*=texture2D(uFurMap,vFurUv).rgb;
+#endif
+ vec3 albedo=mix(base,uTipColor*(1.+(s.b-.5)*uColorVar),smoothstep(.5,1.,h/len));
+ float ao=mix(.3,1.,pow(clamp(h,0.,1.),.75));
+ vec3 T=normalize(vDirV),direct=vec3(0.),spec=vec3(0.);float ndl;
+${dirLightLoop('ndl=dot(N,dl.direction);direct+=lc*saturate((ndl+.5)/1.5);spec+=lc*(pow(sqrt(max(0.,1.-pow(dot(T,normalize(dl.direction+V)),2.))),70.)*.09*h*saturate(ndl+.3));')}
+#if NUM_POINT_LIGHTS>0
+ PointLight pl;vec3 pv;float pd;
+#pragma unroll_loop_start
+ for(int i=0;i<NUM_POINT_LIGHTS;i++){
+  pl=pointLights[i];pv=pl.position+vViewPosition;pd=length(pv);
+  direct+=pl.color*punctualLightIntensityToIrradianceFactor(pd,pl.distance,pl.decay)*saturate((dot(N,pv/pd)+.5)/1.5);
+ }
+#pragma unroll_loop_end
+#endif
+ GeometricContext gc;gc.position=-vViewPosition;gc.normal=N;gc.viewDir=V;
+ vec3 amb=ambientLightColor+getLightProbeIrradiance(lightProbe,gc)/PI;
+#if NUM_HEMI_LIGHTS>0
+#pragma unroll_loop_start
+ for(int i=0;i<NUM_HEMI_LIGHTS;i++){
+  amb+=mix(hemisphereLights[i].groundColor,hemisphereLights[i].skyColor,dot(N,hemisphereLights[i].direction)*.5+.5);
+ }
+#pragma unroll_loop_end
+#endif
+ float rim=pow(1.-ndv,3.)*uRim*h;
+ vec3 col=albedo*((direct+amb)*ao+(direct*.5+amb)*rim)+spec;
+ gl_FragColor=vec4(col,1.);
+#include <tonemapping_fragment>
+#include <encodings_fragment>
+#include <fog_fragment>
+}`;
+/* Shell-texture fur over every mesh of an object (a Group of spheres works). Each source mesh gets a
+   child Mesh whose InstancedBufferGeometry shares the source vertex buffers and draws N shells in one
+   instanced call; shell 0 is an opaque undercoat, the rest are alpha-tested strands. */
+KE.fur=(THREE,target,o={})=>{
+  const U=foliageUniforms(THREE),MAX=64,maxShells=clamp(Math.round(o.shells||16),2,MAX),lod=Object.assign({maxDistance:12},o.lod||{});
+  if(o.renderer&&!o.renderer.capabilities.isWebGL2)return {available:false,object:target,meshes:[],update(){},setShells(){},dispose(){}};
+  const tex=strandTexture(THREE),cells=tex.userData.cells,density=o.density!==undefined?o.density:900;
+  /* per-mesh instanced attribute: (shell index, length multiplier) */
+  const shellAttr=scale=>{const a=new Float32Array(MAX*2);for(let i=0;i<MAX;i++){a[i*2]=i;a[i*2+1]=scale;}return new THREE.InstancedBufferAttribute(a,2);};
+  const g=o.gravity||[0,-1,0],gravity=Array.isArray(g)?new THREE.Vector3(g[0],g[1],g[2]):new THREE.Vector3(g.x,g.y,g.z);
+  const inertia=new THREE.Vector3(),inertiaVel=new THREE.Vector3(),tmp=new THREE.Vector3();
+  const common={uShells:{value:maxShells},uLength:{value:o.length!==undefined?o.length:.06},uDensity:{value:Math.sqrt(density)/cells},uDroop:{value:o.droop!==undefined?o.droop:.45},
+    uWindResponse:{value:o.windResponse!==undefined?o.windResponse:.3},uCurl:{value:o.curl!==undefined?o.curl:.5},uGravity:{value:gravity},uInertia:{value:inertia},
+    uThickness:{value:o.thickness!==undefined?o.thickness:.6},uColorVar:{value:o.colorVariation!==undefined?o.colorVariation:.2},uRim:{value:o.rim!==undefined?o.rim:.6},
+    uLengthVar:{value:o.lengthVariation!==undefined?o.lengthVariation:.35},uUnder:{value:o.undercoat!==undefined?o.undercoat:.45},uStrands:{value:tex}};
+  const include=o.include||(m=>true),materials=new Map(),meshes=[];let shells=maxShells,current=maxShells;
+  const makeMaterial=src=>{
+    const base=o.color!=null?srgb(THREE,o.color,0xffffff):(src&&src.color?src.color.clone():new THREE.Color(1,1,1));
+    const tip=o.tipColor!=null?srgb(THREE,o.tipColor,0xffffff):base.clone().lerp(new THREE.Color(1,.95,.86).multiplyScalar(base.r*.3+base.g*.59+base.b*.11),.35).multiplyScalar(1.3);
+    const uniforms=THREE.UniformsUtils.merge([THREE.UniformsLib.lights,THREE.UniformsLib.fog]);Object.assign(uniforms,sharedRefs(U),common,{uColor:{value:base},uTipColor:{value:tip}});
+    const defines={};if(o.map){defines.USE_FUR_MAP='';uniforms.uFurMap={value:o.map};}
+    return new THREE.ShaderMaterial({uniforms,defines,vertexShader:NOISE_GLSL()+WIND_UNIFORMS+GUST_GLSL+FUR_VS,fragmentShader:NOISE_GLSL()+FUR_FS,lights:true,fog:true});};
+  const rootPos=new THREE.Vector3();
+  const lodBeforeRender=(renderer,scene,camera,geometry,material)=>{
+    rootPos.setFromMatrixPosition(target.matrixWorld);const d=rootPos.distanceTo(camera.position),md=lod.maxDistance;
+    const n=d>=md?0:d<md*.35?shells:Math.max(Math.min(4,shells),Math.round(shells*(1-.75*(d-md*.35)/(md*.65))));
+    geometry.instanceCount=n;if(n>0&&material.uniforms.uShells.value!==n){material.uniforms.uShells.value=n;material.uniformsNeedUpdate=true;}current=n;};
+  target.updateMatrixWorld(true);
+  target.traverse(m=>{if(!m.isMesh||m.isInstancedMesh||m.userData.keFurShell||!m.geometry||!m.geometry.attributes.position||!m.geometry.attributes.normal)return;
+    /* include(mesh): false skips the mesh, true furs it, a number furs it with that length multiplier */
+    const inc=include(m),lenScale=typeof inc==='number'?inc:(inc?1:0);if(!(lenScale>0))return;
+    const src=m.geometry,mat0=Array.isArray(m.material)?m.material[0]:m.material;let mat=materials.get(mat0);if(!mat){mat=makeMaterial(mat0);mat.uniforms.uShells=Object.assign({},common.uShells);materials.set(mat0,mat);}
+    const geo=new THREE.InstancedBufferGeometry();geo.index=src.index;for(const k of ['position','normal','uv'])if(src.attributes[k])geo.setAttribute(k,src.attributes[k]);geo.setAttribute('aShell',shellAttr(lenScale));geo.instanceCount=shells;
+    if(!src.boundingSphere)src.computeBoundingSphere();const e=m.matrixWorld.elements,minScale=Math.max(1e-3,Math.min(Math.hypot(e[0],e[1],e[2]),Math.hypot(e[4],e[5],e[6]),Math.hypot(e[8],e[9],e[10])));
+    geo.boundingSphere=src.boundingSphere.clone();geo.boundingSphere.radius+=common.uLength.value*lenScale*2/minScale;
+    const shell=new THREE.Mesh(geo,mat);shell.userData.keFurShell=true;shell.castShadow=false;shell.receiveShadow=true;shell.raycast=()=>{};shell.onBeforeRender=lodBeforeRender;shell.name='ke-fur-shells';
+    m.add(shell);meshes.push(shell);});
+  const apply=()=>{const on=KE.settings.fur!==false;for(const s of meshes)s.visible=on;};apply();
+  const off=KE.events&&KE.events.on?KE.events.on('settings',apply):null;
+  let shadowSource=o.shadows||KE.foliage.shadowSource||null;const syncShadows=()=>{for(const m of materials.values())syncShadowSource(m,shadowSource);};syncShadows();
+  const api={available:true,object:target,meshes,materials:[...materials.values()],
+    /* Bind a KE.CascadedShadows instance so fur receives every cascade (null unbinds). */
+    setShadowSource(csm){shadowSource=csm||null;syncShadows();return api;},
+    get shells(){return shells;},get renderedShells(){return KE.settings.fur===false?0:current;},
+    /* velocity: world-space velocity of the furry object (fur trails behind it with a damped spring) */
+    update(dt=0,velocity=null){apply();syncShadows();dt=clamp(dt,0,.1);if(!dt)return;
+      if(velocity)tmp.set(velocity.x||0,velocity.y||0,velocity.z||0).multiplyScalar(-.18*(o.inertia!==undefined?o.inertia:1));else tmp.set(0,0,0);
+      if(tmp.lengthSq()>1.44)tmp.setLength(1.2);
+      inertiaVel.x+=((tmp.x-inertia.x)*60-inertiaVel.x*9)*dt;inertiaVel.y+=((tmp.y-inertia.y)*60-inertiaVel.y*9)*dt;inertiaVel.z+=((tmp.z-inertia.z)*60-inertiaVel.z*9)*dt;inertia.addScaledVector(inertiaVel,dt);},
+    setShells(n){shells=clamp(Math.round(n),0,MAX);for(const s of meshes)s.geometry.instanceCount=shells;for(const m of materials.values())m.uniforms.uShells.value=Math.max(1,shells);current=shells;return shells;},
+    dispose(){liveSystems.delete(api);if(off)off();for(const s of meshes){if(s.parent)s.parent.remove(s);const g=s.geometry;/* detach shared source buffers so disposing frees only our own */for(const k of ['position','normal','uv'])g.deleteAttribute(k);g.index=null;g.dispose();}
+      for(const m of materials.values())m.dispose();materials.clear();meshes.length=0;releaseStrands();}};
+  liveSystems.add(api);return api;
+};
+
+/* ---------- foliage spawner ---------- */
+/* Bridson Poisson-disc sampling in a rectangle; deterministic for a given random generator. */
+function poissonDisc(r,minX,minZ,w,d,rad,limit){
+  const cs=rad/Math.SQRT2,gw=Math.max(1,Math.ceil(w/cs)),gd=Math.max(1,Math.ceil(d/cs)),grid=new Int32Array(gw*gd).fill(-1),pts=[],active=[];
+  const put=(x,z)=>{const i=pts.length/2;pts.push(x,z);active.push(i);grid[Math.min(gd-1,Math.floor((z-minZ)/cs))*gw+Math.min(gw-1,Math.floor((x-minX)/cs))]=i;};
+  put(minX+r()*w,minZ+r()*d);
+  while(active.length&&pts.length/2<limit){const ai=Math.floor(r()*active.length),i=active[ai],px=pts[i*2],pz=pts[i*2+1];let found=false;
+    for(let k=0;k<20;k++){const a=r()*TAU,rr=rad*(1+r()),x=px+Math.cos(a)*rr,z=pz+Math.sin(a)*rr;if(x<minX||z<minZ||x>=minX+w||z>=minZ+d)continue;
+      const gx=Math.floor((x-minX)/cs),gz=Math.floor((z-minZ)/cs);let ok=true;
+      for(let dz=-2;dz<=2&&ok;dz++)for(let dx=-2;dx<=2;dx++){const nx=gx+dx,nz=gz+dz;if(nx<0||nz<0||nx>=gw||nz>=gd)continue;const j=grid[nz*gw+nx];if(j<0)continue;const ex=pts[j*2]-x,ez=pts[j*2+1]-z;if(ex*ex+ez*ez<rad*rad){ok=false;break;}}
+      if(ok){put(x,z);found=true;break;}}
+    if(!found){active[ai]=active[active.length-1];active.pop();}}
+  return pts;
+}
+function normBounds(b){if(!b)return {minX:-50,minZ:-50,maxX:50,maxZ:50};if(b.min&&b.max)return {minX:b.min.x,minZ:b.min.z!==undefined?b.min.z:b.min.y,maxX:b.max.x,maxZ:b.max.z!==undefined?b.max.z:b.max.y};
+  if(b.minX!==undefined)return {minX:b.minX,minZ:b.minZ,maxX:b.maxX,maxZ:b.maxZ};const c=b.center||[0,0],cx=Array.isArray(c)?c[0]:c.x,cz=Array.isArray(c)?c[1]:(c.z!==undefined?c.z:c.y),s=b.size||100,sx=Array.isArray(s)?s[0]:s,sz=Array.isArray(s)?s[1]:s;
+  return {minX:cx-sx/2,minZ:cz-sz/2,maxX:cx+sx/2,maxZ:cz+sz/2};}
+function typeParts(geometry,material){
+  if(geometry&&geometry.isBufferGeometry)return [{geometry,material:material&&!material.isMaterial&&!Array.isArray(material)?Object.values(material)[0]:material,name:'main'}];
+  /* {trunk, leaves} (or a whole KE.treeGeometry result): every BufferGeometry-valued key is one part */
+  const parts=[];for(const k of Object.keys(geometry||{})){if(!geometry[k]||!geometry[k].isBufferGeometry)continue;parts.push({name:k,geometry:geometry[k],material:material&&material.isMaterial?material:material&&material[k]});}return parts;}
+/* Deterministic Poisson-disc placement of instanced plants, bucketed into square cells. Each frame
+   update(camera) classifies cells by distance (and optionally frustum); instance buffers are rebuilt
+   only when that classification changes. Uses KE.InstancedLOD when present and opts.useInstancedLOD. */
+KE.FoliageSpawner=class{
+  constructor(THREE,scene,o={}){
+    this.THREE=THREE;this.scene=scene;const B=normBounds(o.bounds),cell=this.cellSize=Math.max(1,o.cellSize||16),seed=o.seed===undefined?1:o.seed;this.bounds=B;
+    const heightAt=o.heightAt||(()=>0),normalAt=o.normalAt||null,lodScale=clamp(KE.settings.lod||1,.25,2),view=(KE.settings.view||120);
+    this.cols=Math.max(1,Math.ceil((B.maxX-B.minX)/cell));this.rows=Math.max(1,Math.ceil((B.maxZ-B.minZ)/cell));const nCells=this.cols*this.rows;this.frustumCull=o.frustumCull!==false;
+    const occ=new Map(),occCell=4,occKey=(x,z)=>Math.floor(x/occCell)*73856093^Math.floor(z/occCell)*19349663,occupied=(x,z,rad,maxR)=>{const reach=rad+maxR,c0=Math.floor((x-reach)/occCell),c1=Math.floor((x+reach)/occCell),r0=Math.floor((z-reach)/occCell),r1=Math.floor((z+reach)/occCell);
+      for(let cz=r0;cz<=r1;cz++)for(let cx=c0;cx<=c1;cx++){const list=occ.get(cx*73856093^cz*19349663);if(!list)continue;for(let i=0;i<list.length;i+=3){const dx=list[i]-x,dz=list[i+1]-z,rr=list[i+2]+rad;if(dx*dx+dz*dz<rr*rr)return true;}}return false;};
+    let maxR=0;const nrm=[0,1,0],q=new THREE.Quaternion(),qa=new THREE.Quaternion(),qy=new THREE.Quaternion(),up=new THREE.Vector3(0,1,0),nv=new THREE.Vector3(),pos=new THREE.Vector3(),scl=new THREE.Vector3(),mtx=new THREE.Matrix4(),col=new THREE.Color();
+    this.groups=[];this.count=0;this.cellState=new Uint8Array(nCells);this.cellBoxes=[];
+    for(let c=0;c<nCells;c++)this.cellBoxes.push(new THREE.Box3(new THREE.Vector3(B.minX+(c%this.cols)*cell,1e9,B.minZ+Math.floor(c/this.cols)*cell),new THREE.Vector3(B.minX+(c%this.cols+1)*cell,-1e9,B.minZ+(Math.floor(c/this.cols)+1)*cell)));
+    (o.types||[]).forEach((type,ti)=>{
+      const r=KE.random((seed*131+ti*7919)>>>0),spacing=Math.max(.2,type.spacing||3),excl=type.exclusion!==undefined?type.exclusion:spacing*.5,sc=type.scale||[1,1],maxSlope=(type.maxSlope!==undefined?type.maxSlope:40)*Math.PI/180,align=clamp(type.alignToNormal||0,0,1);
+      const parts=typeParts(type.geometry,type.material);if(!parts.length)return;
+      let hgt=0;for(const p of parts){if(!p.geometry.boundingBox)p.geometry.computeBoundingBox();hgt=Math.max(hgt,p.geometry.boundingBox.max.y);}
+      const pts=poissonDisc(r,B.minX,B.minZ,B.maxX-B.minX,B.maxZ-B.minZ,spacing,type.maxCount||200000),acc=[];
+      for(let i=0;i<pts.length;i+=2){const x=pts[i],z=pts[i+1],dens=type.density?clamp(type.density(x,z),0,1):1;if(r()>=dens)continue;
+        if(normalAt){const n=normalAt(x,z);nrm[0]=n.x!==undefined?n.x:n[0];nrm[1]=n.y!==undefined?n.y:n[1];nrm[2]=n.z!==undefined?n.z:n[2];}
+        else{const e=.5,hx=heightAt(x+e,z)-heightAt(x-e,z),hz=heightAt(x,z+e)-heightAt(x,z-e),l=Math.hypot(hx,2*e,hz);nrm[0]=-hx/l;nrm[1]=2*e/l;nrm[2]=-hz/l;}
+        if(Math.acos(clamp(nrm[1],-1,1))>maxSlope)continue;if(type.avoidOthers!==false&&occupied(x,z,excl,maxR))continue;
+        const s=lerp(sc[0],sc[1],r()),yaw=r()*TAU,y=heightAt(x,z)-(type.sink!==undefined?type.sink:.05)*s;
+        nv.set(nrm[0],nrm[1],nrm[2]).normalize();qa.setFromUnitVectors(up,nv);q.identity().slerp(qa,align);qy.setFromAxisAngle(up,yaw);q.multiply(qy);
+        pos.set(x,y,z);scl.set(s,s,s);mtx.compose(pos,q,scl);const tint=type.tint!==undefined?type.tint:.1;
+        acc.push({cell:clamp(Math.floor((z-B.minZ)/cell),0,this.rows-1)*this.cols+clamp(Math.floor((x-B.minX)/cell),0,this.cols-1),m:mtx.toArray(),c:[1+(r()-.5)*tint*2,1+(r()-.5)*tint*2,1+(r()-.5)*tint*1.6]});
+        const k=occKey(x,z);let list=occ.get(k);if(!list)occ.set(k,list=[]);list.push(x,z,excl);}
+      maxR=Math.max(maxR,excl);acc.sort((a,b)=>a.cell-b.cell);
+      const n=acc.length,mats=new Float32Array(n*16),cols=new Float32Array(n*3),start=new Int32Array(nCells),cnt=new Int32Array(nCells);
+      acc.forEach((it,i)=>{mats.set(it.m,i*16);cols.set(it.c,i*3);cnt[it.cell]++;const b=this.cellBoxes[it.cell];b.min.y=Math.min(b.min.y,it.m[13]);b.max.y=Math.max(b.max.y,it.m[13]+hgt*Math.hypot(it.m[4],it.m[5],it.m[6]));});
+      for(let c=1;c<nCells;c++)start[c]=start[c-1]+cnt[c-1];
+      const dists=(type.lodDistances&&type.lodDistances.length?type.lodDistances:[Math.min(view,(o.maxDistance||view))*.9*lodScale]).map(d=>d*(type.lodDistances?lodScale:1));
+      const levelParts=[parts];for(const l of type.lods||[])levelParts.push(typeParts(l.geometry,l.material));
+      /* Optional hand-off to a shared instanced-LOD system (KE.InstancedLOD, when a later module provides
+         one and opts.instancedLOD !== false). Contract: new KE.InstancedLOD(THREE, scene, {name, matrices,
+         colors, count, levels:[{distance, parts:[{geometry, material, customDepthMaterial}]}], castShadow})
+         returning an object with update(camera) and dispose(). Any failure falls back to the built-in path. */
+      if(o.instancedLOD!==false&&typeof KE.InstancedLOD==='function'&&n>0){
+        try{const lod=new KE.InstancedLOD(THREE,scene,{name:type.name||'type'+ti,matrices:mats,colors:cols,count:n,castShadow:type.castShadow!==false,
+            levels:dists.map((distance,li)=>({distance,parts:levelParts[Math.min(li,levelParts.length-1)].map(p=>({geometry:p.geometry,material:p.material,customDepthMaterial:p.material&&p.material.userData&&p.material.userData.keFoliage?KE.foliageDepthMaterial(p.material):null}))}))});
+          if(lod&&typeof lod.update==='function'){this.groups.push({name:type.name||'type'+ti,count:n,height:hgt,matrices:mats,colors:cols,start,cnt,levels:[{distance:dists[dists.length-1],meshes:[]}],meshes:[],external:lod});this.count+=n;return;}}
+        catch(e){/* fall through to the built-in cell LOD */}}
+      const levels=dists.map((dist,li)=>{const lp=levelParts[Math.min(li,levelParts.length-1)];
+        return {distance:dist,meshes:lp.map(p=>{const im=new THREE.InstancedMesh(p.geometry,p.material,Math.max(1,n));im.count=0;im.frustumCulled=false;im.castShadow=type.castShadow!==false;im.receiveShadow=true;
+          im.instanceColor=new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1,n)*3),3);im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);im.name='ke-foliage-'+(type.name||ti)+'-'+p.name+'-lod'+li;
+          if(p.material&&p.material.userData&&p.material.userData.keFoliage){im.customDepthMaterial=KE.foliageDepthMaterial(p.material);}
+          if(scene)scene.add(im);return im;})};});
+      this.groups.push({name:type.name||'type'+ti,count:n,height:hgt,matrices:mats,colors:cols,start,cnt,levels,meshes:levels.flatMap(l=>l.meshes)});this.count+=n;});
+    this.maxDistance=Math.max(0,...this.groups.map(g=>g.levels[g.levels.length-1].distance));
+    /* cells are frustum-tested with a margin so trees just outside the view still cast their shadows in */
+    this.cullMargin=o.cullMargin!==undefined?o.cullMargin:Math.max(6,...this.groups.map(g=>g.height*1.5));this._box=new THREE.Box3();
+    this.backend=this.groups.some(g=>g.external)?'InstancedLOD':'cells';
+    this._frustum=new THREE.Frustum();this._proj=new THREE.Matrix4();this._prev=new Uint8Array(nCells*Math.max(1,this.groups.length));this._cur=new Uint8Array(this._prev.length);this._first=true;this.rebuilds=0;
+  }
+  /* Returns true when instance buffers were rebuilt this call. */
+  update(camera){
+    if(!camera)return false;const e=camera.matrixWorld.elements,cx=e[12],cz=e[14],B=this.bounds,cs=this.cellSize,nC=this.cols*this.rows;
+    if(this.frustumCull){this._proj.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);this._frustum.setFromProjectionMatrix(this._proj);}
+    let changed=this._first;
+    for(let gi=0;gi<this.groups.length;gi++){const g=this.groups[gi],L=g.levels;if(g.external){g.external.update(camera);continue;}
+      for(let c=0;c<nC;c++){let st=0;if(g.cnt[c]){const x0=B.minX+(c%this.cols)*cs,z0=B.minZ+Math.floor(c/this.cols)*cs,dx=Math.max(0,x0-cx,cx-(x0+cs)),dz=Math.max(0,z0-cz,cz-(z0+cs)),d=Math.sqrt(dx*dx+dz*dz);
+          for(let li=0;li<L.length;li++)if(d<L[li].distance){st=li+1;break;}
+          if(st&&this.frustumCull){const b=this.cellBoxes[c];if(b.max.y>=b.min.y&&!this._frustum.intersectsBox(this._box.copy(b).expandByScalar(this.cullMargin)))st=0;}}
+        const k=gi*nC+c;this._cur[k]=st;if(st!==this._prev[k])changed=true;}}
+    if(!changed)return false;this._first=false;this._prev.set(this._cur);this.rebuilds++;
+    for(let gi=0;gi<this.groups.length;gi++){const g=this.groups[gi];if(g.external)continue;
+      for(let li=0;li<g.levels.length;li++){let n=0;const meshes=g.levels[li].meshes,ma=meshes.length?meshes[0].instanceMatrix.array:null;if(!ma)continue;const ca=meshes[0].instanceColor.array;
+        for(let c=0;c<nC;c++){if(this._cur[gi*nC+c]!==li+1)continue;const s=g.start[c],k=g.cnt[c];
+          for(let i=0;i<k*16;i++)ma[n*16+i]=g.matrices[s*16+i];for(let i=0;i<k*3;i++)ca[n*3+i]=g.colors[s*3+i];n+=k;}
+        for(let m=0;m<meshes.length;m++){const im=meshes[m];if(m>0){im.instanceMatrix.array.set(ma.subarray(0,n*16));im.instanceColor.array.set(ca.subarray(0,n*3));}
+          im.count=n;im.instanceMatrix.updateRange.offset=0;im.instanceMatrix.updateRange.count=n*16;im.instanceMatrix.needsUpdate=true;im.instanceColor.updateRange.offset=0;im.instanceColor.updateRange.count=n*3;im.instanceColor.needsUpdate=true;im.visible=n>0;}}}
+    return true;}
+  /* Instances visible after the last update (sum over types and LOD levels). */
+  get visibleCount(){let n=0;for(const g of this.groups)for(const l of g.levels)n+=l.meshes.length?l.meshes[0].count:0;return n;}
+  /* Removes and frees the instanced meshes (instance buffers). Geometries and materials belong to the caller. */
+  dispose(){for(const g of this.groups){if(g.external&&g.external.dispose)g.external.dispose();for(const m of g.meshes){if(m.parent)m.parent.remove(m);m.dispose();}}this.groups.length=0;this.count=0;}
+};
+
+/* ---------- per-frame driver ---------- */
+KE.foliage={
+  MAX_INTERACTORS,
+  get uniforms(){return foliageUniforms(window.THREE);},
+  species:SPECIES,
+  /* Advance wind time (also KE.windUniforms.uTime for core KE.wind users) and set wind/interactors.
+     interactors: up to 8 of Vector3 (radius .5) or {position, radius}. No allocations. */
+  update(dt=0,o={}){const U=foliageUniforms(window.THREE);if(!U)return;dt=Number.isFinite(dt)?clamp(dt,0,.25):0;U.keTime.value+=dt;
+    if(KE.windUniforms&&KE.windUniforms.uTime)KE.windUniforms.uTime.value+=dt;
+    if(o){if(Number.isFinite(o.wind)){U.keWindStrength.value=Math.max(0,o.wind);if(KE.windUniforms&&KE.windUniforms.uWind)KE.windUniforms.uWind.value=U.keWindStrength.value;}
+      if(o.windDir!==undefined)setWindDir(U.keWindDir.value,o.windDir);if(Number.isFinite(o.gustScale))U.keGustScale.value=Math.max(0,o.gustScale);
+      const list=o.interactors;if(list){let n=0;for(let i=0;i<list.length&&n<MAX_INTERACTORS;i++){const it=list[i];if(!it)continue;const p=it.position||it;if(!Number.isFinite(p.x)||!Number.isFinite(p.y)||!Number.isFinite(p.z))continue;
+        U.keInteractors.value[n].set(p.x,p.y,p.z,it.radius!==undefined?it.radius:.5);n++;}U.keInteractorCount.value=n;}}},
+  /* Default KE.CascadedShadows for grass and fur created later; also rebinds every live grass/fur system. */
+  shadowSource:null,
+  setShadowSource(csm){this.shadowSource=csm||null;for(const s of liveSystems)s.setShadowSource(this.shadowSource);return this;},
+  /* Add hierarchical wind (and matching shadow materials via attach/foliageDepthMaterial) to an existing
+     lit material, chaining its current onBeforeCompile. Geometry should carry windWeight
+     (see addWindWeights); pass {windAttribute:false, height} to derive weights from object-space height. */
+  applyWind(THREE,material,o={}){
+    if(!material||!material.isMaterial)throw new TypeError('KE.foliage.applyWind expects a material');if(material.userData.keFoliage)return material;foliageUniforms(THREE);
+    const wind=Object.assign({trunk:.02,branch:.06,leaf:.12},o.wind||{}),physical=!!material.isMeshStandardMaterial,translucency=physical&&o.translucency?o.translucency:0;
+    const uniforms={kfWindAmp:{value:new THREE.Vector3(wind.trunk,wind.branch,wind.leaf)},kfRefHeight:{value:Math.max(1e-3,o.height||1)},kfTranslucency:{value:translucency},
+      kfTransColor:{value:srgb(THREE,o.translucencyColor,0xd2e67a)},kfNormalsUp:{value:0},kfMapSize:{value:material.map&&material.map.image?Math.max(material.map.image.width||256,material.map.image.height||256):256},kfAlphaMip:{value:o.alphaMip!==undefined?o.alphaMip:.25},kfEdgeFade:{value:o.edgeFade!==undefined?o.edgeFade:0}};
+    const cfg={THREE,uniforms,wind,depth:null,distance:null,flags:{attr:o.windAttribute!==false,trans:translucency>0,unflip:false,alpha:material.alphaTest>0&&!!material.map,up:false}};
+    material.userData.keFoliage=cfg;material.defaultAttributeValues=Object.assign({windWeight:[0,0,0,0],color:[1,1,1],uv:[0,0]},material.defaultAttributeValues||{});
+    installHook(THREE,material,cfg,'main');material.needsUpdate=true;return material;},
+  /* Give a mesh using a foliage/bark material matching shadow materials. */
+  attach(mesh){const m=Array.isArray(mesh.material)?mesh.material[0]:mesh.material;if(m&&m.userData.keFoliage){mesh.customDepthMaterial=KE.foliageDepthMaterial(m);mesh.customDistanceMaterial=KE.foliageDepthMaterial(m,{distance:true});}return mesh;},
+  /* Add a windWeight attribute to any geometry (height-based), so KE.foliageMaterial sways it. */
+  addWindWeights(THREE,geometry,{height=null,flutter=1,phase=0}={}){const p=geometry.attributes.position;if(!geometry.boundingBox)geometry.computeBoundingBox();const bb=geometry.boundingBox,H=height||Math.max(1e-3,bb.max.y-Math.min(0,bb.min.y));
+    const w=new Float32Array(p.count*4);for(let i=0;i<p.count;i++){const y=clamp(p.getY(i)/H,0,1),rad=Math.hypot(p.getX(i),p.getZ(i))/H;w[i*4]=y;w[i*4+1]=clamp(y*.6+rad,0,1);w[i*4+2]=y*flutter;w[i*4+3]=phase;}
+    geometry.setAttribute('windWeight',new THREE.BufferAttribute(w,4));return geometry;},
+  glsl:{gust:GUST_GLSL,treeWind:TREE_WIND_GLSL}
+};
+
+KE.registerModule('foliage',{provides:['foliageUniforms','foliage','foliageMaterial','foliageDepthMaterial','treeGeometry','tree','TREE_SPECIES','leafTexture','barkTexture','barkMaterial','grassField','fur','FoliageSpawner']});
+})();
+
 /* ===== module: 26-weather.js ===== */
 /* KE.SurfaceWeather — weather-driven material layering for lit Standard/Physical materials.
    Rain darkens porous albedo and lowers roughness (after Lagarde, "Water drop 2b – Dynamic rain and its
@@ -1919,4 +2986,3179 @@ KE.SurfaceWeather=class{
   dispose(){if(this.offSettings)this.offSettings();for(const m of this.materials){const r=this.restore.get(m);m.onBeforeCompile=r.prev;if(r.ownKey)m.customProgramCacheKey=r.ownKey;else delete m.customProgramCacheKey;m.needsUpdate=true;}this.materials.clear();this.restore.clear();}
 };
 KE.registerModule('weather',{provides:['SurfaceWeather']});
+})();
+
+/* ===== module: 40-physics.js ===== */
+/* kitsune enginev3 · KE.Physics3D — rigid-body physics on the vendored Rapier 3D (compat 0.19.3).
+   A Three.js-facing layer over Rapier: collider fitting from meshes (scale-aware, compound groups),
+   fixed-step simulation with render interpolation and world->local transform sync, scene queries,
+   a kinematic character controller, joints, Voronoi fracture, radial explosions, buoyancy, a raycast
+   vehicle, contact/trigger events and a collider debug renderer. Requires assets/kitsune-libs.js. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+
+/* ---------- Rapier bootstrap ---------- */
+let rapierReady=null;
+function loadRapier(){
+  const R=typeof window!=='undefined'?window.RAPIER:undefined;
+  if(!R||typeof R.init!=='function')return Promise.reject(new Error('KE.Physics3D: window.RAPIER is missing. Load assets/kitsune-libs.js (Rapier 3D compat 0.19) before creating a physics world.'));
+  if(!rapierReady)rapierReady=Promise.resolve().then(()=>R.init()).then(()=>R,e=>{rapierReady=null;throw e;});
+  return rapierReady;
+}
+
+/* ---------- small helpers ---------- */
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const DEG=Math.PI/180;
+function readVec(v,out){
+  if(v==null)return out;
+  if(Array.isArray(v)||ArrayBuffer.isView(v))return out.set(+v[0]||0,+v[1]||0,+v[2]||0);
+  if(typeof v==='number')return out.set(v,v,v);
+  return out.set(+v.x||0,+v.y||0,+v.z||0);
+}
+function readQuat(q,out,THREE){
+  if(q==null)return out.set(0,0,0,1);
+  if(q.isEuler)return out.setFromEuler(q);
+  if(Array.isArray(q))return q.length>=4?out.set(q[0],q[1],q[2],q[3]).normalize():out.setFromEuler(new THREE.Euler(q[0]||0,q[1]||0,q[2]||0));
+  return out.set(q.x||0,q.y||0,q.z||0,q.w===undefined?1:q.w).normalize();
+}
+const setXYZ=(o,v)=>{o.x=v.x;o.y=v.y;o.z=v.z;return o;};
+function groupMask(v){if(Array.isArray(v)){let m=0;for(const i of v)m|=1<<(i&15);return m&0xffff;}return (v==null?0xffff:v)&0xffff;}
+/* Rapier interaction groups: upper 16 bits = memberships, lower 16 bits = filter. */
+function interactionGroups(g){if(g==null)return 0xffffffff;if(typeof g==='number')return g>>>0;return ((groupMask(g.membership)<<16)|groupMask(g.filter))>>>0;}
+const TYPES=['dynamic','fixed','kinematic','kinematicVelocity'];
+function isIdentity(m){const e=m.elements;return e[0]===1&&e[5]===1&&e[10]===1&&e[15]===1&&e[1]===0&&e[2]===0&&e[3]===0&&e[4]===0&&e[6]===0&&e[7]===0&&e[8]===0&&e[9]===0&&e[11]===0&&e[12]===0&&e[13]===0&&e[14]===0;}
+function collectMeshes(root){const out=[];if(!root)return out;root.traverse(o=>{if(o.isMesh&&o.geometry&&o.geometry.attributes&&o.geometry.attributes.position&&!(o.userData&&o.userData.physicsIgnore))out.push(o);});return out;}
+
+/* ---------- geometry: triangles, convex hull, volume ---------- */
+/* Reads a BufferGeometry into a triangle soup (positions scaled, normals inverse-scaled, uvs, per-triangle material index). */
+function readTriangles(geometry,sx,sy,sz){
+  const pos=geometry.attributes.position,nor=geometry.attributes.normal,uv=geometry.attributes.uv,index=geometry.index;
+  const count=index?index.count:pos.count,tris=Math.floor(count/3),flip=sx*sy*sz<0;
+  const P=new Float64Array(tris*9),N=new Float64Array(tris*9),U=new Float64Array(tris*6),M=new Uint16Array(tris);
+  const groups=geometry.groups||[];
+  for(let t=0;t<tris;t++){
+    for(let k=0;k<3;k++){const kk=flip&&k>0?3-k:k,vi=index?index.getX(t*3+kk):t*3+kk,o=t*9+k*3;
+      P[o]=pos.getX(vi)*sx;P[o+1]=pos.getY(vi)*sy;P[o+2]=pos.getZ(vi)*sz;
+      if(nor){let nx=nor.getX(vi)/sx,ny=nor.getY(vi)/sy,nz=nor.getZ(vi)/sz;const l=Math.hypot(nx,ny,nz)||1;N[o]=nx/l;N[o+1]=ny/l;N[o+2]=nz/l;}
+      if(uv){U[t*6+k*2]=uv.getX(vi);U[t*6+k*2+1]=uv.getY(vi);}}
+    if(!nor){const o=t*9,ax=P[o+3]-P[o],ay=P[o+4]-P[o+1],az=P[o+5]-P[o+2],bx=P[o+6]-P[o],by=P[o+7]-P[o+1],bz=P[o+8]-P[o+2];
+      let nx=ay*bz-az*by,ny=az*bx-ax*bz,nz=ax*by-ay*bx;const l=Math.hypot(nx,ny,nz)||1;nx/=l;ny/=l;nz/=l;for(let k=0;k<3;k++){N[o+k*3]=nx;N[o+k*3+1]=ny;N[o+k*3+2]=nz;}}
+    if(groups.length){const s=t*3;for(const g of groups)if(s>=g.start&&s<g.start+g.count){M[t]=g.materialIndex||0;break;}}
+  }
+  return {P,N,U,M,count:tris,hasUV:!!uv};
+}
+function soupVolume(P,count){let v=0;for(let t=0;t<count;t++){const o=t*9;v+=(P[o]*(P[o+4]*P[o+8]-P[o+5]*P[o+7])-P[o+1]*(P[o+3]*P[o+8]-P[o+5]*P[o+6])+P[o+2]*(P[o+3]*P[o+7]-P[o+4]*P[o+6]))/6;}return v;}
+/* Convex hull via THREE.ConvexHull (three-addons). Returns planes (n·p - c <= 0 inside), triangle faces and volume, or null. */
+function convexHull(THREE,points){
+  if(!THREE.ConvexHull||points.length<4)return null;
+  let hull;try{hull=new THREE.ConvexHull().setFromPoints(points);}catch(e){return null;}
+  const planes=[],faces=[];let volume=0;
+  for(const f of hull.faces){const vs=[];let e=f.edge;do{vs.push(e.head().point);e=e.next;}while(e&&e!==f.edge&&vs.length<64);
+    if(vs.length<3)continue;planes.push({n:f.normal.clone(),c:f.constant});faces.push({verts:vs,normal:f.normal.clone()});
+    for(let i=1;i<vs.length-1;i++)volume+=vs[0].dot(new THREE.Vector3().crossVectors(vs[i],vs[i+1]))/6;}
+  if(!planes.length||!(volume>0))return null;
+  return {planes,faces,volume};
+}
+
+/* ---------- Voronoi fracture of a (convex) triangle mesh ---------- */
+/* Each piece is the intersection of the source solid with one Voronoi cell: the source polygons are clipped
+   by the bisector planes between its seed and every other seed (Sutherland-Hodgman per polygon), and every
+   cut is closed with a cap polygon built from the on-plane points sorted by angle. Non-convex sources are
+   replaced by their convex hull first, so caps are always convex and pieces always convex. Vertex attributes
+   (normal, uv) of original faces are interpolated along cuts; cap faces get flat normals and planar UVs. */
+function lerpVert(a,b,t){const v=new Array(8);for(let i=0;i<8;i++)v[i]=a[i]+(b[i]-a[i])*t;const l=Math.hypot(v[3],v[4],v[5])||1;v[3]/=l;v[4]/=l;v[5]/=l;return v;}
+function clipPolys(polys,nx,ny,nz,d,eps,cap){
+  const out=[];
+  for(const poly of polys){const vs=poly.v,L=vs.length,ds=new Float64Array(L);let anyOut=false,anyIn=false;
+    for(let i=0;i<L;i++){const p=vs[i],s=p[0]*nx+p[1]*ny+p[2]*nz+d;ds[i]=s;if(s>eps)anyOut=true;else if(s<-eps)anyIn=true;}
+    if(!anyOut){out.push(poly);for(let i=0;i<L;i++)if(ds[i]>=-eps)cap.push(vs[i]);continue;}
+    if(!anyIn){for(let i=0;i<L;i++)if(ds[i]<=eps)cap.push(vs[i]);continue;}
+    const nv=[];
+    for(let i=0;i<L;i++){const j=(i+1)%L,a=vs[i],da=ds[i],db=ds[j];
+      if(da<=eps){nv.push(a);if(da>=-eps)cap.push(a);}
+      if((da<-eps&&db>eps)||(da>eps&&db<-eps)){const v=lerpVert(a,vs[j],da/(da-db));nv.push(v);cap.push(v);}}
+    if(nv.length>=3)out.push({v:nv,m:poly.m,cut:poly.cut});}
+  return out;
+}
+function buildCap(pts,nx,ny,nz,eps,uvScale,mat){
+  const uniq=[],seen=new Map(),q=1/Math.max(eps*4,1e-9);
+  for(const p of pts){const k=Math.round(p[0]*q)+','+Math.round(p[1]*q)+','+Math.round(p[2]*q);if(!seen.has(k)){seen.set(k,1);uniq.push(p);}}
+  if(uniq.length<3)return null;
+  let cx=0,cy=0,cz=0;for(const p of uniq){cx+=p[0];cy+=p[1];cz+=p[2];}cx/=uniq.length;cy/=uniq.length;cz/=uniq.length;
+  // plane basis: u perpendicular to n, w = n x u (so increasing angle is counter-clockwise seen from +n)
+  let ux,uy,uz;if(Math.abs(nx)<.9){ux=0;uy=nz;uz=-ny;}else{ux=-nz;uy=0;uz=nx;}const ul=Math.hypot(ux,uy,uz);ux/=ul;uy/=ul;uz/=ul;
+  const wx=ny*uz-nz*uy,wy=nz*ux-nx*uz,wz=nx*uy-ny*ux;
+  const verts=uniq.map(p=>{const dx=p[0]-cx,dy=p[1]-cy,dz=p[2]-cz;return {a:Math.atan2(dx*wx+dy*wy+dz*wz,dx*ux+dy*uy+dz*uz),
+    v:[p[0],p[1],p[2],nx,ny,nz,(p[0]*ux+p[1]*uy+p[2]*uz)*uvScale,(p[0]*wx+p[1]*wy+p[2]*wz)*uvScale]};}).sort((a,b)=>a.a-b.a).map(o=>o.v);
+  return {v:verts,m:mat,cut:true};
+}
+function fractureGeometry(THREE,geometry,o={}){
+  if(!geometry||!geometry.attributes||!geometry.attributes.position)throw new TypeError('KE.Physics3D.fractureGeometry: BufferGeometry with positions required');
+  const s=readVec(o.scale==null?1:o.scale,new THREE.Vector3());
+  const soup=readTriangles(geometry,s.x,s.y,s.z);if(soup.count<4)throw new RangeError('KE.Physics3D.fractureGeometry: geometry has too few triangles');
+  const pts=[],seenP=new Map();const box=new THREE.Box3();
+  for(let i=0;i<soup.count*3;i++){const x=soup.P[i*3],y=soup.P[i*3+1],z=soup.P[i*3+2],k=x.toFixed(5)+','+y.toFixed(5)+','+z.toFixed(5);if(!seenP.has(k)){seenP.set(k,1);const v=new THREE.Vector3(x,y,z);pts.push(v);box.expandByPoint(v);}}
+  const size=box.getSize(new THREE.Vector3()),diag=size.length();if(!(diag>0))throw new RangeError('KE.Physics3D.fractureGeometry: degenerate geometry');
+  const eps=diag*1e-6,uvScale=o.uvScale==null?1:o.uvScale,interior=o.interiorMaterialIndex==null?null:o.interiorMaterialIndex;
+  const hull=convexHull(THREE,pts),meshVolume=soupVolume(soup.P,soup.count);
+  const convex=!o.forceHull&&(!hull||meshVolume>=hull.volume*(1-(o.convexTolerance==null?.02:o.convexTolerance)));
+  // source polygons
+  let polys=[];
+  if(convex){for(let t=0;t<soup.count;t++){const v=[];for(let k=0;k<3;k++){const a=t*9+k*3;v.push([soup.P[a],soup.P[a+1],soup.P[a+2],soup.N[a],soup.N[a+1],soup.N[a+2],soup.U[t*6+k*2],soup.U[t*6+k*2+1]]);}polys.push({v,m:soup.M[t],cut:false});}}
+  else{for(const f of hull.faces){const n=f.normal,ax=Math.abs(n.x),ay=Math.abs(n.y),az=Math.abs(n.z);
+    polys.push({v:f.verts.map(p=>{const u=ax>=ay&&ax>=az?[p.z,p.y]:ay>=az?[p.x,p.z]:[p.x,p.y];return [p.x,p.y,p.z,n.x,n.y,n.z,u[0]*uvScale,u[1]*uvScale];}),m:0,cut:false});}}
+  const planes=hull?hull.planes:[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].map(([x,y,z])=>({n:new THREE.Vector3(x,y,z),c:x>0?box.max.x:x<0?-box.min.x:y>0?box.max.y:y<0?-box.min.y:z>0?box.max.z:-box.min.z}));
+  const sourceVolume=convex?meshVolume:hull.volume;
+  // Seeds: dart throwing inside the solid (Poisson-disk style). The spacing starts near the mean cell size
+  // cbrt(volume/pieces) so cells come out chunky rather than as slivers, relaxes by 15% whenever 40 darts in a row
+  // fail, and never drops below minSize. With an impact point, a share of the darts is Gaussian around it and the
+  // spacing there shrinks to 45%, giving finer fragments near the hit and larger ones away from it.
+  const want=Math.max(1,Math.min(256,Math.round(o.pieces==null?8:o.pieces))),rnd=KE.random(o.seed==null?1:o.seed);
+  const minSize=Math.max(o.minSize==null?.08:o.minSize,diag*1e-4),seeds=[],impact=o.point?readVec(o.point,new THREE.Vector3()):null,margin=minSize*.25;
+  const inside=p=>{for(const pl of planes)if(pl.n.dot(p)-pl.c>-margin)return false;return true;};
+  const gauss=()=>{let u=0;for(let i=0;i<4;i++)u+=rnd();return (u-2)*.866;};
+  const sigma=diag*(o.spread==null?.22:o.spread),bias=o.impactBias==null?.6:o.impactBias;
+  let spacing=Math.max(minSize,Math.cbrt(Math.max(sourceVolume,1e-12)/want)*.62),fails=0;
+  for(let attempt=0,limit=want*200;seeds.length<want&&attempt<limit;attempt++){
+    const p=impact&&rnd()<bias?new THREE.Vector3(impact.x+gauss()*sigma,impact.y+gauss()*sigma,impact.z+gauss()*sigma)
+      :new THREE.Vector3(box.min.x+rnd()*size.x,box.min.y+rnd()*size.y,box.min.z+rnd()*size.z);
+    if(!inside(p))continue;
+    const need=impact?Math.max(minSize,spacing*clamp(.45+.55*p.distanceTo(impact)/(sigma*2.5),.45,1)):spacing;
+    let ok=true;for(const q of seeds)if(q.distanceToSquared(p)<need*need){ok=false;break;}
+    if(ok){seeds.push(p);fails=0;}else if(++fails>=40){spacing=Math.max(minSize,spacing*.85);fails=0;}}
+  if(seeds.length<2)return {pieces:[],convex,sourceVolume,seeds};
+  const pieces=[];
+  for(let i=0;i<seeds.length;i++){const si=seeds[i];let cell=polys;
+    const order=seeds.map((q,j)=>j).filter(j=>j!==i).sort((a,b)=>seeds[a].distanceToSquared(si)-seeds[b].distanceToSquared(si));
+    for(const j of order){const sj=seeds[j];let nx=sj.x-si.x,ny=sj.y-si.y,nz=sj.z-si.z;const l=Math.hypot(nx,ny,nz);if(l<1e-12)continue;nx/=l;ny/=l;nz/=l;
+      const d=-(nx*(si.x+sj.x)+ny*(si.y+sj.y)+nz*(si.z+sj.z))*.5;
+      let maxS=-Infinity;for(const p of cell)for(const v of p.v){const sv=v[0]*nx+v[1]*ny+v[2]*nz+d;if(sv>maxS)maxS=sv;}
+      if(maxS<=eps)continue;
+      const cap=[];cell=clipPolys(cell,nx,ny,nz,d,eps,cap);if(!cell.length)break;
+      const c=buildCap(cap,nx,ny,nz,eps,uvScale,interior==null?0:interior);if(c)cell.push(c);}
+    if(cell.length<4)continue;
+    // triangulate (fans), volume and centroid by signed tetrahedra
+    const tri=[];let vol=0,mx=0,my=0,mz=0;
+    for(const p of cell){const v=p.v;for(let k=1;k<v.length-1;k++){const a=v[0],b=v[k],c=v[k+1];
+      const tv=(a[0]*(b[1]*c[2]-b[2]*c[1])-a[1]*(b[0]*c[2]-b[2]*c[0])+a[2]*(b[0]*c[1]-b[1]*c[0]))/6;vol+=tv;mx+=tv*(a[0]+b[0]+c[0])/4;my+=tv*(a[1]+b[1]+c[1])/4;mz+=tv*(a[2]+b[2]+c[2])/4;
+      tri.push({a,b,c,m:p.cut&&interior!=null?interior:p.m});}}
+    if(!(vol>sourceVolume*1e-5))continue;
+    const cx=mx/vol,cy=my/vol,cz=mz/vol;tri.sort((a,b)=>a.m-b.m);
+    const n=tri.length,P=new Float32Array(n*9),N=new Float32Array(n*9),U=new Float32Array(n*6),g=new THREE.BufferGeometry();
+    let gs=0,gm=tri.length?tri[0].m:0;
+    tri.forEach((t,k)=>{[t.a,t.b,t.c].forEach((v,j)=>{const o=k*9+j*3;P[o]=v[0]-cx;P[o+1]=v[1]-cy;P[o+2]=v[2]-cz;N[o]=v[3];N[o+1]=v[4];N[o+2]=v[5];U[k*6+j*2]=v[6];U[k*6+j*2+1]=v[7];});
+      if(t.m!==gm){g.addGroup(gs*3,(k-gs)*3,gm);gs=k;gm=t.m;}});
+    if(g.groups.length||gm!==0)g.addGroup(gs*3,(n-gs)*3,gm);
+    g.setAttribute('position',new THREE.BufferAttribute(P,3));g.setAttribute('normal',new THREE.BufferAttribute(N,3));g.setAttribute('uv',new THREE.BufferAttribute(U,2));
+    g.computeBoundingBox();g.computeBoundingSphere();
+    pieces.push({geometry:g,centroid:new THREE.Vector3(cx,cy,cz),volume:vol});}
+  return {pieces,convex,sourceVolume,seeds};
+}
+
+/* ---------- Body handle ---------- */
+class Body{
+  constructor(physics,rigidBody,colliders,object,type,opts){
+    const T=physics.THREE;
+    this.physics=physics;this.rigidBody=rigidBody;this.colliders=colliders;this.collider=colliders[0]||null;
+    this.object=object||null;this.id=rigidBody.handle;this.type=type;this.shape=opts.shape||'custom';
+    this.userData=opts.userData||{};this.owned=false;this.removed=false;
+    this.onContact=opts.onContact||null;this.onTrigger=opts.onTrigger||null;this.onContactForce=opts.onContactForce||null;
+    this.syncRotation=opts.syncRotation!==false;this.objectOffset=null;
+    this.localBounds=new T.Box3();this.radius=0;
+    this._prevP=new T.Vector3();this._curP=new T.Vector3();this._prevQ=new T.Quaternion();this._curQ=new T.Quaternion();
+    this._stamp=-1;this._synced=false;this._follow=false;this._joints=null;this._breakable=null;
+  }
+  _rb(){if(this.removed)throw new Error('KE.Physics3D: body '+this.id+' has been removed');return this.rigidBody;}
+  get mass(){return this._rb().mass();}
+  /* Current simulated pose (not interpolated). */
+  getPosition(out=new this.physics.THREE.Vector3()){return out.copy(this._curP);}
+  getQuaternion(out=new this.physics.THREE.Quaternion()){return out.copy(this._curQ);}
+  applyImpulse(v,point){const rb=this._rb(),a=setXYZ(this.physics._a,readVec(v,this.physics._t1));
+    if(point){rb.applyImpulseAtPoint(a,setXYZ(this.physics._b,readVec(point,this.physics._t2)),true);}else rb.applyImpulse(a,true);return this;}
+  /* Force applied during the next fixed step only (reset afterwards). Call every step for a continuous force. */
+  applyForce(v,point){const rb=this._rb(),a=setXYZ(this.physics._a,readVec(v,this.physics._t1));
+    if(point)rb.addForceAtPoint(a,setXYZ(this.physics._b,readVec(point,this.physics._t2)),true);else rb.addForce(a,true);this.physics._forceBodies.add(this);return this;}
+  applyTorque(v){this._rb().addTorque(setXYZ(this.physics._a,readVec(v,this.physics._t1)),true);this.physics._forceBodies.add(this);return this;}
+  applyTorqueImpulse(v){this._rb().applyTorqueImpulse(setXYZ(this.physics._a,readVec(v,this.physics._t1)),true);return this;}
+  setVelocity(v){this._rb().setLinvel(setXYZ(this.physics._a,readVec(v,this.physics._t1)),true);return this;}
+  getVelocity(out=new this.physics.THREE.Vector3()){const l=this._rb().linvel();return out.set(l.x,l.y,l.z);}
+  setAngularVelocity(v){this._rb().setAngvel(setXYZ(this.physics._a,readVec(v,this.physics._t1)),true);return this;}
+  getAngularVelocity(out=new this.physics.THREE.Vector3()){const l=this._rb().angvel();return out.set(l.x,l.y,l.z);}
+  setPosition(v){const rb=this._rb();readVec(v,this._curP);rb.setTranslation(setXYZ(this.physics._a,this._curP),true);this.physics._queriesDirty=true;this._prevP.copy(this._curP);if(!this._follow)this.physics._writeBody(this,1,true);return this;}
+  setRotation(q){const rb=this._rb();readQuat(q,this._curQ,this.physics.THREE);this.physics._queriesDirty=true;const r=this.physics._q;r.x=this._curQ.x;r.y=this._curQ.y;r.z=this._curQ.z;r.w=this._curQ.w;rb.setRotation(r,true);this._prevQ.copy(this._curQ);if(!this._follow)this.physics._writeBody(this,1,true);return this;}
+  /* Instant move without interpolation smear; velocities are cleared unless keepVelocity. */
+  teleport(pos,quat,{keepVelocity=false}={}){if(pos!=null)this.setPosition(pos);if(quat!=null)this.setRotation(quat);
+    if(!keepVelocity&&this.type!=='fixed'){const z=this.physics._a;z.x=z.y=z.z=0;this.rigidBody.setLinvel(z,true);this.rigidBody.setAngvel(z,true);}return this;}
+  /* Kinematic bodies: target pose reached during the next step (gives contacts a proper velocity). */
+  moveKinematic(pos,quat){const rb=this._rb();if(pos!=null)rb.setNextKinematicTranslation(setXYZ(this.physics._a,readVec(pos,this.physics._t1)));
+    if(quat!=null){const q=readQuat(quat,this.physics._tq2,this.physics.THREE),r=this.physics._q;r.x=q.x;r.y=q.y;r.z=q.z;r.w=q.w;rb.setNextKinematicRotation(r);}return this;}
+  sleep(){this._rb().sleep();return this;}
+  wakeUp(){this._rb().wakeUp();return this;}
+  isSleeping(){return this._rb().isSleeping();}
+  setEnabled(on){this._rb().setEnabled(!!on);this.physics._queriesDirty=true;return this;}
+  isEnabled(){return this._rb().isEnabled();}
+  setGravityScale(s){this._rb().setGravityScale(s,true);return this;}
+  setCcd(on){this._rb().enableCcd(!!on);return this;}
+  setDamping(linear,angular){const rb=this._rb();if(linear!=null)rb.setLinearDamping(linear);if(angular!=null)rb.setAngularDamping(angular);return this;}
+  setFriction(f){this._rb();for(const c of this.colliders)c.setFriction(f);return this;}
+  setRestitution(r){this._rb();for(const c of this.colliders)c.setRestitution(r);return this;}
+  setGroups(g){this._rb();const m=interactionGroups(g);for(const c of this.colliders){c.setCollisionGroups(m);c.setSolverGroups(m);}return this;}
+  lockRotations(locked=true){this._rb().lockRotations(!!locked,true);return this;}
+  dispose(opts){if(!this.removed)this.physics.remove(this,opts);}
+}
+
+/* ---------- joints ---------- */
+class Joint{
+  constructor(physics,joint,type,a,b,axis){this.physics=physics;this.joint=joint;this.type=type;this.bodyA=a;this.bodyB=b;this.axis=axis;this.disposed=false;this._angle0=0;this._anchor=null;}
+  _j(){if(this.disposed)throw new Error('KE.Physics3D: joint has been disposed');return this.joint;}
+  setLimits(min,max){const j=this._j();if(typeof j.setLimits!=='function')throw new TypeError('KE.Physics3D: '+this.type+' joints have no limits');j.setLimits(min,max);return this;}
+  /* motor: {targetVelocity, targetPosition, stiffness, damping, maxForce|factor, model:'acceleration'|'force'} */
+  setMotor(m={}){const j=this._j(),R=this.physics.RAPIER;if(typeof j.configureMotorVelocity!=='function')throw new TypeError('KE.Physics3D: '+this.type+' joints have no motor');
+    if(m.model&&R.MotorModel)j.configureMotorModel(m.model==='force'?R.MotorModel.ForceBased:R.MotorModel.AccelerationBased);
+    const gain=m.factor!=null?m.factor:m.maxForce!=null?m.maxForce:1;
+    if(m.targetPosition!=null)j.configureMotor(m.targetPosition,m.targetVelocity||0,m.stiffness==null?gain*10:m.stiffness,m.damping==null?gain:m.damping);
+    else j.configureMotorVelocity(m.targetVelocity||0,gain);
+    this.bodyA&&!this.bodyA.removed&&this.bodyA.rigidBody.wakeUp();this.bodyB&&!this.bodyB.removed&&this.bodyB.rigidBody.wakeUp();return this;}
+  /* Hinge only: rotation of B relative to A about the joint axis since creation, radians. */
+  angle(){this._j();if(this.type!=='hinge')return 0;return this._rawAngle()-this._angle0;}
+  _rawAngle(){const T=this.physics.THREE,qa=this.bodyA._curQ,qb=this.bodyB._curQ,r=this.physics._tq3.copy(qa).invert().multiply(qb),a=this.axis;
+    let ang=2*Math.atan2(r.x*a.x+r.y*a.y+r.z*a.z,r.w);if(ang>Math.PI)ang-=2*Math.PI;if(ang<-Math.PI)ang+=2*Math.PI;return ang;}
+  dispose(){if(this.disposed)return;this.disposed=true;const p=this.physics;
+    if(p.world&&this.joint&&this.bodyA&&!this.bodyA.removed&&this.bodyB&&!this.bodyB.removed)p.world.removeImpulseJoint(this.joint,true);
+    p.joints.delete(this);for(const b of [this.bodyA,this.bodyB])if(b&&b._joints)b._joints.delete(this);this.joint=null;
+    if(this._anchor&&!this._anchor.removed&&p.world)p.remove(this._anchor);this._anchor=null;}
+}
+
+/* ---------- kinematic character controller ---------- */
+/* Capsule on a kinematic position-based body moved by Rapier's KinematicCharacterController:
+   sliding along walls, climbing slopes up to maxSlope, auto-stepping, snapping to the ground and pushing
+   dynamic bodies. The object origin is the feet; its rotation is left to the game (facing). */
+class CharacterController{
+  constructor(physics,object,o={}){
+    const T=physics.THREE,R=physics.RAPIER;this.physics=physics;this.object=object||null;
+    this.radius=o.radius==null?.35:o.radius;this.height=Math.max(o.height==null?1.5:o.height,this.radius*2+1e-3);this.halfHeight=Math.max(0,this.height/2-this.radius);
+    this.maxSlope=o.maxSlope==null?45*DEG:o.maxSlope;this.stepHeight=o.stepHeight==null?.35:o.stepHeight;this.snapToGround=o.snapToGround==null?.3:o.snapToGround;
+    this.slideOnSlopes=o.slideOnSlopes!==false;this.offset=o.offset==null?.02:o.offset;this.coyoteTime=o.coyoteTime==null?.12:o.coyoteTime;
+    this.gravity=o.gravity==null?physics.gravity.y:o.gravity;this.maxFallSpeed=o.maxFallSpeed==null?55:o.maxFallSpeed;this.fly=!!o.fly;
+    this.position=new T.Vector3();this.velocity=new T.Vector3();this.verticalVelocity=0;this.grounded=false;this.airTime=0;this.collisions=[];this.disposed=false;
+    this._center=new T.Vector3();this._pending=false;this._jump=null;this._desired={x:0,y:0,z:0};this._coll=R.CharacterCollision?new R.CharacterCollision():undefined;this._collPool=[];
+    if(object){object.updateWorldMatrix(true,false);object.matrixWorld.decompose(this.position,physics._tq,physics._t3);}else readVec(o.position,this.position);
+    this._center.copy(this.position);this._center.y+=this.height/2;
+    const desc=R.ColliderDesc.capsule(this.halfHeight,this.radius).setFriction(o.friction==null?0:o.friction);
+    if(o.groups!=null){const g=interactionGroups(o.groups);desc.setCollisionGroups(g).setSolverGroups(g);}
+    desc.setActiveEvents(R.ActiveEvents.COLLISION_EVENTS).setActiveCollisionTypes(R.ActiveCollisionTypes.ALL);
+    const r=this.radius,hh=this.halfHeight;
+    this.body=physics._makeBody(null,{type:'kinematic',position:this._center,friction:o.friction==null?0:o.friction,restitution:0,userData:o.userData||{character:this},shape:'capsule',follow:false,bounds:new T.Box3(new T.Vector3(-r,-hh-r,-r),new T.Vector3(r,hh+r,r))},[{desc}]);
+    this.body.character=this;this.body.object=this.object;this.body.syncRotation=false;this.body.objectOffset=new T.Vector3(0,-this.height/2,0);this.body._synced=!!object;
+    if(object)physics._objectBody.set(object,this.body);
+    const c=this.controller=physics.world.createCharacterController(this.offset);
+    c.setUp({x:0,y:1,z:0});c.setSlideEnabled(true);c.setMaxSlopeClimbAngle(this.maxSlope);c.setMinSlopeSlideAngle(this.slideOnSlopes?this.maxSlope:Math.PI/2);
+    if(this.stepHeight>0)c.enableAutostep(this.stepHeight,o.stepMinWidth==null?this.radius*.5:o.stepMinWidth,false);else c.disableAutostep();
+    if(this.snapToGround>0)c.enableSnapToGround(this.snapToGround);else c.disableSnapToGround();
+    c.setCharacterMass(o.mass==null?70:o.mass);this.pushDynamic=o.pushDynamic!==false;
+    this._filterGroups=o.groups!=null?interactionGroups(o.groups):undefined;
+    physics.characters.add(this);
+  }
+  get pushDynamic(){return this._push;}
+  set pushDynamic(v){this._push=!!v;if(this.controller)this.controller.setApplyImpulsesToDynamicBodies(this._push);}
+  /* Request a jump; succeeds when grounded or within coyoteTime of leaving the ground. Returns true on success. */
+  jump(speed=5){if(this.disposed)return false;if(this.grounded||this.airTime<=this.coyoteTime){this._jump=speed;return true;}return false;}
+  /* desiredVelocity: world XZ velocity (m/s); Y is ignored unless fly:true. Gravity and jumps are integrated here.
+     dt is scaled by physics.timeScale; while the world is paused this is a no-op. */
+  move(desiredVelocity,dt){
+    if(this.disposed)throw new Error('KE.Physics3D: character has been disposed');
+    const p=this.physics,rb=this.body.rigidBody,c=this.controller;if(p.paused)return this;
+    dt=(dt>0?Math.min(dt,.1):p.fixedStep)*p.timeScale;if(!(dt>0))return this;
+    const v=readVec(desiredVelocity,p._t1);
+    if(this._pending){rb.setTranslation(setXYZ(p._a,this._center),true);p.world.propagateModifiedBodyPositionsToColliders();}
+    let vy;
+    if(this.fly){vy=v.y;this.verticalVelocity=vy;}
+    else{if(this._jump!=null){this.verticalVelocity=this._jump;this._jump=null;this.grounded=false;this.airTime=this.coyoteTime+1;}
+      this.verticalVelocity=Math.max(this.verticalVelocity+this.gravity*dt,-this.maxFallSpeed);vy=this.verticalVelocity;}
+    if(vy>0&&c.snapToGroundEnabled())c.disableSnapToGround();else if(vy<=0&&this.snapToGround>0&&!c.snapToGroundEnabled())c.enableSnapToGround(this.snapToGround);
+    const d=this._desired;d.x=v.x*dt;d.y=vy*dt;d.z=v.z*dt;
+    if(p._queriesDirty&&p.autoUpdateQueries)p.updateQueries();
+    c.computeColliderMovement(this.body.collider,d,p.RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,this._filterGroups);
+    const m=c.computedMovement();
+    this.grounded=c.computedGrounded();
+    if(!this.fly){if(this.grounded){this.airTime=0;if(this.verticalVelocity<0)this.verticalVelocity=0;}else{this.airTime+=dt;if(vy>0&&m.y<d.y*.5-1e-5)this.verticalVelocity=0;}}
+    this._center.x+=m.x;this._center.y+=m.y;this._center.z+=m.z;
+    rb.setNextKinematicTranslation(setXYZ(p._a,this._center));this._pending=true;
+    this.velocity.set(m.x/dt,m.y/dt,m.z/dt);
+    this.position.set(this._center.x,this._center.y-this.height/2,this._center.z);
+    // collisions reported by the controller this move
+    const n=c.numComputedCollisions();this.collisions.length=0;
+    for(let i=0;i<n;i++){const hit=c.computedCollision(i,this._coll);if(!hit||!hit.collider)continue;let rec=this._collPool[i];if(!rec)rec=this._collPool[i]={body:null,normal:new p.THREE.Vector3(),point:new p.THREE.Vector3()};
+      rec.body=p._colliderBody.get(hit.collider.handle)||null;rec.normal.set(hit.normal1.x,hit.normal1.y,hit.normal1.z);rec.point.set(hit.witness1.x,hit.witness1.y,hit.witness1.z);this.collisions.push(rec);}
+    return this;
+  }
+  /* Instant placement (feet position). */
+  teleport(pos){const p=this.physics;readVec(pos,this.position);this._center.copy(this.position);this._center.y+=this.height/2;
+    this.body.rigidBody.setTranslation(setXYZ(p._a,this._center),true);p.world.propagateModifiedBodyPositionsToColliders();this._pending=false;p._queriesDirty=true;
+    this.verticalVelocity=0;this.velocity.set(0,0,0);this.body._curP.copy(this._center);this.body._prevP.copy(this._center);p._writeBody(this.body,1);return this;}
+  dispose(){if(this.disposed)return;this.disposed=true;const p=this.physics;
+    if(p.world){p.world.removeCharacterController(this.controller);if(!this.body.removed)p.remove(this.body);}
+    p.characters.delete(this);this.controller=null;}
+}
+
+/* ---------- raycast vehicle ---------- */
+class Vehicle{
+  constructor(physics,chassis,o={}){
+    const T=physics.THREE;this.physics=physics;this.chassis=chassis;this.disposed=false;
+    const c=this.controller=physics.world.createVehicleController(chassis.rigidBody);
+    c.indexUpAxis=1;c.setIndexForwardAxis=o.forwardAxis==null?2:o.forwardAxis;
+    this.wheels=[];
+    for(const w of o.wheels||[]){const i=this.wheels.length,pos=readVec(w.position,new T.Vector3()),dir=readVec(w.direction||[0,-1,0],new T.Vector3()),axle=readVec(w.axle||[-1,0,0],new T.Vector3());
+      const rest=w.suspensionRestLength==null?.3:w.suspensionRestLength,radius=w.radius==null?.35:w.radius;
+      c.addWheel(setXYZ({},pos),setXYZ({},dir),setXYZ({},axle),rest,radius);
+      c.setWheelSuspensionStiffness(i,w.suspensionStiffness==null?30:w.suspensionStiffness);c.setWheelSuspensionCompression(i,w.suspensionCompression==null?4.4:w.suspensionCompression);
+      c.setWheelSuspensionRelaxation(i,w.suspensionRelaxation==null?2.3:w.suspensionRelaxation);c.setWheelMaxSuspensionTravel(i,w.maxSuspensionTravel==null?.3:w.maxSuspensionTravel);
+      c.setWheelMaxSuspensionForce(i,w.maxSuspensionForce==null?1e5:w.maxSuspensionForce);c.setWheelFrictionSlip(i,w.frictionSlip==null?2.5:w.frictionSlip);
+      c.setWheelSideFrictionStiffness(i,w.sideFrictionStiffness==null?1:w.sideFrictionStiffness);
+      this.wheels.push({index:i,position:pos,direction:dir.normalize(),axle:axle.normalize(),radius,steering:!!w.steering,drive:w.drive!==false,brake:w.brake!==false,object:w.object||null,spin:0});}
+    this._tq=new T.Quaternion();this._tq2=new T.Quaternion();this._tv=new T.Vector3();this._tm=new T.Matrix4();this._up=new T.Vector3(0,1,0);
+    physics.vehicles.add(this);
+  }
+  setEngineForce(f){for(const w of this.wheels)this.controller.setWheelEngineForce(w.index,w.drive?f:0);this.chassis.rigidBody.wakeUp();return this;}
+  setSteering(angle){for(const w of this.wheels)this.controller.setWheelSteering(w.index,w.steering?angle:0);return this;}
+  setBrake(b){for(const w of this.wheels)this.controller.setWheelBrake(w.index,w.brake?b:0);return this;}
+  get speed(){return this.controller?this.controller.currentVehicleSpeed():0;}
+  wheelInContact(i){return this.controller.wheelIsInContact(i);}
+  _update(dt){this.controller.updateVehicle(dt,this.physics.RAPIER.QueryFilterFlags.EXCLUDE_SENSORS);}
+  /* Place wheel objects: chassis-local connection point + suspension length along the wheel direction, steering about up, spin about the axle. */
+  _sync(){const c=this.controller,ch=this.chassis;
+    for(const w of this.wheels){if(!w.object)continue;const len=c.wheelSuspensionLength(w.index);const s=len==null?0:len;
+      const o=w.object,lp=this._tv.copy(w.direction).multiplyScalar(s).add(w.position);
+      const q=this._tq.setFromAxisAngle(this._up,c.wheelSteering(w.index)||0).multiply(this._tq2.setFromAxisAngle(w.axle,c.wheelRotation(w.index)||0));
+      if(o.parent===ch.object){o.position.copy(lp);o.quaternion.copy(q);}
+      else{const cp=this._cp||(this._cp=lp.clone()),cq=this._cq||(this._cq=q.clone());this.physics._pose(ch,this.physics.alpha,cp,cq);
+        lp.applyQuaternion(cq).add(cp);q.premultiply(cq);o.quaternion.copy(this.physics._setWorldPose(o,lp,q));}}}
+  dispose(){if(this.disposed)return;this.disposed=true;if(this.physics.world)this.physics.world.removeVehicleController(this.controller);this.physics.vehicles.delete(this);this.controller=null;}
+}
+
+/* ---------- the physics world ---------- */
+class PhysicsWorld{
+  constructor(THREE,R,o={}){
+    this.THREE=THREE;this.RAPIER=R;
+    const g=readVec(o.gravity==null?[0,-9.81,0]:o.gravity,new THREE.Vector3());this.gravity=g;
+    this.world=new R.World({x:g.x,y:g.y,z:g.z});
+    this.fixedStep=o.fixedStep>0?o.fixedStep:1/60;this.world.timestep=this.fixedStep;
+    if(o.solverIterations>0)this.world.numSolverIterations=Math.round(o.solverIterations);
+    this.maxSubSteps=Math.max(1,Math.round(o.maxSubSteps||4));this.maxDelta=o.maxDelta>0?o.maxDelta:.25;this.interpolate=o.interpolate!==false;
+    this.eventQueue=new R.EventQueue(true);this.events=new KE.Events();this.scene=o.scene||null;
+    this.timeScale=1;this.paused=false;this.autoUpdateQueries=o.autoUpdateQueries!==false;this._queriesDirty=false;this.time=0;this.accumulator=0;this.alpha=1;this.droppedTime=0;this.stepCount=0;this.lastSubSteps=0;this.disposed=false;
+    this.maxDebris=o.maxDebris!=null?o.maxDebris:Math.round(64+192*clamp(KE.settings&&Number.isFinite(KE.settings.vfx)?KE.settings.vfx:1,0,1));this.defaults={friction:.6,restitution:.1,density:1,...(o.defaults||{})};
+    this.bodies=new Map();this._colliderBody=new Map();this._objectBody=new WeakMap();this._sensors=new Set();
+    this._live=[];this._liveNext=[];this._settle=[];this._followers=new Set();this._forceBodies=new Set();this._debris=[];this._buoyancy=new Map();this._breakQueue=[];
+    this.characters=new Set();this.joints=new Set();this.vehicles=new Set();
+    this._stepMs=0;this.lastStepMs=0;this._contacts=0;this._awake=0;this._fractureSeed=1;this._debug=null;
+    // temps (no per-step allocation on the JS side)
+    this._t1=new THREE.Vector3();this._t2=new THREE.Vector3();this._t3=new THREE.Vector3();this._t4=new THREE.Vector3();this._tp=new THREE.Vector3();this._ts=new THREE.Vector3();
+    this._tq=new THREE.Quaternion();this._tq2=new THREE.Quaternion();this._tq3=new THREE.Quaternion();this._tm=new THREE.Matrix4();this._tm2=new THREE.Matrix4();
+    this._a={x:0,y:0,z:0};this._b={x:0,y:0,z:0};this._q={x:0,y:0,z:0,w:1};
+    this._evH1=new Float64Array(64);this._evH2=new Float64Array(64);this._evS=new Uint8Array(64);this._evN=0;
+    this._collisionCb=(h1,h2,started)=>{let n=this._evN;if(n>=this._evH1.length){const grow=(A,C)=>{const B=new C(A.length*2);B.set(A);return B;};this._evH1=grow(this._evH1,Float64Array);this._evH2=grow(this._evH2,Float64Array);this._evS=grow(this._evS,Uint8Array);}
+      this._evH1[n]=h1;this._evH2[n]=h2;this._evS[n]=started?1:0;this._evN=n+1;};
+    this._forceEvents=[];this._forceCb=e=>{this._forceEvents.push({h1:e.collider1(),h2:e.collider2(),magnitude:e.totalForceMagnitude(),force:e.totalForce(),maxDirection:e.maxForceDirection()});};
+    // Every active body's pose is tracked (object or not): getPosition(), joints, fracture and explode read it.
+    this._activeCb=rb=>{const b=this.bodies.get(rb.handle);if(!b)return;this._awake++;
+      b._prevP.copy(b._curP);b._prevQ.copy(b._curQ);const t=rb.translation(),r=rb.rotation();b._curP.set(t.x,t.y,t.z);b._curQ.set(r.x,r.y,r.z,r.w);
+      if(b._stamp!==this.stepCount){b._stamp=this.stepCount;this._liveNext.push(b);}};
+    if(o.debug&&this.scene)this.debug(this.scene,true);
+  }
+  _alive(){if(this.disposed)throw new Error('KE.Physics3D: world has been disposed');}
+  on(name,fn){return this.events.on(name,fn);}
+  once(name,fn){return this.events.once(name,fn);}
+  off(name,fn){this.events.off(name,fn);}
+  pause(v=true){this.paused=!!v;return this;}
+  setFixedStep(h){if(!(h>0))throw new RangeError('KE.Physics3D: fixed step must be positive');this.fixedStep=h;this.world.timestep=h;return this;}
+  bodyOf(object){return this._objectBody.get(object)||null;}
+  getBodies(){return [...this.bodies.values()];}
+  setGravity(v){readVec(v,this.gravity);this.world.gravity={x:this.gravity.x,y:this.gravity.y,z:this.gravity.z};return this;}
+
+  /* ----- body frame & fitting ----- */
+  _frame(object,o){const T=this.THREE,P=new T.Vector3(),Q=new T.Quaternion(),S=new T.Vector3(1,1,1);
+    if(object){object.updateWorldMatrix(true,true);object.matrixWorld.decompose(P,Q,S);}
+    if(o.position!=null)readVec(o.position,P);if(o.quaternion!=null||o.rotation!=null)readQuat(o.quaternion||o.rotation,Q,T);
+    const inv=new T.Matrix4().compose(P,Q,new T.Vector3(1,1,1)).invert();return {P,Q,S,inv};}
+  _rel(mesh,frame,out){return out.multiplyMatrices(frame.inv,mesh.matrixWorld);}
+  _boundsInFrame(meshes,frame,box){const T=this.THREE,m=new T.Matrix4(),v=new T.Vector3();box.makeEmpty();
+    for(const mesh of meshes){const g=mesh.geometry;if(!g.boundingBox)g.computeBoundingBox();const bb=g.boundingBox;if(bb.isEmpty())continue;this._rel(mesh,frame,m);
+      for(let i=0;i<8;i++){v.set(i&1?bb.max.x:bb.min.x,i&2?bb.max.y:bb.min.y,i&4?bb.max.z:bb.min.z).applyMatrix4(m);box.expandByPoint(v);}}
+    return box;}
+  _pointsInFrame(meshes,frame){const T=this.THREE,m=new T.Matrix4(),v=new T.Vector3();let n=0;for(const mesh of meshes)n+=mesh.geometry.attributes.position.count;
+    const out=new Float32Array(n*3);let k=0;
+    for(const mesh of meshes){const pos=mesh.geometry.attributes.position;this._rel(mesh,frame,m);for(let i=0;i<pos.count;i++){v.fromBufferAttribute(pos,i).applyMatrix4(m);out[k++]=v.x;out[k++]=v.y;out[k++]=v.z;}}
+    return out;}
+  /* Sphere-likeness: all vertices near one radius and the box near-cubic. */
+  _isRound(mesh,frame){const T=this.THREE,m=this._rel(mesh,frame,new T.Matrix4()),pos=mesh.geometry.attributes.position,v=new T.Vector3(),box=new T.Box3();
+    for(let i=0;i<pos.count;i++)box.expandByPoint(v.fromBufferAttribute(pos,i).applyMatrix4(m));
+    const size=box.getSize(new T.Vector3()),c=box.getCenter(new T.Vector3()),mx=Math.max(size.x,size.y,size.z),mn=Math.min(size.x,size.y,size.z);
+    if(!(mx>0)||mn/mx<.85)return false;let maxD=0;for(let i=0;i<pos.count;i++)maxD=Math.max(maxD,v.fromBufferAttribute(pos,i).applyMatrix4(m).distanceTo(c));
+    return maxD/(mx/2)<1.12;}
+  /* Axis with the most circular cross-section (ties: longest); used for capsules and cylinders. */
+  _roundAxis(size,o){if(o.axis)return {x:0,y:1,z:2}[o.axis];const s=[size.x,size.y,size.z];let best=1,score=Infinity;
+    for(let a=0;a<3;a++){const b=s[(a+1)%3],c=s[(a+2)%3],d=Math.abs(b-c)/Math.max(b,c,1e-9)-s[a]*1e-3/Math.max(...s);if(d<score-1e-6||(Math.abs(d-score)<=1e-6&&a===1)){score=d;best=a;}}return best;}
+  _axisQuat(axis){const T=this.THREE;if(axis===1)return null;return new T.Quaternion().setFromUnitVectors(new T.Vector3(0,1,0),axis===0?new T.Vector3(1,0,0):new T.Vector3(0,0,1));}
+  _primitiveDesc(kind,box,o,rot){const R=this.RAPIER,T=this.THREE,size=box.getSize(new T.Vector3()),c=box.getCenter(new T.Vector3());let desc,q=rot?rot.clone():null;
+    if(kind==='sphere'){const r=o.radius!=null?o.radius:Math.max(size.x,size.y,size.z)/2;desc=R.ColliderDesc.ball(Math.max(r,1e-4));}
+    else if(kind==='capsule'||kind==='cylinder'||kind==='cone'){const axis=this._roundAxis(size,o),s=[size.x,size.y,size.z],half=s[axis]/2,r=o.radius!=null?o.radius:Math.max(s[(axis+1)%3],s[(axis+2)%3])/2;
+      const hh=o.halfHeight!=null?o.halfHeight:kind==='capsule'?Math.max(0,half-r):half;
+      desc=kind==='capsule'?R.ColliderDesc.capsule(Math.max(hh,0),Math.max(r,1e-4)):kind==='cone'?R.ColliderDesc.cone(Math.max(hh,1e-4),Math.max(r,1e-4)):R.ColliderDesc.cylinder(Math.max(hh,1e-4),Math.max(r,1e-4));
+      const aq=this._axisQuat(axis);if(aq)q=q?q.multiply(aq):aq;}
+    else{const he=o.halfExtents!=null?readVec(o.halfExtents,new T.Vector3()):size.multiplyScalar(.5);desc=o.roundRadius>0?R.ColliderDesc.roundCuboid(Math.max(he.x-o.roundRadius,1e-4),Math.max(he.y-o.roundRadius,1e-4),Math.max(he.z-o.roundRadius,1e-4),o.roundRadius):R.ColliderDesc.cuboid(Math.max(he.x,1e-4),Math.max(he.y,1e-4),Math.max(he.z,1e-4));}
+    const off=o.offset!=null?readVec(o.offset,new T.Vector3()):c;
+    if(rot&&o.offset==null)off.copy(c);
+    desc.setTranslation(off.x,off.y,off.z);if(q)desc.setRotation({x:q.x,y:q.y,z:q.z,w:q.w});return desc;}
+  /* Per-mesh oriented primitive in the body frame (used for compound groups). */
+  _meshPrimitive(mesh,frame,kind,o){const T=this.THREE,m=this._rel(mesh,frame,new T.Matrix4()),t=new T.Vector3(),q=new T.Quaternion(),s=new T.Vector3();m.decompose(t,q,s);
+    const g=mesh.geometry;if(!g.boundingBox)g.computeBoundingBox();const bb=g.boundingBox.clone();bb.min.multiply(s);bb.max.multiply(s);
+    const lo=bb.min.clone().min(bb.max),hi=bb.max.clone().max(bb.min);bb.set(lo,hi);const c=bb.getCenter(new T.Vector3()).applyQuaternion(q).add(t),size=bb.getSize(new T.Vector3());
+    const box=new T.Box3().setFromCenterAndSize(c,size);return this._primitiveDesc(kind,box,{...o,offset:undefined,halfExtents:undefined,radius:undefined,halfHeight:undefined},q);}
+
+  /* ----- body creation core ----- */
+  _makeBody(object,o,shapes){
+    this._alive();const R=this.RAPIER,T=this.THREE,type=o.type||'dynamic';if(!TYPES.includes(type))throw new RangeError('KE.Physics3D: unknown body type '+type);
+    const frame=o._frame||this._frame(object,o);
+    const desc=type==='fixed'?R.RigidBodyDesc.fixed():type==='kinematic'?R.RigidBodyDesc.kinematicPositionBased():type==='kinematicVelocity'?R.RigidBodyDesc.kinematicVelocityBased():R.RigidBodyDesc.dynamic();
+    desc.setTranslation(frame.P.x,frame.P.y,frame.P.z).setRotation({x:frame.Q.x,y:frame.Q.y,z:frame.Q.z,w:frame.Q.w});
+    if(o.linearDamping!=null)desc.setLinearDamping(o.linearDamping);if(o.angularDamping!=null)desc.setAngularDamping(o.angularDamping);
+    if(o.ccd)desc.setCcdEnabled(true);if(o.canSleep===false)desc.setCanSleep(false);if(o.gravityScale!=null)desc.setGravityScale(o.gravityScale);
+    if(o.lockRotations)desc.lockRotations();if(o.dominance!=null)desc.setDominanceGroup(o.dominance);if(o.solverIterations>0)desc.setAdditionalSolverIterations(o.solverIterations);
+    if(o.velocity!=null){const v=readVec(o.velocity,this._t1);desc.setLinvel(v.x,v.y,v.z);}if(o.angularVelocity!=null){const v=readVec(o.angularVelocity,this._t1);desc.setAngvel({x:v.x,y:v.y,z:v.z});}
+    if(o.sleeping)desc.setSleeping(true);
+    const rb=this.world.createRigidBody(desc),colliders=[],groups=o.groups!=null?interactionGroups(o.groups):null,d=this.defaults;
+    const events=o.events!==false&&(type!=='fixed'||o.sensor||o.onContact||o.onTrigger);
+    for(const s of shapes){const cd=s.desc;
+      cd.setFriction(o.friction==null?d.friction:o.friction).setRestitution(o.restitution==null?d.restitution:o.restitution);
+      if(o.mass==null)cd.setDensity(o.density==null?d.density:o.density);
+      if(o.sensor){cd.setSensor(true);cd.setActiveCollisionTypes(R.ActiveCollisionTypes.ALL);}
+      if(groups!=null){cd.setCollisionGroups(groups);cd.setSolverGroups(groups);}
+      let ev=events?R.ActiveEvents.COLLISION_EVENTS:0;if(o.contactForceThreshold!=null){ev|=R.ActiveEvents.CONTACT_FORCE_EVENTS;cd.setContactForceEventThreshold(o.contactForceThreshold);this._hasForceBodies=true;}
+      if(ev)cd.setActiveEvents(ev);
+      colliders.push(this.world.createCollider(cd,rb));}
+    if(o.mass!=null&&o.mass>0&&colliders.length){let total=0;const vols=colliders.map(c=>{const v=Math.max(c.volume()||0,0);total+=v;return v;});
+      colliders.forEach((c,i)=>c.setMass(total>0?o.mass*vols[i]/total:o.mass/colliders.length));rb.recomputeMassPropertiesFromColliders();}
+    const body=new Body(this,rb,colliders,object,type,o);
+    body._curP.copy(frame.P);body._prevP.copy(frame.P);body._curQ.copy(frame.Q);body._prevQ.copy(frame.Q);
+    if(o.bounds)body.localBounds.copy(o.bounds);else body.localBounds.setFromCenterAndSize(this._t1.set(0,0,0),this._t2.set(.5,.5,.5));
+    body.radius=Math.max(body.localBounds.min.length(),body.localBounds.max.length(),1e-3);
+    this.bodies.set(rb.handle,body);this._queriesDirty=true;for(const c of colliders){this._colliderBody.set(c.handle,body);if(o.sensor)this._sensors.add(c.handle);}
+    if(object){this._objectBody.set(object,body);
+      if(type==='kinematic'&&o.follow!==false){body._follow=true;this._followers.add(body);}else if(type!=='fixed')body._synced=true;}
+    return body;
+  }
+  _shapeOpts(o,kind,box){return {...o,shape:kind,bounds:box};}
+  _requireSize(object,o,box){if(box.isEmpty()){if(o.halfExtents==null&&o.radius==null)throw new TypeError('KE.Physics3D: cannot fit a collider: object has no mesh geometry; pass halfExtents/radius');box.setFromCenterAndSize(this._t1.set(0,0,0),this._t2.set(1,1,1));}}
+  _fitted(kind,object,o){
+    const T=this.THREE,frame=this._frame(object,o),meshes=collectMeshes(object),box=this._boundsInFrame(meshes,frame,new T.Box3());this._requireSize(object,o,box);
+    if(o.halfExtents!=null){const he=readVec(o.halfExtents,new T.Vector3()),c=o.offset!=null?readVec(o.offset,new T.Vector3()):new T.Vector3();box.set(c.clone().sub(he),c.clone().add(he));}
+    if(o.radius!=null&&kind==='sphere'){const c=o.offset!=null?readVec(o.offset,new T.Vector3()):box.getCenter(new T.Vector3());box.setFromCenterAndSize(c,new T.Vector3(2,2,2).multiplyScalar(o.radius));}
+    if(!meshes.length&&(kind==='capsule'||kind==='cylinder'||kind==='cone')&&o.radius!=null){const r=o.radius,hh=o.halfHeight||0,c=o.offset!=null?readVec(o.offset,new T.Vector3()):new T.Vector3(),ext=kind==='capsule'?hh+r:hh;box.set(new T.Vector3(c.x-r,c.y-ext,c.z-r),new T.Vector3(c.x+r,c.y+ext,c.z+r));}
+    const desc=this._primitiveDesc(kind,box,o,null);
+    return this._makeBody(object,{...this._shapeOpts(o,kind,box),_frame:frame},[{desc}]);}
+  addBox(object,o={}){return this._fitted('box',object,o);}
+  addSphere(object,o={}){return this._fitted('sphere',object,o);}
+  addCapsule(object,o={}){return this._fitted('capsule',object,o);}
+  addCylinder(object,o={}){return this._fitted('cylinder',object,o);}
+  addCone(object,o={}){return this._fitted('cone',object,o);}
+  /* Convex hull of every mesh vertex under the object, in the (scaled) body frame. compound:true gives one hull per mesh. */
+  addConvex(object,o={}){
+    const R=this.RAPIER,T=this.THREE,frame=this._frame(object,o),meshes=collectMeshes(object);if(!meshes.length&&!o.points)throw new TypeError('KE.Physics3D.addConvex: object has no mesh geometry');
+    const box=new T.Box3(),shapes=[];const groups=o.compound&&meshes.length>1?meshes.map(m=>[m]):[meshes];
+    for(const set of groups){const pts=o.points?Float32Array.from(o.points):this._pointsInFrame(set,frame);
+      if(o.offset!=null){const off=readVec(o.offset,this._t1);for(let i=0;i<pts.length;i+=3){pts[i]+=off.x;pts[i+1]+=off.y;pts[i+2]+=off.z;}}
+      const b=new T.Box3();for(let i=0;i<pts.length;i+=3)b.expandByPoint(this._t2.set(pts[i],pts[i+1],pts[i+2]));box.union(b);
+      let desc=o.roundRadius>0?R.ColliderDesc.roundConvexHull(pts,o.roundRadius):R.ColliderDesc.convexHull(pts);
+      if(!desc)desc=this._primitiveDesc('box',b,{},null);shapes.push({desc});}
+    return this._makeBody(object,{...this._shapeOpts(o,'convex',box),_frame:frame},shapes);
+  }
+  /* Static triangle mesh of all meshes under the object (children and scale baked into the body frame). */
+  addTrimesh(object,o={}){
+    const R=this.RAPIER,T=this.THREE,type=o.type||'fixed';if(type==='dynamic')throw new RangeError('KE.Physics3D.addTrimesh: trimeshes are for fixed/kinematic bodies; use addConvex({compound:true}) for dynamic ones');
+    const frame=this._frame(object,o),meshes=collectMeshes(object);if(!meshes.length)throw new TypeError('KE.Physics3D.addTrimesh: object has no mesh geometry');
+    let nv=0,ni=0;for(const m of meshes){const g=m.geometry;nv+=g.attributes.position.count;ni+=g.index?g.index.count:g.attributes.position.count;}
+    const verts=new Float32Array(nv*3),idx=new Uint32Array(ni),mat=new T.Matrix4(),v=new T.Vector3(),box=new T.Box3();let vo=0,io=0;
+    for(const m of meshes){const g=m.geometry,pos=g.attributes.position,base=vo;this._rel(m,frame,mat);const flip=mat.determinant()<0;
+      for(let i=0;i<pos.count;i++){v.fromBufferAttribute(pos,i).applyMatrix4(mat);verts[vo*3]=v.x;verts[vo*3+1]=v.y;verts[vo*3+2]=v.z;box.expandByPoint(v);vo++;}
+      const cnt=g.index?g.index.count:pos.count;for(let i=0;i+2<cnt;i+=3){const a=g.index?g.index.getX(i):i,b=g.index?g.index.getX(i+1):i+1,c=g.index?g.index.getX(i+2):i+2;
+        idx[io++]=base+a;idx[io++]=base+(flip?c:b);idx[io++]=base+(flip?b:c);}}
+    // same workaround as heightfields: Rapier's triangle ray test is not watertight, so rays through exact vertex
+    // coordinates (common for grid-built levels) can slip between triangles; shift the mesh by ~1e-4 units.
+    if(o.gridOffset!==false&&vo){const k=Math.max(1,Math.max(Math.abs(box.min.x),Math.abs(box.max.x),Math.abs(box.min.z),Math.abs(box.max.z),Math.abs(box.min.y),Math.abs(box.max.y))/50)*1e-4;
+      for(let i=0;i<vo*3;i+=3){verts[i]+=1.03*k;verts[i+1]+=.61*k;verts[i+2]+=.83*k;}}
+    const flags=o.flags!=null?o.flags:(o.fixInternalEdges&&R.TriMeshFlags?R.TriMeshFlags.FIX_INTERNAL_EDGES:undefined);
+    const desc=flags!=null?R.ColliderDesc.trimesh(verts,idx.subarray(0,io),flags):R.ColliderDesc.trimesh(verts,idx.subarray(0,io));
+    return this._makeBody(object,{...this._shapeOpts({...o,type},'trimesh',box),_frame:frame},[{desc}]);
+  }
+  /* shape:'auto' fits spheres to round near-cubic meshes and boxes otherwise; groups with several meshes become compounds. */
+  addFromObject(object,o={}){
+    const shape=o.shape||'auto';if(shape==='trimesh')return this.addTrimesh(object,o);
+    const meshes=collectMeshes(object);if(!meshes.length)throw new TypeError('KE.Physics3D.addFromObject: object has no mesh geometry');
+    if(meshes.length===1&&meshes[0]===object){if(shape==='convex')return this.addConvex(object,o);
+      if(shape==='auto'){const frame=this._frame(object,o);return this._fitted(this._isRound(object,frame)?'sphere':'box',object,o);}return this._fitted(shape,object,o);}
+    if(o.compound===false){if(shape==='convex')return this.addConvex(object,o);return this._fitted(shape==='auto'?'box':shape,object,o);}
+    if(shape==='convex')return this.addConvex(object,{...o,compound:true});
+    const T=this.THREE,frame=this._frame(object,o),box=this._boundsInFrame(meshes,frame,new T.Box3()),shapes=[];
+    for(const m of meshes){const kind=shape==='auto'?(this._isRound(m,frame)?'sphere':'box'):shape;shapes.push({desc:this._meshPrimitive(m,frame,kind,o)});}
+    return this._makeBody(object,{...this._shapeOpts(o,'compound',box),_frame:frame},shapes);
+  }
+  /* Fixed heightfield sampled from heightAt(x,z) on a (resolutionX+1)x(resolutionZ+1) grid covering [minX,minX+sizeX]x[minZ,minZ+sizeZ]. */
+  addHeightfield(o={}){
+    const R=this.RAPIER,T=this.THREE;if(typeof o.heightAt!=='function')throw new TypeError('KE.Physics3D.addHeightfield: heightAt(x,z) required');
+    const minX=o.minX||0,minZ=o.minZ||0,sizeX=o.sizeX,sizeZ=o.sizeZ;if(!(sizeX>0&&sizeZ>0))throw new RangeError('KE.Physics3D.addHeightfield: positive sizeX/sizeZ required');
+    const res=o.resolution||128,nx=Math.max(1,Math.round(o.resolutionX||res)),nz=Math.max(1,Math.round(o.resolutionZ||res));
+    const h=new Float32Array((nx+1)*(nz+1));let lo=Infinity,hi=-Infinity;
+    // Rapier 0.19's heightfield raycast can miss rays running exactly along grid lines (non-watertight edge test),
+    // and games often cast at exact grid coordinates. The grid is therefore shifted by ~1e-4 of a cell; heights
+    // are sampled at the shifted positions, so the surface differs from heightAt by at most slope x offset.
+    const ox=o.gridOffset===false?0:sizeX/nx*2.1e-4,oz=o.gridOffset===false?0:sizeZ/nz*1.3e-4,x0=minX+ox,z0=minZ+oz;
+    // Rapier heightfield: rows run along Z, columns along X, column-major storage, centered on the body origin.
+    for(let j=0;j<=nx;j++)for(let i=0;i<=nz;i++){const y=o.heightAt(x0+sizeX*j/nx,z0+sizeZ*i/nz);if(!Number.isFinite(y))throw new TypeError('KE.Physics3D.addHeightfield: non-finite height');h[i+j*(nz+1)]=y;lo=Math.min(lo,y);hi=Math.max(hi,y);}
+    // optional placement (used by addTerrain for positioned/scaled terrain meshes): heights and grid live in the local frame
+    const S=o._scale||new T.Vector3(1,1,1),Q=o._quaternion||new T.Quaternion(),P=new T.Vector3(x0+sizeX/2,0,z0+sizeZ/2).multiply(S).applyQuaternion(Q);if(o._position)P.add(o._position);
+    const scale={x:sizeX*S.x,y:S.y,z:sizeZ*S.z},flags=o.fixInternalEdges!==false&&R.HeightFieldFlags?R.HeightFieldFlags.FIX_INTERNAL_EDGES:undefined;
+    const desc=flags!=null?R.ColliderDesc.heightfield(nz,nx,h,scale,flags):R.ColliderDesc.heightfield(nz,nx,h,scale);
+    const box=new T.Box3(new T.Vector3(-scale.x/2,lo*S.y,-scale.z/2),new T.Vector3(scale.x/2,hi*S.y,scale.z/2));
+    const body=this._makeBody(null,{friction:.8,restitution:0,...o,type:'fixed',position:P,quaternion:Q,shape:'heightfield',bounds:box,userData:o.userData||{heightfield:true}},[{desc}]);
+    body.heights=h;body.resolution={x:nx,z:nz};return body;
+  }
+  /* KE.terrain() meshes -> heightfield whose vertices coincide with the terrain grid (local x,z = .5 + i/sub).
+     The meshes may be translated/rotated/scaled together (the first mesh's world transform is used).
+     exact:true builds a trimesh from the rendered triangles instead (same diagonals, more memory). */
+  addTerrain(terrain,o={}){
+    if(!terrain||typeof terrain.heightAt!=='function'||!terrain.length)throw new TypeError('KE.Physics3D.addTerrain: pass the mesh array returned by KE.terrain()');
+    const T=this.THREE;
+    if(o.exact){const g=new T.Group();for(const m of terrain){m.updateWorldMatrix(true,false);const c=new T.Mesh(m.geometry,m.material);c.matrixAutoUpdate=false;c.matrix.copy(m.matrixWorld);g.add(c);}
+      const body=this.addTrimesh(g,{friction:.8,restitution:0,...o});body.object=null;this._objectBody.delete(g);body.userData.terrain=true;return body;}
+    const box=new T.Box3(),m0=terrain[0],P=new T.Vector3(),Q=new T.Quaternion(),S=new T.Vector3();
+    for(const m of terrain){if(!m.geometry.boundingBox)m.geometry.computeBoundingBox();box.union(m.geometry.boundingBox);}
+    m0.updateWorldMatrix(true,false);m0.matrixWorld.decompose(P,Q,S);
+    const sub=terrain.sub||1,sx=box.max.x-box.min.x,sz=box.max.z-box.min.z;
+    const body=this.addHeightfield({friction:.8,restitution:0,...o,heightAt:terrain.heightAt,minX:box.min.x,minZ:box.min.z,sizeX:sx,sizeZ:sz,
+      resolutionX:Math.max(1,Math.round(sx*sub)),resolutionZ:Math.max(1,Math.round(sz*sub)),_position:P,_quaternion:Q,_scale:S});
+    body.userData.terrain=true;return body;
+  }
+  /* Removes a body (and its colliders and joints). object:true also detaches the object; owned debris is always detached and its geometry disposed. */
+  remove(body,{object=false}={}){
+    if(!body||body.removed)return false;this._alive();body.removed=true;
+    // Rapier drops the body's joints with it; mark ours disposed and release private world anchors
+    if(body._joints){for(const j of [...body._joints]){j.disposed=true;this.joints.delete(j);j.joint=null;const other=j.bodyA===body?j.bodyB:j.bodyA;if(other&&other._joints)other._joints.delete(j);
+      const an=j._anchor;j._anchor=null;if(an&&an!==body&&!an.removed)this.remove(an);}body._joints=null;}
+    for(const v of [...this.vehicles])if(v.chassis===body)v.dispose();
+    if(body.character&&!body.character.disposed){body.character.disposed=true;this.world.removeCharacterController(body.character.controller);this.characters.delete(body.character);}
+    this._buoyancy.delete(body);this._followers.delete(body);this._forceBodies.delete(body);
+    for(const c of body.colliders){this._colliderBody.delete(c.handle);this._sensors.delete(c.handle);}
+    this.world.removeRigidBody(body.rigidBody);this.bodies.delete(body.id);this._queriesDirty=true;
+    if(body.object&&this._objectBody.get(body.object)===body)this._objectBody.delete(body.object);
+    if(body.owned||object){const ob=body.object;if(ob){if(ob.parent)ob.parent.remove(ob);if(body.owned&&ob.geometry)ob.geometry.dispose();}}
+    if(body.owned){const i=this._debris.indexOf(body);if(i>=0)this._debris.splice(i,1);}
+    body.rigidBody=null;body.colliders=[];body.collider=null;
+    this.events.emit('remove',body);return true;
+  }
+
+  /* ----- stepping ----- */
+  step(dt){
+    this._alive();
+    if(this.paused||!(dt>0)){this._writeTransforms();return 0;}
+    dt=Math.min(dt*this.timeScale,this.maxDelta);this.accumulator+=dt;let n=0;const h=this.fixedStep;
+    while(this.accumulator>=h-1e-9&&n<this.maxSubSteps){this._substep();this.accumulator-=h;n++;}
+    if(this.accumulator<0)this.accumulator=0;
+    if(this.accumulator>=h){const keep=this.accumulator%h;this.droppedTime+=this.accumulator-keep;this.accumulator=keep;}
+    this.alpha=this.interpolate?clamp(this.accumulator/h,0,1):1;
+    this._writeTransforms();
+    for(const v of this.vehicles)v._sync();
+    if(n&&this._debug)this._updateDebug();
+    this.lastSubSteps=n;return n;
+  }
+  _substep(){
+    const h=this.fixedStep,prof=KE.profiler;
+    if(this.events.listeners.has('beforeStep'))this.events.emit('beforeStep',h,this.time);
+    if(this.vehicles.size&&this._queriesDirty&&this.autoUpdateQueries)this.updateQueries();   // wheel rays are scene queries
+    for(const b of this._followers)this._follow(b);
+    for(const rec of this._buoyancy.values())this._applyBuoyancy(rec,h);
+    for(const v of this.vehicles)v._update(h);
+    if(prof)prof.begin('physics.step');const t0=performance.now();
+    this.world.step(this.eventQueue);this._queriesDirty=false;
+    const ms=performance.now()-t0;if(prof)prof.end('physics.step');this.lastStepMs=ms;this._stepMs+=(ms-this._stepMs)*(this.stepCount?.1:1);
+    this.time+=h;this.stepCount++;
+    for(const c of this.characters)c._pending=false;
+    if(this._forceBodies.size){for(const b of this._forceBodies)if(!b.removed){b.rigidBody.resetForces(false);b.rigidBody.resetTorques(false);}this._forceBodies.clear();}
+    this._collectActive();this._dispatchEvents();
+    if(this.events.listeners.has('afterStep'))this.events.emit('afterStep',h,this.time);
+  }
+  _follow(b){const o=b.object;if(!o||b.removed)return;o.updateWorldMatrix(true,false);o.matrixWorld.decompose(this._tp,this._tq,this._ts);
+    const rb=b.rigidBody;rb.setNextKinematicTranslation(setXYZ(this._a,this._tp));const q=this._q;q.x=this._tq.x;q.y=this._tq.y;q.z=this._tq.z;q.w=this._tq.w;rb.setNextKinematicRotation(q);
+    b._prevP.copy(b._curP);b._prevQ.copy(b._curQ);b._curP.copy(this._tp);b._curQ.copy(this._tq);}
+  /* Interpolation bookkeeping: only bodies Rapier reports active are read; bodies that just went to sleep are settled once. */
+  _collectActive(){
+    const next=this._liveNext;next.length=0;this._awake=0;
+    this.world.forEachActiveRigidBody(this._activeCb);
+    for(const b of this._live)if(b._stamp!==this.stepCount&&!b.removed){b._prevP.copy(b._curP);b._prevQ.copy(b._curQ);this._settle.push(b);}
+    this._liveNext=this._live;this._live=next;
+  }
+  _writeTransforms(){const a=this.alpha;for(const b of this._live)if(!b.removed)this._writeBody(b,a);
+    if(this._settle.length){for(const b of this._settle)if(!b.removed)this._writeBody(b,1);this._settle.length=0;}}
+  _setWorldPose(o,p,q){const parent=o.parent;
+    if(parent&&!isIdentity(parent.matrixWorld)){const inv=this._tm.copy(parent.matrixWorld).invert();p.applyMatrix4(inv);parent.matrixWorld.decompose(this._t4,this._tq3,this._ts);q.premultiply(this._tq3.invert());}
+    o.position.copy(p);return q;}
+  /* Interpolated world pose of a body for the given alpha (render state between the last two steps). */
+  _pose(b,alpha,p,q){if(alpha>=1||!this.interpolate){p.copy(b._curP);q.copy(b._curQ);}else{p.lerpVectors(b._prevP,b._curP,alpha);q.copy(b._prevQ).slerp(b._curQ,alpha);}return p;}
+  _writeBody(b,alpha,force){const o=b.object;if(!o||(!b._synced&&!force))return;
+    const p=this._tp,q=this._tq;this._pose(b,alpha,p,q);
+    if(b.objectOffset)p.add(this._t3.copy(b.objectOffset).applyQuaternion(b.syncRotation?q:this._tq2.set(0,0,0,1)));
+    this._setWorldPose(o,p,q);if(b.syncRotation)o.quaternion.copy(q);}
+
+  /* ----- events ----- */
+  _dispatchEvents(){
+    this._evN=0;this.eventQueue.drainCollisionEvents(this._collisionCb);
+    const wantForces=this.events.listeners.has('contactForce')||this._hasForceBodies;
+    if(wantForces){this._forceEvents.length=0;this.eventQueue.drainContactForceEvents(this._forceCb);}
+    const L=this.events.listeners,wantContact=L.has('contact'),wantTrigger=L.has('trigger');
+    for(let i=0;i<this._evN;i++){const h1=this._evH1[i],h2=this._evH2[i],started=this._evS[i]===1,s1=this._sensors.has(h1),s2=this._sensors.has(h2);
+      if(!s1&&!s2)this._contacts=Math.max(0,this._contacts+(started?1:-1));
+      const a=this._colliderBody.get(h1),b=this._colliderBody.get(h2);if(!a||!b||a.removed||b.removed)continue;
+      if(s1||s2){const sensor=s1?a:b,other=s1?b:a;if(wantTrigger)this.events.emit('trigger',sensor,other,started);if(sensor.onTrigger&&!sensor.removed)sensor.onTrigger(other,started);
+        if(other!==sensor&&other.onTrigger&&!other.removed)other.onTrigger(sensor,started);continue;}
+      const brk=started&&(a._breakable||b._breakable);
+      if(!wantContact&&!a.onContact&&!b.onContact&&!brk)continue;
+      const info={started,impulse:0,point:null,normal:null,colliderA:h1,colliderB:h2};
+      if(started)this._contactInfo(h1,h2,info);
+      if(brk){this._queueBreak(a,info,-1);this._queueBreak(b,info,1);}
+      if(wantContact)this.events.emit('contact',a,b,info);
+      if(a.onContact&&!a.removed)a.onContact(b,info);if(b.onContact&&!b.removed&&!a.removed)b.onContact(a,info);}
+    if(this._breakQueue.length)this._processBreaks();
+    if(wantForces)for(const e of this._forceEvents){const a=this._colliderBody.get(e.h1),b=this._colliderBody.get(e.h2);if(!a||!b||a.removed||b.removed)continue;
+      const info={magnitude:e.magnitude,force:new this.THREE.Vector3(e.force.x,e.force.y,e.force.z),direction:new this.THREE.Vector3(e.maxDirection.x,e.maxDirection.y,e.maxDirection.z)};
+      this.events.emit('contactForce',a,b,info);if(a.onContactForce)a.onContactForce(b,info);if(b.onContactForce)b.onContactForce(a,info);}
+  }
+  /* ----- impact breaking ----- */
+  /* Marks a Mesh body to fracture automatically when a contact starts with a total impulse >= threshold (N·s,
+     default 4 x mass, i.e. roughly a 4 m/s velocity change). Other options are passed to fracture();
+     impulseScale (default .35) of the contact impulse is re-applied to the pieces along the contact normal. */
+  breakable(body,o={}){
+    this._alive();if(!body||body.removed||!body.object||!body.object.isMesh)throw new TypeError('KE.Physics3D.breakable: a live body whose object is a Mesh is required');
+    const rec={body,threshold:o.threshold!=null?o.threshold:4*Math.max(body.mass,1e-3),options:o,onBreak:o.onBreak||null,queued:false};body._breakable=rec;
+    return {record:rec,dispose(){if(body._breakable===rec)body._breakable=null;}};
+  }
+  _queueBreak(body,info,sign){const rec=body._breakable;if(!rec||rec.queued||body.type!=='dynamic'||!(info.impulse>=rec.threshold))return;rec.queued=true;
+    const T=this.THREE,n=info.normal?info.normal.clone().multiplyScalar(-sign):new T.Vector3(0,1,0);
+    this._breakQueue.push({rec,point:info.point?info.point.clone():body._curP.clone(),direction:n,impulse:info.impulse});}
+  /* Fractures run after event dispatch so no body is removed while events are still being delivered. */
+  _processBreaks(){const q=this._breakQueue;
+    for(let i=0;i<q.length;i++){const e=q[i],rec=e.rec,b=rec.body;rec.queued=false;if(b.removed||b._breakable!==rec)continue;b._breakable=null;
+      const o=rec.options,scale=o.impulseScale==null?.35:o.impulseScale;
+      const pieces=this.fracture(b,{...o,point:o.point||e.point,impulse:o.impulse||e.direction.clone().multiplyScalar(e.impulse*scale)});
+      this.events.emit('break',b,pieces,e);if(rec.onBreak)rec.onBreak(pieces,e);}
+    q.length=0;}
+  _contactInfo(h1,h2,info){const c1=this.world.getCollider(h1),c2=this.world.getCollider(h2);if(!c1||!c2)return;let imp=0,px=0,py=0,pz=0,np=0,nx=0,ny=0,nz=0;
+    this.world.contactPair(c1,c2,(m,flipped)=>{const nc=m.numContacts();for(let i=0;i<nc;i++)imp+=m.contactImpulse(i);const ns=m.numSolverContacts();
+      for(let i=0;i<ns;i++){const p=m.solverContactPoint(i);px+=p.x;py+=p.y;pz+=p.z;np++;}const n=m.normal(),s=flipped?-1:1;nx+=n.x*s;ny+=n.y*s;nz+=n.z*s;});
+    info.impulse=imp;if(np)info.point=new this.THREE.Vector3(px/np,py/np,pz/np);const l=Math.hypot(nx,ny,nz);if(l>0)info.normal=new this.THREE.Vector3(nx/l,ny/l,nz/l);}
+
+  /* ----- scene queries ----- */
+  _queryArgs(o){const R=this.RAPIER;let flags=o.solidOnly===false?undefined:R.QueryFilterFlags.EXCLUDE_SENSORS;
+    if(o.dynamicOnly)flags=(flags||0)|R.QueryFilterFlags.EXCLUDE_FIXED|R.QueryFilterFlags.EXCLUDE_KINEMATIC;
+    const groups=o.groups!=null?interactionGroups(o.groups):undefined;let exRb,pred;
+    if(o.exclude){const ex=Array.isArray(o.exclude)?o.exclude:[o.exclude];if(ex.length===1&&ex[0]&&ex[0].rigidBody)exRb=ex[0].rigidBody;
+      else{const set=new Set(ex);pred=c=>!set.has(this._colliderBody.get(c.handle));}}
+    if(o.filter){const f=o.filter,prev=pred;pred=c=>{const b=this._colliderBody.get(c.handle);return (!prev||prev(c))&&!!b&&f(b);};}
+    return {flags,groups,exRb,pred};}
+  /* Rapier updates its query acceleration structure only inside world.step, so bodies added, removed or teleported
+     since the last step would be invisible to queries. updateQueries() refreshes it with a zero-length step (no
+     integration; pending kinematic targets are applied at once). Queries call it automatically when needed unless
+     autoUpdateQueries is false. */
+  updateQueries(){this._alive();if(!this._queriesDirty)return this;const w=this.world;w.timestep=0;w.step(this.eventQueue);w.timestep=this.fixedStep;this._queriesDirty=false;return this;}
+  _fresh(){if(this._queriesDirty&&this.autoUpdateQueries)this.updateQueries();}
+  _rayOf(org,dir){const r=this._ray||(this._ray=new this.RAPIER.Ray({x:0,y:0,z:0},{x:0,y:1,z:0}));setXYZ(r.origin,org);setXYZ(r.dir,dir);return r;}
+  raycast(origin,direction,maxDistance=1000,o={}){
+    this._alive();this._fresh();const T=this.THREE,org=readVec(origin,this._t1),dir=readVec(direction,this._t2).normalize(),q=this._queryArgs(o);
+    const hit=this.world.castRayAndGetNormal(this._rayOf(org,dir),maxDistance,o.solid!==false,q.flags,q.groups,undefined,q.exRb,q.pred);
+    if(!hit)return null;const d=hit.timeOfImpact;
+    return {body:this._colliderBody.get(hit.collider.handle)||null,collider:hit.collider,distance:d,point:new T.Vector3(org.x+dir.x*d,org.y+dir.y*d,org.z+dir.z*d),normal:new T.Vector3(hit.normal.x,hit.normal.y,hit.normal.z)};
+  }
+  raycastAll(origin,direction,maxDistance=1000,o={}){
+    this._alive();this._fresh();const T=this.THREE,org=readVec(origin,new T.Vector3()),dir=readVec(direction,new T.Vector3()).normalize(),q=this._queryArgs(o),out=[];
+    this.world.intersectionsWithRay(this._rayOf(org,dir),maxDistance,o.solid!==false,hit=>{const d=hit.timeOfImpact;
+      out.push({body:this._colliderBody.get(hit.collider.handle)||null,collider:hit.collider,distance:d,point:new T.Vector3().copy(dir).multiplyScalar(d).add(org),normal:new T.Vector3(hit.normal.x,hit.normal.y,hit.normal.z)});return true;},q.flags,q.groups,undefined,q.exRb,q.pred);
+    return out.sort((a,b)=>a.distance-b.distance);
+  }
+  _shape(s){const R=this.RAPIER;if(!s)throw new TypeError('KE.Physics3D: shape required');if(typeof s.intoRaw==='function')return s;
+    const t=s.type||'ball';if(t==='ball'||t==='sphere')return new R.Ball(s.radius||.5);if(t==='capsule')return new R.Capsule(s.halfHeight||.5,s.radius||.3);if(t==='cylinder')return new R.Cylinder(s.halfHeight||.5,s.radius||.3);
+    const he=readVec(s.halfExtents||[.5,.5,.5],this._t3);return new R.Cuboid(he.x,he.y,he.z);}
+  /* Sweeps a shape ({type:'ball'|'box'|'capsule'|'cylinder', radius, halfExtents, halfHeight} or a Rapier Shape) along direction. */
+  shapeCast(shape,origin,rotation,direction,maxDistance=1000,o={}){
+    this._alive();this._fresh();const T=this.THREE,org=readVec(origin,new T.Vector3()),dir=readVec(direction,new T.Vector3()).normalize(),rot=readQuat(rotation,new T.Quaternion(),T),q=this._queryArgs(o);
+    const hit=this.world.castShape({x:org.x,y:org.y,z:org.z},{x:rot.x,y:rot.y,z:rot.z,w:rot.w},{x:dir.x,y:dir.y,z:dir.z},this._shape(shape),o.targetDistance||0,maxDistance,o.stopAtPenetration!==false,q.flags,q.groups,undefined,q.exRb,q.pred);
+    if(!hit)return null;const d=hit.time_of_impact;
+    return {body:this._colliderBody.get(hit.collider.handle)||null,collider:hit.collider,distance:d,position:dir.clone().multiplyScalar(d).add(org),point:new T.Vector3(hit.witness1.x,hit.witness1.y,hit.witness1.z),normal:new T.Vector3(hit.normal1.x,hit.normal1.y,hit.normal1.z)};
+  }
+  sphereCast(origin,radius,direction,maxDistance=1000,o={}){return this.shapeCast({type:'ball',radius},origin,null,direction,maxDistance,o);}
+  overlapShape(shape,center,rotation,o={}){this._alive();this._fresh();const T=this.THREE,c=readVec(center,new T.Vector3()),rot=readQuat(rotation,new T.Quaternion(),T),q=this._queryArgs(o),set=new Set();
+    this.world.intersectionsWithShape({x:c.x,y:c.y,z:c.z},{x:rot.x,y:rot.y,z:rot.z,w:rot.w},this._shape(shape),col=>{const b=this._colliderBody.get(col.handle);if(b)set.add(b);return true;},q.flags,q.groups,undefined,q.exRb,q.pred);
+    return [...set];}
+  overlapSphere(center,radius,o={}){return this.overlapShape({type:'ball',radius},center,null,o);}
+  overlapBox(center,halfExtents,rotation,o={}){return this.overlapShape({type:'box',halfExtents},center,rotation,o);}
+
+  /* ----- character, joints, vehicle ----- */
+  character(object,o={}){this._alive();return new CharacterController(this,object,o);}
+  /* Joints to the world attach to a private collider-less fixed body placed at body A's current pose, so both
+     joint frames start aligned and an axis given in A's local frame means the same thing on both sides. */
+  _anchorBody(P,Q){return this._makeBody(null,{type:'fixed',position:P,quaternion:Q,userData:{worldAnchor:true},shape:'none',events:false},[]);}
+  /* anchorA/anchorB: body-local anchors; anchor: one world-space point for both; axis: body-A-local axis (default +Y)
+     or worldAxis: world-space axis. Revolute/prismatic axes are shared by both bodies in Rapier's JS API, so for
+     body-to-body hinges the bodies' relative rotation at creation must be a rotation about that axis (e.g. equal). */
+  joint(bodyA,bodyB,o={}){
+    this._alive();const R=this.RAPIER,T=this.THREE,type=o.type||'ball';
+    if(!bodyA||bodyA.removed)throw new TypeError('KE.Physics3D.joint: bodyA required');if(bodyB&&bodyB.removed)throw new TypeError('KE.Physics3D.joint: bodyB removed');
+    const pa=bodyA._curP,qa=bodyA._curQ,own=bodyB?null:this._anchorBody(pa,qa),b=bodyB||own,pb=b._curP,qb=b._curQ;
+    const invA=qa.clone().invert(),invB=qb.clone().invert();
+    // anchors: explicit local anchors, or a world-space anchor, or body A's origin; the missing side keeps the current relative placement
+    const world=new T.Vector3();let aA,aB;
+    if(o.anchor!=null){readVec(o.anchor,world);aA=world.clone().sub(pa).applyQuaternion(invA);aB=world.clone().sub(pb).applyQuaternion(invB);}
+    else{aA=readVec(o.anchorA||[0,0,0],new T.Vector3());world.copy(aA).applyQuaternion(qa).add(pa);
+      // distance joints default to B's origin; the others keep the current relative placement (anchor coincides with A's anchor)
+      aB=o.anchorB!=null?readVec(o.anchorB,new T.Vector3()):(type==='rope'||type==='spring')&&bodyB?new T.Vector3():world.clone().sub(pb).applyQuaternion(invB);}
+    const axis=o.worldAxis!=null?readVec(o.worldAxis,new T.Vector3()).applyQuaternion(invA):readVec(o.axis||[0,1,0],new T.Vector3());
+    if(!(axis.lengthSq()>0))throw new RangeError('KE.Physics3D.joint: axis must be non-zero');axis.normalize();
+    const A={x:aA.x,y:aA.y,z:aA.z},B={x:aB.x,y:aB.y,z:aB.z},X={x:axis.x,y:axis.y,z:axis.z};
+    let data;const worldB=new T.Vector3().copy(aB).applyQuaternion(qb).add(pb),dist=world.distanceTo(worldB);
+    switch(type){
+      case 'fixed':{const f2=invB.clone().multiply(qa);data=R.JointData.fixed(A,{x:0,y:0,z:0,w:1},B,{x:f2.x,y:f2.y,z:f2.z,w:f2.w});break;}
+      case 'ball':case 'spherical':data=R.JointData.spherical(A,B);break;
+      case 'hinge':case 'revolute':data=R.JointData.revolute(A,B,X);break;
+      case 'prismatic':case 'slider':data=R.JointData.prismatic(A,B,X);break;
+      case 'rope':data=R.JointData.rope(o.length!=null?o.length:Math.max(dist,1e-3),A,B);break;
+      case 'spring':data=R.JointData.spring(o.length!=null?o.length:dist,o.stiffness==null?50:o.stiffness,o.damping==null?2:o.damping,A,B);break;
+      default:if(own)this.remove(own);throw new RangeError('KE.Physics3D.joint: unknown type '+type);}
+    if(o.limits&&(type==='hinge'||type==='revolute'||type==='prismatic'||type==='slider')){data.limitsEnabled=true;data.limits=[o.limits[0],o.limits[1]];}
+    const raw=this.world.createImpulseJoint(data,bodyA.rigidBody,b.rigidBody,true);
+    if(o.limits&&typeof raw.setLimits==='function')raw.setLimits(o.limits[0],o.limits[1]);
+    if(o.collide===false||o.contacts===false)raw.setContactsEnabled(false);
+    const j=new Joint(this,raw,type==='revolute'?'hinge':type==='slider'?'prismatic':type==='spherical'?'ball':type,bodyA,b,axis);
+    j._anchor=own;if(j.type==='hinge')j._angle0=j._rawAngle();
+    if(o.motor)j.setMotor(o.motor);
+    for(const body of [bodyA,b]){(body._joints||(body._joints=new Set())).add(j);}
+    this.joints.add(j);return j;
+  }
+  vehicle(chassis,o={}){this._alive();if(!this.RAPIER.DynamicRayCastVehicleController||typeof this.world.createVehicleController!=='function')throw new Error('KE.Physics3D.vehicle: this Rapier build has no DynamicRayCastVehicleController');
+    if(!chassis||chassis.removed||chassis.type!=='dynamic')throw new TypeError('KE.Physics3D.vehicle: a dynamic chassis body is required');return new Vehicle(this,chassis,o);}
+
+  /* ----- destruction ----- */
+  /* Splits a mesh body into convex Voronoi chunks (see fractureGeometry). Pieces inherit the body's collider
+     material, velocity (including spin) and userData, share its render material(s) and are owned by the world. */
+  fracture(body,o={}){
+    this._alive();if(!body||body.removed)throw new TypeError('KE.Physics3D.fracture: live body required');
+    const mesh=body.object,T=this.THREE;if(!mesh||!mesh.isMesh)throw new TypeError('KE.Physics3D.fracture: the body object must be a Mesh');
+    const rb=body.rigidBody,P=body._curP.clone(),Q=body._curQ.clone(),S=new T.Vector3();
+    mesh.updateWorldMatrix(true,false);mesh.matrixWorld.decompose(this._t4,this._tq3,S);
+    const invQ=Q.clone().invert();const local=o.point?readVec(o.point,new T.Vector3()).sub(P).applyQuaternion(invQ):null;
+    const baseMat=mesh.material,interior=o.interiorMaterial||null;let materials=baseMat,interiorIndex=null;
+    if(interior){materials=Array.isArray(baseMat)?baseMat.slice():[baseMat];interiorIndex=materials.length;materials.push(interior);}
+    const want=o.pieces==null?8:o.pieces,pieceCount=o.quality?Math.max(2,Math.round(want*clamp(KE.settings&&Number.isFinite(KE.settings.vfx)?KE.settings.vfx:1,.25,1))):want;
+    const res=fractureGeometry(T,mesh.geometry,{scale:S,pieces:pieceCount,seed:o.seed==null?(this._fractureSeed++)*7919:o.seed,point:local,minSize:o.minSize,
+      interiorMaterialIndex:interiorIndex,uvScale:o.uvScale,spread:o.spread,impactBias:o.impactBias,forceHull:o.forceHull});
+    if(res.pieces.length<2)return [body];
+    const c0=body.collider,friction=o.friction!=null?o.friction:c0?c0.friction():this.defaults.friction,restitution=o.restitution!=null?o.restitution:c0?c0.restitution():this.defaults.restitution;
+    let density=o.density;if(density==null){const vol=body.colliders.reduce((s,c)=>s+Math.max(0,c.volume()||0),0);density=vol>0&&rb.mass()>0?rb.mass()/vol:c0?c0.density():this.defaults.density;}
+    const lin=rb.linvel(),ang=rb.angvel(),com=rb.worldCom(),v0=new T.Vector3(lin.x,lin.y,lin.z),w0=new T.Vector3(ang.x,ang.y,ang.z),cm=new T.Vector3(com.x,com.y,com.z);
+    const groups=c0?c0.collisionGroups():undefined,parent=mesh.parent||this.scene,pieces=[];
+    const impulse=o.impulse?readVec(o.impulse,new T.Vector3()):null,point=o.point?readVec(o.point,new T.Vector3()):null;
+    for(const piece of res.pieces){
+      const m=new T.Mesh(piece.geometry,materials);m.castShadow=mesh.castShadow;m.receiveShadow=mesh.receiveShadow;m.name=(mesh.name||'body')+'-piece';
+      const wp=piece.centroid.clone().applyQuaternion(Q).add(P);m.userData={...mesh.userData};
+      if(parent){parent.add(m);parent.updateWorldMatrix(true,false);const q=Q.clone();this._setWorldPose(m,wp.clone(),q);m.quaternion.copy(q);parent.matrixWorld.decompose(this._t4,this._tq3,this._ts);m.scale.set(1/(this._ts.x||1),1/(this._ts.y||1),1/(this._ts.z||1));}else{m.position.copy(wp);m.quaternion.copy(Q);}
+      m.updateWorldMatrix(false,false);
+      const nb=this.addConvex(m,{type:'dynamic',friction,restitution,density,groups,ccd:o.ccd,linearDamping:o.linearDamping,angularDamping:o.angularDamping,position:wp,quaternion:Q,
+        userData:{...body.userData,fractureOf:body.id},onContact:o.inheritCallbacks?body.onContact:null});
+      nb.owned=true;nb.volume=piece.volume;
+      const r=this._t1.copy(wp).sub(cm),vel=this._t2.copy(w0).cross(r).add(v0);nb.rigidBody.setLinvel(setXYZ(this._a,vel),true);nb.rigidBody.setAngvel(setXYZ(this._a,w0),true);
+      pieces.push(nb);}
+    // distribute the impulse: weighted by mass and proximity to the impact point, plus an outward scatter
+    if(impulse&&impulse.lengthSq()>0){const size=body.radius*2,R=Math.max(size*.45,.05),center=point||P,ws=pieces.map(pb=>{const d=pb._curP.distanceTo(center);return pb.volume*density*Math.exp(-(d*d)/(R*R));});
+      const sum=ws.reduce((a,b)=>a+b,0)||1,mag=impulse.length(),scatter=o.scatter==null?.35:o.scatter;
+      pieces.forEach((pb,i)=>{const w=ws[i]/sum,out=this._t3.copy(pb._curP).sub(center);if(out.lengthSq()<1e-10)out.set(0,1,0);out.normalize();
+        const imp=this._t4.copy(impulse).multiplyScalar(w).addScaledVector(out,mag*scatter*w);const at=this._t2.copy(pb._curP).lerp(center,.25);
+        pb.rigidBody.applyImpulseAtPoint(setXYZ(this._a,imp),setXYZ(this._b,at),true);});}
+    const wasOwned=body.owned;
+    this.remove(body);if(!wasOwned&&o.keepObject!==true&&mesh.parent)mesh.parent.remove(mesh);
+    for(const pb of pieces)this._debris.push(pb);
+    while(this.maxDebris>=0&&this._debris.length>this.maxDebris){const old=this._debris.shift();if(!old.removed)this.remove(old);}
+    this.events.emit('fracture',body,pieces);
+    return pieces;
+  }
+  /* Radial impulse with linear falloff; mode:'velocity' treats strength as a velocity change (mass independent). */
+  explode(center,radius,strength,o={}){
+    this._alive();const T=this.THREE,c=readVec(center,new T.Vector3()),up=o.upward==null?.3:o.upward,list=this.overlapSphere(c,radius,{...o,dynamicOnly:true});let n=0;
+    for(const b of list){if(b.removed||b.type!=='dynamic')continue;const rb=b.rigidBody,com=rb.worldCom(),d=this._t1.set(com.x-c.x,com.y-c.y,com.z-c.z),dist=d.length();
+      const fall=o.falloff==='none'?1:clamp(1-dist/radius,0,1);if(fall<=0)continue;
+      if(dist<1e-6)d.set(0,1,0);else d.divideScalar(dist);d.y+=up;d.normalize();
+      let mag=strength*(o.falloff==='quadratic'?fall*fall:fall);if(o.mode==='velocity')mag*=rb.mass();
+      const at=this._t2.set(com.x,com.y,com.z).addScaledVector(d,-Math.min(b.radius*.35,dist*.5));
+      rb.applyImpulseAtPoint(setXYZ(this._a,d.multiplyScalar(mag)),setXYZ(this._b,at),true);n++;}
+    return n;
+  }
+
+  /* ----- buoyancy ----- */
+  /* Per-sample-point Archimedes force (fluid density x g x point volume x submerged fraction) plus linear drag
+     proportional to the displaced fluid mass (drag x density x point volume x fraction x point velocity) and
+     angular damping. Applied as one-step forces so Rapier integrates them per solver substep like gravity. Sample points default to a 2x2x2 grid over the
+     body's local bounds, which is exact for axis-aligned boxes (the equilibrium draft is linear in depth). */
+  addBuoyancy(body,o={}){
+    this._alive();if(!body||body.removed||body.type!=='dynamic')throw new TypeError('KE.Physics3D.addBuoyancy: a dynamic body is required');
+    const T=this.THREE,b=body.localBounds,size=b.getSize(new T.Vector3()),pts=[];
+    let cellH;
+    if(Array.isArray(o.samplePoints)){for(const p of o.samplePoints)pts.push(readVec(p,new T.Vector3()));cellH=o.pointHeight||size.y/2;}
+    else{const n=Math.max(1,Math.round(o.samplePoints>0?o.samplePoints:2));cellH=size.y/n;
+      for(let i=0;i<n;i++)for(let j=0;j<n;j++)for(let k=0;k<n;k++)pts.push(new T.Vector3(b.min.x+size.x*(i+.5)/n,b.min.y+size.y*(j+.5)/n,b.min.z+size.z*(k+.5)/n));}
+    const volume=o.volume!=null?o.volume:body.colliders.reduce((s,c)=>s+Math.max(0,c.volume()||0),0);
+    const rec={body,points:pts,cellH:Math.max(cellH,1e-3),volume,waterLevel:o.waterLevel==null?0:o.waterLevel,density:o.density==null?1:o.density,drag:o.drag==null?1.5:o.drag,angularDrag:o.angularDrag==null?1:o.angularDrag,submerged:0};
+    this._buoyancy.set(body,rec);const self=this;
+    return {record:rec,get submerged(){return rec.submerged;},set waterLevel(v){rec.waterLevel=v;},get waterLevel(){return rec.waterLevel;},dispose(){self._buoyancy.delete(body);}};
+  }
+  _applyBuoyancy(rec,h){
+    const b=rec.body;if(b.removed){this._buoyancy.delete(b);return;}const rb=b.rigidBody,fn=typeof rec.waterLevel==='function';
+    if(!fn&&rb.isSleeping())return;
+    const t=rb.translation(),r=rb.rotation(),lv=rb.linvel(),av=rb.angvel(),com=rb.worldCom(),q=this._tq.set(r.x,r.y,r.z,r.w),p=this._t1,g=Math.abs(this.gravity.y);
+    const n=rec.points.length,vi=rec.volume/n;let sub=0;
+    for(let i=0;i<n;i++){p.copy(rec.points[i]).applyQuaternion(q);p.x+=t.x;p.y+=t.y;p.z+=t.z;
+      const level=fn?rec.waterLevel(p.x,p.z,this.time):rec.waterLevel,frac=clamp((level-p.y)/rec.cellH+.5,0,1);if(frac<=0)continue;sub+=frac;
+      const rx=p.x-com.x,ry=p.y-com.y,rz=p.z-com.z,vx=lv.x+av.y*rz-av.z*ry,vy=lv.y+av.z*rx-av.x*rz,vz=lv.z+av.x*ry-av.y*rx,k=rec.drag*rec.density*vi*frac;
+      const a=this._a;a.x=-vx*k;a.y=rec.density*g*vi*frac-vy*k;a.z=-vz*k;rb.addForceAtPoint(a,setXYZ(this._b,p),true);}
+    rec.submerged=sub/n;if(sub>0)this._forceBodies.add(b);
+    if(sub>0&&rec.angularDrag>0){const f=Math.exp(-rec.angularDrag*rec.submerged*h),w=rb.angvel(),a=this._a;a.x=w.x*f;a.y=w.y*f;a.z=w.z*f;rb.setAngvel(a,true);}
+  }
+
+  /* ----- debug renderer ----- */
+  /* Collider wireframes from world.debugRender(); options {fixed:true, sensors:true, filter(body)->bool, opacity:.9}.
+     Lines show the latest simulated pose, up to one fixed step ahead of interpolated meshes. */
+  debug(scene=this.scene,enabled=true,o={}){
+    this._alive();
+    if(typeof scene==='boolean'){o=enabled&&typeof enabled==='object'?enabled:o;enabled=scene;scene=this.scene;}
+    if(enabled&&typeof enabled==='object'){o=enabled;enabled=true;}
+    if(!enabled){if(this._debug){const d=this._debug;if(d.lines.parent)d.lines.parent.remove(d.lines);d.lines.geometry.dispose();d.lines.material.dispose();this._debug=null;}return this;}
+    if(!scene)throw new TypeError('KE.Physics3D.debug: scene required');const T=this.THREE;
+    if(!this._debug){const geo=new T.BufferGeometry(),mat=new T.LineBasicMaterial({vertexColors:true,transparent:true,opacity:.9,depthTest:true,toneMapped:false});
+      const lines=new T.LineSegments(geo,mat);lines.frustumCulled=false;lines.renderOrder=999;lines.name='physics-debug';this._debug={lines,capacity:0,flags:undefined,pred:undefined};}
+    const d=this._debug,R=this.RAPIER;let flags=0;if(o.fixed===false)flags|=R.QueryFilterFlags.EXCLUDE_FIXED;if(o.sensors===false)flags|=R.QueryFilterFlags.EXCLUDE_SENSORS;
+    d.flags=flags||undefined;d.pred=typeof o.filter==='function'?(c=>{const b=this._colliderBody.get(c.handle);return !!b&&o.filter(b);}):undefined;
+    if(o.opacity!=null)d.lines.material.opacity=o.opacity;
+    if(d.lines.parent!==scene)scene.add(d.lines);this._updateDebug();return this;
+  }
+  _updateDebug(){const d=this._debug,T=this.THREE,buf=this.world.debugRender(d.flags,d.pred),nv=buf.vertices.length/3;
+    if(nv>d.capacity){let cap=Math.max(1024,d.capacity);while(cap<nv)cap*=2;const g=d.lines.geometry;
+      g.setAttribute('position',new T.BufferAttribute(new Float32Array(cap*3),3).setUsage(T.DynamicDrawUsage));g.setAttribute('color',new T.BufferAttribute(new Float32Array(cap*4),4).setUsage(T.DynamicDrawUsage));d.capacity=cap;}
+    const g=d.lines.geometry,pa=g.attributes.position,ca=g.attributes.color;pa.array.set(buf.vertices);ca.array.set(buf.colors);
+    pa.updateRange.offset=0;pa.updateRange.count=nv*3;ca.updateRange.offset=0;ca.updateRange.count=nv*4;pa.needsUpdate=true;ca.needsUpdate=true;g.setDrawRange(0,nv);d.vertexCount=nv;}
+
+  /* ----- stats & teardown ----- */
+  stats(){this._alive();let sleeping=0,dynamic=0;for(const b of this.bodies.values()){if(b.type==='dynamic')dynamic++;if(b.type!=='fixed'&&b.rigidBody.isSleeping())sleeping++;}
+    return {bodies:this.world.bodies.len(),colliders:this.world.colliders.len(),joints:this.joints.size,dynamic,sleeping,awake:this._awake,contacts:this._contacts,
+      characters:this.characters.size,vehicles:this.vehicles.size,debris:this._debris.length,stepMs:this._stepMs,lastStepMs:this.lastStepMs,substeps:this.lastSubSteps,time:this.time,droppedTime:this.droppedTime};}
+  /* Frees the Rapier world, event queue, controllers and debug lines; owned debris meshes are detached and their geometry disposed. */
+  dispose(){
+    if(this.disposed)return;
+    if(this._debug)this.debug(null,false);
+    for(const v of [...this.vehicles])v.dispose();
+    for(const c of [...this.characters]){c.disposed=true;this.world.removeCharacterController(c.controller);c.controller=null;}this.characters.clear();
+    for(const j of this.joints){j.disposed=true;j.joint=null;}this.joints.clear();
+    for(const b of this.bodies.values()){if(b.owned&&b.object){if(b.object.parent)b.object.parent.remove(b.object);if(b.object.geometry)b.object.geometry.dispose();}
+      b.removed=true;b.rigidBody=null;b.colliders=[];b.collider=null;b._joints=null;}
+    this.bodies.clear();this._colliderBody.clear();this._sensors.clear();this._followers.clear();this._forceBodies.clear();this._buoyancy.clear();
+    this._live.length=0;this._liveNext.length=0;this._settle.length=0;this._debris.length=0;this._breakQueue.length=0;
+    this.eventQueue.free();this.world.free();this.eventQueue=null;this.world=null;this.disposed=true;
+    this.events.emit('dispose',this);this.events.clear();
+  }
+}
+
+/* ---------- public namespace ---------- */
+KE.Physics3D={
+  get available(){return typeof window!=='undefined'&&!!window.RAPIER;},
+  init:loadRapier,
+  async create(THREE,opts={}){if(!THREE||!THREE.Vector3)throw new TypeError('KE.Physics3D.create(THREE, options): THREE is required');const R=await loadRapier();return new PhysicsWorld(THREE,R,opts);},
+  groups:(membership,filter)=>interactionGroups({membership,filter}),
+  fractureGeometry,
+  World:PhysicsWorld,Body,Joint,CharacterController,Vehicle
+};
+KE.registerModule('physics3d',{provides:['Physics3D']});
+})();
+
+/* ===== module: 50-vfx.js ===== */
+/* kitsune enginev3 · KE.VFX — modular emitter-based particle system.
+   GPU path (WebGL2 + renderable float textures): each emitter keeps its particle state in two RGBA32F
+   ping-pong render-target pairs (position.xyz+age, velocity.xyz+life). Two full-screen passes per frame
+   advance it: a velocity pass (spawn, forces, collision response) and a position pass (spawn, integrate,
+   ground clamp). Spawning is a ring buffer: the CPU decides how many particles to emit and hands the
+   shader up to 8 contiguous slot ranges ("batches") per frame; both passes regenerate identical spawn
+   values from a per-slot PCG hash, so no CPU->GPU particle upload ever happens.
+   CPU path: the same configuration simulated in JavaScript on typed arrays and uploaded as instance
+   attributes (capacity capped lower). Chosen automatically when float render targets fail a probe,
+   when gpu:false, or when per-particle events (events.onDeath) need CPU-visible state.
+   Rendering: camera-facing (optionally velocity-stretched) instanced quads or ribbons, premultiplied
+   blending (additive = alpha 0), curve LUTs, flipbooks, soft-particle depth fade (KE.sceneUniforms depth,
+   translucent layer), camera offset, simple sun lighting, optional GPU bitonic depth sort.
+   The GPU path cannot see which slots are alive; a CPU-side spawn history (time buckets over the ring)
+   bounds the live slot window that is simulated/drawn and estimates the alive count.
+   Budget: capacity x KE.settings.vfx (min 64, never above the request); see references/vfx.md. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const MAX_BATCHES=8,CURVE_RES=128,MAX_PENDING=32,HISTORY=64,TAU=Math.PI*2;
+const SHAPES={point:0,sphere:1,hemisphere:2,box:3,cone:4,disc:5,ring:6,line:7,mesh:8};
+const DIRMODES={vector:0,shape:1,random:2,tangent:3};
+const BLENDS={additive:1,alpha:1,premultiplied:1};
+const RIBBON_ATTRS=['aA','aB','aLS','aP','aN'],SPRITE_ATTRS=['aPosAge','aVelLife','aSlot'];
+const BUILTIN_TEXTURES=['soft','glow','spark','smoke','flare','ring','star','leaf'];
+
+/* ---------- small helpers ---------- */
+const isPlain=v=>!!v&&typeof v==='object'&&!Array.isArray(v)&&Object.getPrototypeOf(v)===Object.prototype;
+function deepMerge(base,over){
+  if(over===undefined)return base;if(!isPlain(over)||!isPlain(base))return over;
+  const out={...base};for(const k of Object.keys(over))out[k]=deepMerge(base[k],over[k]);return out;
+}
+const range=(v,def)=>Array.isArray(v)?[+v[0],+(v.length>1?v[1]:v[0])]:Number.isFinite(v)?[v,v]:def.slice();
+function vec3(THREE,v,def){const o=new THREE.Vector3();if(v&&v.isVector3)return o.copy(v);if(Array.isArray(v))return o.set(+v[0]||0,+v[1]||0,+v[2]||0);if(Number.isFinite(v))return o.setScalar(v);return def?o.fromArray(def):o;}
+function toColor(THREE,c,linear){const col=new THREE.Color();if(c&&c.isColor){col.copy(c);return col;}col.set(c===undefined||c===null?0xffffff:c);if(linear)col.convertSRGBToLinear();return col;}
+const nextPow2=n=>{let p=1;while(p<n)p*=2;return p;};
+/* Budgeted capacity: capacity x budget, never below 64 (nor above the requested capacity). */
+const budgetCapacity=(capacity,budget)=>Math.min(capacity,Math.max(64,Math.round(capacity*budget)));
+
+/* Piecewise-linear curves. Scalar: [[t,v],...]; colour: [[t,color,alpha],...]. */
+function scalarCurve(keys,def){
+  if(Number.isFinite(keys))return [[0,keys],[1,keys]];
+  if(!Array.isArray(keys)||!keys.length)return def;
+  const k=keys.map(p=>Array.isArray(p)?[clamp(+p[0],0,1),+p[1]]:[0,+p]).filter(p=>Number.isFinite(p[0])&&Number.isFinite(p[1])).sort((a,b)=>a[0]-b[0]);
+  return k.length?k:def;
+}
+function colorCurve(THREE,keys,linear){
+  const def=[[0,0xffffff,0],[.08,0xffffff,1],[.7,0xffffff,1],[1,0xffffff,0]];
+  const src=Array.isArray(keys)&&keys.length?keys:def;
+  return src.map(p=>{const c=toColor(THREE,p[1],linear);return [clamp(+p[0]||0,0,1),c.r,c.g,c.b,clamp(p[2]===undefined?1:+p[2],0,1)];}).sort((a,b)=>a[0]-b[0]);
+}
+function evalCurve(keys,t,ch=1){
+  if(t<=keys[0][0])return keys[0][ch];
+  for(let i=1;i<keys.length;i++)if(t<=keys[i][0]){const a=keys[i-1],b=keys[i],f=(t-a[0])/Math.max(1e-6,b[0]-a[0]);return a[ch]+(b[ch]-a[ch])*f;}
+  return keys[keys.length-1][ch];
+}
+
+/* ---------- JS noise (CPU path) ---------- */
+/* Same hash/value noise as KE.GLSL, plus an analytic gradient so the curl below is exact. */
+const fract=x=>x-Math.floor(x);
+function hash13(x,y,z){x=fract(x*.1031);y=fract(y*.1031);z=fract(z*.1031);const d=x*(z+31.32)+y*(y+31.32)+z*(x+31.32);x+=d;y+=d;z+=d;return fract((x+y)*z);}
+function noise3(x,y,z){const ix=Math.floor(x),iy=Math.floor(y),iz=Math.floor(z);let fx=x-ix,fy=y-iy,fz=z-iz;fx=fx*fx*(3-2*fx);fy=fy*fy*(3-2*fy);fz=fz*fz*(3-2*fz);
+  const L=(a,b,t)=>a+(b-a)*t;
+  return L(L(L(hash13(ix,iy,iz),hash13(ix+1,iy,iz),fx),L(hash13(ix,iy+1,iz),hash13(ix+1,iy+1,iz),fx),fy),L(L(hash13(ix,iy,iz+1),hash13(ix+1,iy,iz+1),fx),L(hash13(ix,iy+1,iz+1),hash13(ix+1,iy+1,iz+1),fx),fy),fz);}
+/* Value noise with analytic gradient: out=[value,dx,dy,dz]. */
+function noised3(x,y,z,out){
+  const ix=Math.floor(x),iy=Math.floor(y),iz=Math.floor(z),fx=x-ix,fy=y-iy,fz=z-iz;
+  const ux=fx*fx*(3-2*fx),uy=fy*fy*(3-2*fy),uz=fz*fz*(3-2*fz),dx=6*fx*(1-fx),dy=6*fy*(1-fy),dz=6*fz*(1-fz);
+  const a=hash13(ix,iy,iz),b=hash13(ix+1,iy,iz),c=hash13(ix,iy+1,iz),d=hash13(ix+1,iy+1,iz),e=hash13(ix,iy,iz+1),f=hash13(ix+1,iy,iz+1),g=hash13(ix,iy+1,iz+1),h=hash13(ix+1,iy+1,iz+1);
+  const k1=b-a,k2=c-a,k3=e-a,k4=a-b-c+d,k5=a-c-e+g,k6=a-b-e+f,k7=-a+b+c-d+e-f-g+h;
+  out[0]=a+k1*ux+k2*uy+k3*uz+k4*ux*uy+k5*uy*uz+k6*uz*ux+k7*ux*uy*uz;
+  out[1]=dx*(k1+k4*uy+k6*uz+k7*uy*uz);out[2]=dy*(k2+k5*uz+k4*ux+k7*uz*ux);out[3]=dz*(k3+k6*ux+k5*uy+k7*ux*uy);return out;
+}
+/* Curl of the vector potential psi=(N(p),N(p+o1),N(p+o2)); two octaves. Divergence-free by construction. */
+const _n1=[0,0,0,0],_n2=[0,0,0,0],_n3=[0,0,0,0];
+function curlNoise(x,y,z,out,octaves=2){
+  out[0]=out[1]=out[2]=0;let amp=1,f=1;
+  for(let o=0;o<octaves;o++){const px=x*f,py=y*f,pz=z*f;
+    noised3(px,py,pz,_n1);noised3(px+31.416,py-47.853,pz+12.793,_n2);noised3(px-19.117,py+33.412,pz+71.337,_n3);
+    out[0]+=amp*f*(_n3[2]-_n2[3]);out[1]+=amp*f*(_n1[3]-_n3[1]);out[2]+=amp*f*(_n2[1]-_n1[2]);amp*=.5;f*=2.03;}
+  return out;
+}
+
+/* ---------- GLSL ---------- */
+const GLSL_PCG=`uint kePcg(uint v){uint s=v*747796405u+2891336453u;uint w=((s>>((s>>28u)+4u))^s)*277803737u;return (w>>22u)^w;}
+float keRnd(inout uint s){s=kePcg(s);return float(s>>8u)*(1./16777216.);}`;
+const GLSL_CURL=`vec4 keNoised3(vec3 x){vec3 i=floor(x),f=fract(x);vec3 u=f*f*(3.-2.*f),du=6.*f*(1.-f);
+float a=keHash13(i),b=keHash13(i+vec3(1,0,0)),c=keHash13(i+vec3(0,1,0)),d=keHash13(i+vec3(1,1,0)),e=keHash13(i+vec3(0,0,1)),f1=keHash13(i+vec3(1,0,1)),g=keHash13(i+vec3(0,1,1)),h=keHash13(i+vec3(1,1,1));
+float k1=b-a,k2=c-a,k3=e-a,k4=a-b-c+d,k5=a-c-e+g,k6=a-b-e+f1,k7=-a+b+c-d+e-f1-g+h;
+return vec4(a+k1*u.x+k2*u.y+k3*u.z+k4*u.x*u.y+k5*u.y*u.z+k6*u.z*u.x+k7*u.x*u.y*u.z,
+ du*vec3(k1+k4*u.y+k6*u.z+k7*u.y*u.z,k2+k5*u.z+k4*u.x+k7*u.z*u.x,k3+k6*u.x+k5*u.y+k7*u.x*u.y));}
+vec3 keVfxCurl(vec3 p,int octaves){vec3 r=vec3(0.);float amp=1.,f=1.;
+for(int o=0;o<4;o++){if(o>=octaves)break;vec3 q=p*f;vec3 g1=keNoised3(q).yzw,g2=keNoised3(q+vec3(31.416,-47.853,12.793)).yzw,g3=keNoised3(q+vec3(-19.117,33.412,71.337)).yzw;
+r+=amp*f*vec3(g3.y-g2.z,g1.z-g3.x,g2.x-g1.y);amp*=.5;f*=2.03;}return r;}`;
+
+const SIM_COMMON=`uniform highp sampler2D tPos;uniform highp sampler2D tVel;uniform vec2 uSize;uniform int uCap;uniform float uDt;uniform float uTime;
+uniform float uBatchCount;uniform vec4 uBatch[${MAX_BATCHES}];uniform vec3 uBatchFrom[${MAX_BATCHES}];uniform vec3 uBatchTo[${MAX_BATCHES}];
+uniform mat3 uEmitRot;uniform vec3 uEmitVel;uniform vec4 uShape;uniform vec3 uShapeSize;uniform vec3 uLineA;uniform vec3 uLineB;
+uniform highp sampler2D tMesh;uniform vec3 uMeshInfo;uniform mat4 uMeshMatrix;
+uniform vec2 uLife;uniform vec2 uSpeed;uniform vec3 uDir;uniform float uSpread;uniform vec3 uInitVel;
+uniform vec3 uGravity;uniform vec3 uWind;uniform float uDrag;uniform float uTurb;uniform float uMaxSpeed;
+uniform vec4 uCurl;uniform vec3 uVortexAxis;uniform vec3 uVortexCenter;uniform vec2 uVortex;uniform vec3 uAttractPos;uniform vec2 uAttract;
+uniform vec4 uCollide;uniform highp sampler2D tHeight;uniform vec4 uHeightRegion;uniform float uHeightRes;uniform mat4 uToWorld;uniform mat4 uToLocal;
+${KE.GLSL.hash}
+${KE.GLSL.noise}
+${GLSL_PCG}
+${GLSL_CURL}
+vec3 keRandDir(inout uint s){float z=keRnd(s)*2.-1.,ph=keRnd(s)*6.2831853,r=sqrt(max(0.,1.-z*z));return vec3(r*cos(ph),z,r*sin(ph));}
+vec3 keConeDir(inout uint s,vec3 axis,float ang){float ct=mix(1.,cos(ang),keRnd(s)),st=sqrt(max(0.,1.-ct*ct)),ph=keRnd(s)*6.2831853;
+ vec3 t=normalize(abs(axis.y)<.99?cross(axis,vec3(0.,1.,0.)):cross(axis,vec3(1.,0.,0.)));vec3 b=cross(axis,t);return normalize(axis*ct+(t*cos(ph)+b*sin(ph))*st);}
+/* Shape sample in the emitter frame (mesh: already in simulation space). */
+void keShape(inout uint s,out vec3 p,out vec3 d){
+ float R=uShape.x,inner=1.-uShape.y;
+#if KE_SHAPE==0
+ p=vec3(0.);d=keRandDir(s);
+#elif KE_SHAPE==1||KE_SHAPE==2
+ d=keRandDir(s);
+ #if KE_SHAPE==2
+ d.y=abs(d.y);
+ #endif
+ float u=keRnd(s);p=d*(uShape.w>.5?R:R*pow(mix(inner*inner*inner,1.,u),1./3.));
+#elif KE_SHAPE==3
+ vec3 hs=uShapeSize*.5;float r1=keRnd(s),r2=keRnd(s),r3=keRnd(s);vec3 q=vec3(r1,r2,r3)*2.-1.;
+ if(uShape.w>.5){float ax=hs.y*hs.z,ay=hs.x*hs.z,az=hs.x*hs.y,u=keRnd(s)*(ax+ay+az),sg=keRnd(s)<.5?-1.:1.;
+  if(u<ax){q.x=sg;d=vec3(sg,0.,0.);}else if(u<ax+ay){q.y=sg;d=vec3(0.,sg,0.);}else{q.z=sg;d=vec3(0.,0.,sg);}p=q*hs;}
+ else{p=q*hs;d=length(p)>1e-5?normalize(p):vec3(0.,1.,0.);}
+#elif KE_SHAPE==4
+ float ph=keRnd(s)*6.2831853,u=keRnd(s),rr=uShape.w>.5?R:R*sqrt(mix(inner*inner,1.,u));p=vec3(cos(ph)*rr,0.,sin(ph)*rr);
+ if(R>0.){float tilt=uShape.z*rr/R;d=keConeDir(s,vec3(cos(ph)*sin(tilt),cos(tilt),sin(ph)*sin(tilt)),uShape.z*.3);}else d=keConeDir(s,vec3(0.,1.,0.),uShape.z);
+#elif KE_SHAPE==5
+ float ph=keRnd(s)*6.2831853,u=keRnd(s),rr=uShape.w>.5?R:R*sqrt(mix(inner*inner,1.,u));p=vec3(cos(ph)*rr,0.,sin(ph)*rr);d=vec3(0.,1.,0.);
+#elif KE_SHAPE==6
+ float ph=keRnd(s)*6.2831853;vec3 radial=vec3(cos(ph),0.,sin(ph));vec3 j=keRandDir(s);float jr=pow(keRnd(s),1./3.);p=radial*R+j*uShapeSize.x*jr;d=radial;
+#elif KE_SHAPE==7
+ float u=keRnd(s);vec3 ax=uLineB-uLineA;float al=length(ax);ax=al>1e-6?ax/al:vec3(0.,1.,0.);vec3 rd=keRandDir(s);rd-=ax*dot(rd,ax);
+ d=length(rd)>1e-5?normalize(rd):vec3(0.,1.,0.);float v=keRnd(s);p=mix(uLineA,uLineB,u)+d*(uShape.w>.5?R:R*sqrt(mix(inner*inner,1.,v)));
+#else
+ int n=int(uMeshInfo.x),tw=int(uMeshInfo.y);int idx=min(int(keRnd(s)*float(n)),n-1),j=idx+n;
+ vec3 lp=texelFetch(tMesh,ivec2(idx%tw,idx/tw),0).xyz,ln=texelFetch(tMesh,ivec2(j%tw,j/tw),0).xyz;
+ p=(uMeshMatrix*vec4(lp,1.)).xyz;d=normalize(mat3(uMeshMatrix)*ln);
+#endif
+}
+bool keFindBatch(int slot,out vec4 B,out vec3 F,out vec3 T,out float k){
+ bool hit=false;B=vec4(0.);F=vec3(0.);T=vec3(0.);k=0.;if(slot>=uCap)return false;
+ for(int i=0;i<${MAX_BATCHES};i++){if(float(i)>=uBatchCount)break;vec4 b=uBatch[i];int kk=(slot-int(b.x)+uCap)%uCap;
+  if(float(kk)<b.y){hit=true;B=b;F=uBatchFrom[i];T=uBatchTo[i];k=float(kk);}}
+ return hit;
+}
+/* Deterministic spawn: both passes call this and get identical results for the same slot and batch seed. */
+void keSpawn(int slot,vec4 B,vec3 F,vec3 T,float k,out vec3 pos,out vec3 vel,out float life,out float age){
+ uint s=kePcg(uint(slot)*2654435769u^kePcg(uint(B.w)+1821957365u));
+ float f=(k+.5)/max(B.y,1.);age=(1.-f)*B.z;vec3 origin=mix(F,T,f);
+ vec3 sp,sd;keShape(s,sp,sd);
+#if KE_SHAPE!=8
+ sp=origin+uEmitRot*sp;sd=uEmitRot*sd;
+#endif
+ vec3 dir;
+#if KE_DIRMODE==0
+ dir=uEmitRot*uDir;
+#elif KE_DIRMODE==1
+ dir=sd;
+#elif KE_DIRMODE==2
+ dir=keRandDir(s);
+#else
+ vec3 tg=cross(uEmitRot*vec3(0.,1.,0.),sp-origin);dir=length(tg)>1e-6?normalize(tg):keRandDir(s);
+#endif
+ if(uSpread>0.)dir=keConeDir(s,dir,uSpread);
+ float speed=mix(uSpeed.x,uSpeed.y,keRnd(s));life=max(mix(uLife.x,uLife.y,keRnd(s)),1e-3);
+ vel=dir*speed+uEmitRot*uInitVel+uEmitVel;pos=sp+vel*age;
+}
+float keGround(vec2 xz){float h=-1e9;
+#ifdef KE_PLANE
+ h=uCollide.x;
+#endif
+#ifdef KE_HEIGHT
+ float n=uHeightRes-1.;vec2 g=(xz-uHeightRegion.xy)/uHeightRegion.zw*n;
+ if(g.x>=0.&&g.y>=0.&&g.x<=n&&g.y<=n){vec2 i=min(floor(g),vec2(n-1.)),f=g-i;ivec2 c=ivec2(i);
+  float h00=texelFetch(tHeight,c,0).r,h10=texelFetch(tHeight,c+ivec2(1,0),0).r,h01=texelFetch(tHeight,c+ivec2(0,1),0).r,h11=texelFetch(tHeight,c+ivec2(1,1),0).r;
+  h=max(h,mix(mix(h00,h10,f.x),mix(h01,h11,f.x),f.y));}
+#endif
+ return h;}
+vec3 keGroundNormal(vec2 xz){
+#ifdef KE_HEIGHT
+ float e=max(uHeightRegion.z/(uHeightRes-1.),1e-3);
+ return normalize(vec3(keGround(xz-vec2(e,0.))-keGround(xz+vec2(e,0.)),2.*e,keGround(xz-vec2(0.,e))-keGround(xz+vec2(0.,e))));
+#else
+ return vec3(0.,1.,0.);
+#endif
+}`;
+
+const SIM_VEL=`
+vec4 keIntegrate(vec3 p,vec4 V){
+ vec3 v=V.xyz;float life=V.w,dt=uDt;vec3 a=uGravity;
+#ifdef KE_CURL
+ a+=keVfxCurl(p*uCurl.y+vec3(.31,1.,.73)*uTime*uCurl.z,KE_CURL)*uCurl.x;
+#endif
+#ifdef KE_TURB
+ {vec3 q=p*1.37+vec3(1.3,.7,-1.)*uTime;a+=(vec3(keNoise3(q),keNoise3(q+vec3(17.1,3.3,5.7)),keNoise3(q+vec3(-7.9,11.3,23.1)))-.5)*2.*uTurb;}
+#endif
+#ifdef KE_VORTEX
+ {vec3 r=p-uVortexCenter;vec3 rp=r-uVortexAxis*dot(r,uVortexAxis);float d=length(rp)+1e-4;a+=cross(uVortexAxis,rp)/d*uVortex.x-rp/d*uVortex.y;}
+#endif
+#ifdef KE_ATTRACT
+ {vec3 d=uAttractPos-p;float dist=length(d)+1e-4;float fall=uAttract.y>0.?clamp(1.-dist/uAttract.y,0.,1.):1.;a+=d/dist*uAttract.x*fall*smoothstep(0.,.3,dist);}
+#endif
+ v+=a*dt;v=uWind+(v-uWind)*exp(-uDrag*dt);
+#ifdef KE_MAXSPEED
+ {float sp=length(v);if(sp>uMaxSpeed)v*=uMaxSpeed/sp;}
+#endif
+#ifdef KE_COLLIDE
+ vec3 pw=(uToWorld*vec4(p+v*dt,1.)).xyz;float g=keGround(pw.xz)+uCollide.w;
+ if(pw.y<g){
+ #ifdef KE_DIE
+  life=-1.;
+ #else
+  vec3 n=keGroundNormal(pw.xz),vw=mat3(uToWorld)*v;float vn=dot(vw,n);
+  if(vn<0.){vec3 vt=vw-vn*n;vw=vt*(1.-uCollide.z)-n*vn*uCollide.y;}v=mat3(uToLocal)*vw;
+ #endif
+ }
+#endif
+ return vec4(v,life);
+}
+void main(){
+ ivec2 tc=ivec2(gl_FragCoord.xy);int slot=tc.y*int(uSize.x)+tc.x;vec4 P=texelFetch(tPos,tc,0),V=texelFetch(tVel,tc,0);
+ vec4 B;vec3 F,T;float k;
+ if(keFindBatch(slot,B,F,T,k)){vec3 sp,sv;float life,age;keSpawn(slot,B,F,T,k,sp,sv,life,age);gl_FragColor=vec4(sv,life);return;}
+ if(V.w<=0.||P.w>=V.w){gl_FragColor=V;return;}
+ gl_FragColor=keIntegrate(P.xyz,V);
+}`;
+
+const SIM_POS=`
+void main(){
+ ivec2 tc=ivec2(gl_FragCoord.xy);int slot=tc.y*int(uSize.x)+tc.x;vec4 P=texelFetch(tPos,tc,0),V=texelFetch(tVel,tc,0);
+ vec4 B;vec3 F,T;float k;
+ if(keFindBatch(slot,B,F,T,k)){vec3 sp,sv;float life,age;keSpawn(slot,B,F,T,k,sp,sv,life,age);gl_FragColor=vec4(sp,age);return;}
+ if(V.w<=0.||P.w>=V.w){gl_FragColor=P;return;}
+ vec3 p=P.xyz+V.xyz*uDt;
+#ifdef KE_COLLIDE
+ vec3 pw=(uToWorld*vec4(p,1.)).xyz;float g=keGround(pw.xz)+uCollide.w;if(pw.y<g){pw.y=g;p=(uToLocal*vec4(pw,1.)).xyz;}
+#endif
+ gl_FragColor=vec4(p,P.w+uDt);
+}`;
+
+/* Bitonic sort (descending view depth) over (key, slot) pairs: one key pass + log2(n)(log2(n)+1)/2 merge passes. */
+const SORT_KEY=`uniform highp sampler2D tPos;uniform highp sampler2D tVel;uniform int uStateW;uniform int uSortW;uniform int uBase;uniform int uCap;uniform int uCount;uniform mat4 uModelView;
+void main(){ivec2 c=ivec2(gl_FragCoord.xy);int i=c.y*uSortW+c.x;int slot=(uBase+i)%uCap;float key=-1e30;
+ if(i<uCount){ivec2 t=ivec2(slot%uStateW,slot/uStateW);vec4 P=texelFetch(tPos,t,0),V=texelFetch(tVel,t,0);if(V.w>0.&&P.w<V.w)key=-(uModelView*vec4(P.xyz,1.)).z;}
+ gl_FragColor=vec4(key,float(slot),0.,1.);}`;
+const SORT_MERGE=`uniform highp sampler2D tSortIn;uniform int uSortW;uniform int uK;uniform int uJ;
+void main(){ivec2 c=ivec2(gl_FragCoord.xy);int i=c.y*uSortW+c.x;int p=i^uJ;vec4 a=texelFetch(tSortIn,c,0),b=texelFetch(tSortIn,ivec2(p%uSortW,p/uSortW),0);
+ bool desc=(i&uK)==0,lower=i<p,keepMax=lower==desc;bool takeB=keepMax?b.x>a.x:b.x<a.x;gl_FragColor=takeB?b:a;}`;
+const PROBE_FS='void main(){gl_FragColor=vec4(1.5,-2.25,65536.,.125);}';
+
+/* Render shaders. The CPU (KE_CPU) variant uses only GLSL ES 1.0 features so it also runs on WebGL1. */
+const RENDER_VS=`attribute float aIndex;
+#ifdef KE_CPU
+ #ifdef KE_RIBBON
+ attribute vec4 aA;attribute vec4 aB;attribute vec4 aLS;attribute vec3 aP;attribute vec3 aN;
+ #else
+ attribute vec4 aPosAge;attribute vec4 aVelLife;attribute float aSlot;
+ #endif
+#else
+ uniform highp sampler2D tPos;uniform highp sampler2D tVel;uniform highp sampler2D tSort;uniform int uBase;uniform int uCap;uniform int uStateW;uniform int uSortW;uniform int uCount;
+ void keFetch(int slot,out vec4 P,out vec4 V){ivec2 t=ivec2(slot%uStateW,slot/uStateW);P=texelFetch(tPos,t,0);V=texelFetch(tVel,t,0);}
+#endif
+uniform sampler2D tCurves;uniform vec4 uSizeInfo;uniform vec3 uColorA;uniform vec3 uColorB;uniform vec4 uRotInfo;uniform vec4 uFlip;uniform float uFlipRandom;
+uniform float uWorldSpace;uniform float uEmissive;uniform vec4 uRibbon;uniform float uCamOffset;
+varying vec2 vUv;varying vec4 vColor;varying float vViewZ;varying vec2 vCorner;varying float vAdd;
+#ifdef KE_FLIP_BLEND
+varying vec3 vUv2;
+#endif
+#include <fog_pars_vertex>
+${KE.GLSL.hash}
+/* Per-particle random numbers: slots are reused, so the (random) lifetime is mixed in to decorrelate successive occupants. */
+vec2 kSeed;
+void keSeed(float slot,float life){kSeed=vec2(mod(slot,4096.)*1.618034,floor(slot/4096.)*7.31+fract(life*127.1)*631.7);}
+float keR(float i){return keHash12(kSeed+vec2(i*17.13,i*3.71));}
+vec4 keCurveA(float t){return texture2D(tCurves,vec2((t*${CURVE_RES-1}.+.5)/${CURVE_RES}.,.25));}
+vec4 keCurveB(float t){return texture2D(tCurves,vec2((t*${CURVE_RES-1}.+.5)/${CURVE_RES}.,.75));}
+vec4 keView(vec3 p){return uWorldSpace>.5?viewMatrix*vec4(p,1.):modelViewMatrix*vec4(p,1.);}
+vec3 keViewDir(vec3 v){return uWorldSpace>.5?(viewMatrix*vec4(v,0.)).xyz:(modelViewMatrix*vec4(v,0.)).xyz;}
+void keCull(){gl_Position=vec4(0.,0.,2.,1.);vColor=vec4(0.);vUv=vec2(0.);vViewZ=0.;vCorner=vec2(0.);vAdd=0.;
+#ifdef KE_FLIP_BLEND
+ vUv2=vec3(0.);
+#endif
+}
+vec2 keCell(float f,vec2 uv){float cx=mod(f,uFlip.x),cy=floor(f/uFlip.x);return vec2((cx+uv.x)/uFlip.x,1.-(cy+1.-uv.y)/uFlip.y);}
+bool keStyle(float slot,float life,float t,out float size){
+ keSeed(slot,life);vec4 ca=keCurveA(t),cb=keCurveB(t);size=mix(uSizeInfo.x,uSizeInfo.y,keR(1.))*cb.r*uSizeInfo.z;
+ vColor=vec4(mix(uColorA,uColorB,keR(2.))*ca.rgb*ca.rgb*uEmissive,ca.a);vAdd=cb.g;return size>1e-6&&ca.a>.002;
+}
+void main(){
+#ifdef KE_RIBBON
+ vec4 A,B,LS;vec3 PP,NN;
+ #ifdef KE_CPU
+ A=aA;B=aB;LS=aLS;PP=aP;NN=aN;
+ #else
+ int k=int(aIndex+.5),sa=(k+uBase)%uCap,sb=(sa+1)%uCap;vec4 VA,VB,Q,VQ;keFetch(sa,A,VA);keFetch(sb,B,VB);
+ LS=vec4(VA.w,VB.w,float(sa),float(sb));PP=A.xyz;NN=B.xyz;
+ if(k>0){keFetch((sa-1+uCap)%uCap,Q,VQ);if(VQ.w>0.&&Q.w<VQ.w&&A.w<=Q.w+1e-4&&Q.w-A.w<uRibbon.y&&distance(Q.xyz,A.xyz)<uRibbon.x)PP=Q.xyz;}
+ if(k+2<uCount){keFetch((sb+1)%uCap,Q,VQ);if(VQ.w>0.&&Q.w<VQ.w&&Q.w<=B.w+1e-4&&B.w-Q.w<uRibbon.y&&distance(Q.xyz,B.xyz)<uRibbon.x)NN=Q.xyz;}
+ #endif
+ float seg=distance(A.xyz,B.xyz);
+ if(!(LS.x>0.&&A.w<LS.x&&LS.y>0.&&B.w<LS.y&&B.w<=A.w+1e-4&&A.w-B.w<uRibbon.y&&seg<uRibbon.x&&seg>1e-5)){keCull();return;}
+ float e=position.x;vec4 E=e<.5?A:B;float life=e<.5?LS.x:LS.y,slot=e<.5?LS.z:LS.w;vec3 tg=e<.5?B.xyz-PP:NN-A.xyz;
+ float t=clamp(E.w/life,0.,1.),size;if(!keStyle(slot,life,t,size)){keCull();return;}
+ vec4 mvPosition=keView(E.xyz);vec3 side=cross(keViewDir(tg),mvPosition.xyz);float sl=length(side);side=sl>1e-9?side/sl:vec3(1.,0.,0.);
+ mvPosition.xyz+=side*position.y*size*.5;vCorner=vec2(0.,position.y);vUv=vec2(uRibbon.z>.5?t:.5,position.y*.5+.5);
+#else
+ vec4 P,V;float slot;
+ #ifdef KE_CPU
+ P=aPosAge;V=aVelLife;slot=aSlot;
+ #else
+ int i=int(aIndex+.5);
+  #ifdef KE_SORT
+ int si=int(texelFetch(tSort,ivec2(i%uSortW,i/uSortW),0).y+.5);
+  #else
+ int si=(i+uBase)%uCap;
+  #endif
+ keFetch(si,P,V);slot=float(si);
+ #endif
+ if(V.w<=0.||P.w>=V.w){keCull();return;}
+ float t=clamp(P.w/V.w,0.,1.),size;if(!keStyle(slot,V.w,t,size)){keCull();return;}
+ vec4 mvPosition=keView(P.xyz);vec2 c=position.xy,off;float hs=size*.5,ck=1.;
+ /* camera offset: slide the sprite toward the eye and shrink it by the same ratio (same screen footprint, less clipping into geometry) */
+ if(uCamOffset>0.){float L=length(mvPosition.xyz);ck=max(L-uCamOffset,L*.1)/max(L,1e-5);mvPosition.xyz*=ck;hs*=ck;}
+ #ifdef KE_STRETCH
+ vec3 vv=keViewDir(V.xyz);float sl=length(vv.xy);
+ if(sl>1e-4){vec2 ax=vv.xy/sl,pp=vec2(-ax.y,ax.x);float ext=uSizeInfo.w*sl*ck;off=ax*(c.x*(hs+ext*.5)-ext*.5)+pp*(c.y*hs);}else off=c*hs;
+ vCorner=c;
+ #else
+ float rot=mix(uRotInfo.x,uRotInfo.y,keR(3.))+mix(uRotInfo.z,uRotInfo.w,keR(4.))*P.w,cs=cos(rot),sn=sin(rot);
+ vec2 rc=vec2(c.x*cs-c.y*sn,c.x*sn+c.y*cs);off=rc*hs;vCorner=rc;
+ #endif
+ mvPosition.xy+=off;vec2 uv=c*.5+.5;
+ #ifdef KE_FLIP
+ float frames=uFlip.w,rnd=floor(keR(5.)*frames);
+ float fr=uFlip.z>0.?P.w*uFlip.z+uFlipRandom*rnd:(uFlipRandom>.5?rnd:min(t*frames,frames-.001));
+ float f0=mod(floor(fr),frames);vUv=keCell(f0,uv);
+  #ifdef KE_FLIP_BLEND
+ vUv2=vec3(keCell(mod(f0+1.,frames),uv),uFlipRandom>.5&&uFlip.z<=0.?0.:fract(fr));
+  #endif
+ #else
+ vUv=uv;
+ #endif
+#endif
+ vViewZ=-mvPosition.z;gl_Position=projectionMatrix*mvPosition;
+#include <fog_vertex>
+}`;
+const RENDER_FS=`uniform sampler2D map;uniform float uSoftness;uniform vec2 uCameraFade;uniform vec4 uLitInfo;uniform vec3 uAmbient;
+uniform sampler2D keSceneDepth;uniform float keHasScene;uniform vec2 keResolution;uniform vec3 keSunDirection;uniform vec3 keSunColor;
+varying vec2 vUv;varying vec4 vColor;varying float vViewZ;varying vec2 vCorner;varying float vAdd;
+#ifdef KE_FLIP_BLEND
+varying vec3 vUv2;
+#endif
+#include <fog_pars_fragment>
+void main(){
+ vec4 tx=texture2D(map,vUv);
+#ifdef KE_FLIP_BLEND
+ tx=mix(tx,texture2D(map,vUv2.xy),vUv2.z);
+#endif
+#ifdef KE_STRAIGHT_MAP
+ tx.rgb*=tx.a;
+#endif
+ vec3 rgb=tx.rgb*vColor.rgb;float a=tx.a*vColor.a;
+#ifdef KE_LIT
+ vec3 nV=normalize(vec3(vCorner*uLitInfo.x,1.)),nW=normalize((vec4(nV,0.)*viewMatrix).xyz),camZ=normalize((vec4(0.,0.,1.,0.)*viewMatrix).xyz);
+ float ndl=dot(nW,keSunDirection),diff=mix(max(ndl,0.),ndl*.5+.5,uLitInfo.y),scatter=pow(max(dot(-camZ,keSunDirection),0.),6.)*uLitInfo.z;
+ rgb*=uAmbient+keSunColor*(diff+scatter);
+#endif
+ float fade=clamp((vViewZ-uCameraFade.x)/max(uCameraFade.y,1e-4),0.,1.);
+#ifdef KE_SOFT
+ if(keHasScene>.5){float sz=texture2D(keSceneDepth,gl_FragCoord.xy/keResolution).r;fade*=clamp((sz-vViewZ)/uSoftness,0.,1.);}
+#endif
+ rgb*=vColor.a*fade;a*=fade;float oa=a*(1.-vAdd);
+#ifdef USE_FOG
+ #ifdef FOG_EXP2
+ float ff=1.-exp(-fogDensity*fogDensity*fogDepth*fogDepth);
+ #else
+ float ff=smoothstep(fogNear,fogFar,fogDepth);
+ #endif
+ rgb=rgb*(1.-ff)+fogColor*oa*ff;
+#endif
+ gl_FragColor=vec4(rgb,oa);
+#include <tonemapping_fragment>
+#include <encodings_fragment>
+}`;
+
+/* ---------- procedural sprite textures (canvas, generated on first use) ---------- */
+function hash2(x,y,seed){let h=Math.imul(x|0,374761393)+Math.imul(y|0,668265263)+Math.imul(seed|0,2147483647)|0;h=Math.imul(h^(h>>>13),1274126177);return ((h^(h>>>16))>>>0)/4294967296;}
+function vnoise2(x,y,seed){const ix=Math.floor(x),iy=Math.floor(y);let fx=x-ix,fy=y-iy;fx=fx*fx*(3-2*fx);fy=fy*fy*(3-2*fy);
+  const a=hash2(ix,iy,seed),b=hash2(ix+1,iy,seed),c=hash2(ix,iy+1,seed),d=hash2(ix+1,iy+1,seed);return a+(b-a)*fx+(c-a)*fy+(a-b-c+d)*fx*fy;}
+function fbm2(x,y,seed,oct=5){let s=0,a=.5,n=0;for(let i=0;i<oct;i++){s+=a*vnoise2(x,y,seed+i*17);n+=a;x=x*2.03+1.7;y=y*2.03+9.2;a*=.5;}return s/n;}
+function pixelCanvas(S,fn){
+  const c=document.createElement('canvas');c.width=c.height=S;const g=c.getContext('2d'),img=g.createImageData(S,S),d=img.data,o=[1,1,1,0];
+  for(let y=0;y<S;y++)for(let x=0;x<S;x++){o[0]=o[1]=o[2]=1;o[3]=0;fn((x+.5)/S*2-1,(y+.5)/S*2-1,o,x,y);const k=(y*S+x)*4;
+    d[k]=clamp(o[0],0,1)*255;d[k+1]=clamp(o[1],0,1)*255;d[k+2]=clamp(o[2],0,1)*255;d[k+3]=clamp(o[3],0,1)*255;}
+  g.putImageData(img,0,0);return c;
+}
+const edge=r2=>clamp((1-r2)*4,0,1);
+const TEXTURE_PAINTERS={
+  soft:()=>pixelCanvas(128,(u,v,o)=>{const r2=u*u+v*v,k=3.2;o[3]=r2>=1?0:(Math.exp(-r2*k)-Math.exp(-k))/(1-Math.exp(-k));}),
+  /* hot pinpoint core with a wide halo (fireflies, embers, light motes) */
+  glow:()=>pixelCanvas(128,(u,v,o)=>{const r2=u*u+v*v;o[3]=(Math.exp(-r2*45)+Math.exp(-r2*9)*.32+Math.exp(-r2*3)*.08)*edge(r2);}),
+  spark:()=>pixelCanvas(128,(u,v,o)=>{const core=Math.exp(-u*u*2.2)*Math.exp(-v*v*20)*(1-u*u),glow=Math.exp(-u*u*1.2)*Math.exp(-v*v*5)*.25*(1-u*u);o[3]=core+glow;}),
+  flare:()=>pixelCanvas(128,(u,v,o)=>{const r2=u*u+v*v,au=Math.abs(u),av=Math.abs(v),d1=Math.abs(u+v)*.7071,d2=Math.abs(u-v)*.7071;
+    const rays=Math.exp(-av*55)*Math.exp(-au*2.6)+Math.exp(-au*55)*Math.exp(-av*2.6)+.35*(Math.exp(-d1*70)*Math.exp(-d2*5)+Math.exp(-d2*70)*Math.exp(-d1*5));
+    o[3]=(Math.exp(-r2*38)+Math.exp(-r2*6)*.4+rays*.6)*edge(r2);}),
+  ring:()=>pixelCanvas(128,(u,v,o)=>{const r2=u*u+v*v,r=Math.sqrt(r2),d=r-.7;o[3]=(Math.exp(-d*d*220)+(r<.7?.18*Math.exp(-(.7-r)*5):0)+Math.exp(-d*d*25)*.15)*edge(r2);}),
+  star:()=>pixelCanvas(128,(u,v,o)=>{const r2=u*u+v*v,au=Math.abs(u),av=Math.abs(v);const rays=Math.max(Math.exp(-au*30-av*3.4),Math.exp(-av*30-au*3.4));
+    o[3]=(rays+Math.exp(-r2*22)*.9+Math.exp(-r2*4)*.18)*edge(r2);}),
+  /* 2x2 atlas of noisy puffs (used with a random flipbook frame); RGB carries a little self-shading. */
+  smoke:()=>{const S=256,C=128;return pixelCanvas(S,(u,v,o,x,y)=>{const cx=x>=C?1:0,cy=y>=C?1:0,seed=1+cx+cy*2;const lu=((x-cx*C)+.5)/C*2-1,lv=((y-cy*C)+.5)/C*2-1;
+    const r=Math.sqrt(lu*lu+lv*lv),n=fbm2(lu*2.1+seed*7.3,lv*2.1-seed*3.1,seed*101),m=fbm2(lu*4.3-seed,lv*4.3+seed*2,seed*53+7,4);
+    const e=r+(n-.5)*.7;const dens=clamp((1-e)/.55,0,1);o[3]=dens*dens*(3-2*dens)*(.45+.75*m)*clamp((1-r)*6,0,1);
+    const shade=clamp(.78+.35*(m-.5)-.18*lv,0,1);o[0]=o[1]=o[2]=shade;});},
+  leaf:()=>{const S=64,c=document.createElement('canvas');c.width=c.height=S;const g=c.getContext('2d');g.translate(S/2,S/2);g.rotate(-Math.PI/4);
+    const grad=g.createLinearGradient(-14,0,14,0);grad.addColorStop(0,'#e8e8e8');grad.addColorStop(.5,'#ffffff');grad.addColorStop(1,'#c8c8c8');
+    g.beginPath();g.moveTo(0,-28);g.bezierCurveTo(17,-15,16,13,0,27);g.bezierCurveTo(-16,13,-17,-15,0,-28);g.fillStyle=grad;g.fill();
+    g.strokeStyle='rgba(150,150,150,0.9)';g.lineWidth=1.4;g.beginPath();g.moveTo(0,-26);g.lineTo(0,29);g.stroke();g.lineWidth=.8;
+    for(let i=-2;i<=2;i++){const y=i*8;g.beginPath();g.moveTo(0,y+3);g.lineTo(10-Math.abs(i)*1.5,y-5);g.moveTo(0,y+3);g.lineTo(-10+Math.abs(i)*1.5,y-5);g.stroke();}return c;},
+};
+
+/* ---------- spawn history: alive estimate and live ring window (GPU path) ---------- */
+/* Spawns are grouped into time buckets {t0,t1,count,start}. A bucket older than the maximum lifetime cannot
+   hold live particles, so the ring range covered by the remaining buckets bounds every live slot. */
+class SpawnHistory{
+  constructor(){this.b=Array.from({length:HISTORY},()=>({t0:0,t1:0,count:0,start:0}));this.head=0;this.size=0;}
+  reset(){this.head=0;this.size=0;}
+  add(time,count,start,bucketDur){
+    if(count<=0)return;let last=this.size?this.b[(this.head+this.size-1)%HISTORY]:null;
+    if(last&&time-last.t0<bucketDur){last.t1=time;last.count+=count;return;}
+    if(this.size===HISTORY){const o=this.b[this.head],n=this.b[(this.head+1)%HISTORY];n.t0=o.t0;n.count+=o.count;n.start=o.start;this.head=(this.head+1)%HISTORY;this.size--;}
+    last=this.b[(this.head+this.size)%HISTORY];last.t0=last.t1=time;last.count=count;last.start=start;this.size++;
+  }
+  prune(time,maxLife){while(this.size&&time-this.b[this.head].t1>maxLife+.05){this.head=(this.head+1)%HISTORY;this.size--;}}
+  window(cursor,cap,out){let total=0;for(let i=0;i<this.size;i++)total+=this.b[(this.head+i)%HISTORY].count;
+    if(!this.size){out.base=cursor;out.count=0;}else if(total>=cap){out.base=cursor;out.count=cap;}else{out.base=this.b[this.head].start;out.count=total;}return out;}
+  estimate(time,lmin,lmax,cap){let n=0;for(let i=0;i<this.size;i++){const b=this.b[(this.head+i)%HISTORY],age=time-(b.t0+b.t1)*.5;
+      n+=b.count*(lmax<=lmin?(age<lmax?1:0):clamp((lmax-age)/(lmax-lmin),0,1));}return Math.min(cap,Math.round(n));}
+}
+
+/* ---------- configuration ---------- */
+function normalizeConfig(THREE,cfg,linear){
+  cfg=cfg||{};const sp=cfg.spawn||{},sh=sp.shape||{},init=cfg.init||{},fo=cfg.forces||{},co=cfg.collision,re=cfg.render||{},ev=cfg.events||{};
+  const capacity=Math.floor(cfg.capacity===undefined?1024:+cfg.capacity);
+  if(!(capacity>=1&&capacity<=1048576))throw new RangeError('KE.VFX: capacity must be an integer 1..1048576');
+  const type=sh.type||'point';if(!(type in SHAPES))throw new RangeError('KE.VFX: unknown spawn shape "'+type+'"');
+  if(type==='mesh'&&!(sh.mesh&&sh.mesh.isObject3D))throw new TypeError('KE.VFX: shape "mesh" needs shape.mesh (a THREE.Mesh)');
+  const life=range(init.life,[1,2]);if(!(life[1]>0)||!(life[0]>=0))throw new RangeError('KE.VFX: init.life must be positive');life[0]=Math.min(life[0],life[1]);
+  const blending=re.blending||'additive';if(!BLENDS[blending])throw new RangeError('KE.VFX: unknown blending "'+blending+'"');
+  const bursts=(sp.bursts||[]).map(b=>{const cycle=Math.max(0,+b.cycle||0);return {time:Math.max(0,+b.time||0),count:range(b.count===undefined?10:b.count,[10,10]),cycle,
+    repeat:b.repeat===undefined?(cycle>0?Infinity:1):Math.max(1,Math.floor(b.repeat)),probability:b.probability===undefined?1:clamp(+b.probability,0,1),next:0,left:0};});
+  let dirMode=DIRMODES.shape,dir=new THREE.Vector3(0,1,0);
+  if(typeof init.direction==='string'){if(!(init.direction in DIRMODES)||init.direction==='vector')throw new RangeError('KE.VFX: init.direction must be a vector or shape|random|tangent');dirMode=DIRMODES[init.direction];}
+  else if(init.direction!==undefined){dirMode=DIRMODES.vector;dir=vec3(THREE,init.direction,[0,1,0]);if(dir.lengthSq()<1e-12)dir.set(0,1,0);dir.normalize();}
+  const cols=Array.isArray(init.color)?init.color:[init.color,init.color];
+  const pick=(v,def)=>v===undefined||v===null||v===false?null:(Number.isFinite(v)?{...def,strength:v}:{...def,...v});
+  const curl=pick(fo.curl,{strength:1,scale:1,speed:.5,octaves:2}),vortex=pick(fo.vortex,{axis:[0,1,0],center:[0,0,0],strength:1,pull:0}),attractor=pick(fo.attractor,{position:[0,0,0],strength:1,radius:0});
+  let collision=null;
+  if(co&&(typeof co.heightAt==='function'||Number.isFinite(co.plane)))collision={heightAt:typeof co.heightAt==='function'?co.heightAt:null,plane:Number.isFinite(co.plane)?co.plane:null,
+    bounce:co.bounce===undefined?.3:+co.bounce,friction:co.friction===undefined?.2:clamp(+co.friction,0,1),die:!!co.die,radius:+co.radius||0,
+    resolution:clamp(Math.round(co.resolution||64),4,512),region:co.region||null};
+  let tex=re.texture===undefined?'soft':re.texture;if(typeof tex==='string'&&!BUILTIN_TEXTURES.includes(tex))throw new RangeError('KE.VFX: unknown texture "'+tex+'"');
+  let flip=re.flipbook;if(flip===undefined&&tex==='smoke')flip={cols:2,rows:2,fps:0,random:true};
+  if(flip){const c=Math.max(1,Math.floor(flip.cols||1)),r=Math.max(1,Math.floor(flip.rows||1));flip={cols:c,rows:r,fps:+flip.fps||0,random:!!flip.random,frames:clamp(Math.floor(flip.frames||c*r),1,c*r),blend:!!flip.blend};}
+  const orient=new THREE.Quaternion();if(cfg.orientation&&cfg.orientation.isQuaternion)orient.copy(cfg.orientation);else if(Array.isArray(cfg.orientation))orient.setFromEuler(new THREE.Euler(+cfg.orientation[0]||0,+cfg.orientation[1]||0,+cfg.orientation[2]||0));
+  const wind=vec3(THREE,fo.wind,[0,0,0]);
+  const hasBursts=bursts.length>0;
+  return {
+    name:cfg.name||'emitter',capacity,gpu:cfg.gpu!==false,space:cfg.space==='local'?'local':'world',attachTo:cfg.attachTo&&cfg.attachTo.isObject3D?cfg.attachTo:null,attachRotation:cfg.attachRotation!==false,
+    position:vec3(THREE,cfg.position,[0,0,0]),orientation:orient,autoplay:cfg.autoplay!==false,teleportDistance:cfg.teleportDistance===undefined?20:Math.max(0,+cfg.teleportDistance||0),prewarm:Math.max(0,+cfg.prewarm||0),scaleWithBudget:cfg.scaleWithBudget!==false,seed:Number.isFinite(cfg.seed)?cfg.seed:(Math.random()*1e9)|0,
+    spawn:{rate:Math.max(0,sp.rate===undefined?(hasBursts?0:50):+sp.rate||0),bursts,duration:sp.duration===undefined?Infinity:Math.max(1e-3,+sp.duration),loop:sp.loop!==false,
+      rateOverDistance:Math.max(0,+sp.rateOverDistance||0),
+      shape:{type,code:SHAPES[type],radius:sh.radius===undefined?(type==='box'||type==='point'||type==='line'||type==='mesh'?0:.5):Math.max(0,+sh.radius),thickness:sh.surfaceOnly?0:clamp(sh.thickness===undefined?1:+sh.thickness,0,1),
+        surfaceOnly:!!sh.surfaceOnly,size:vec3(THREE,sh.size,[1,1,1]),angle:sh.angle===undefined?.4:clamp(+sh.angle,0,Math.PI),width:Math.max(0,+sh.width||0),
+        mesh:type==='mesh'?sh.mesh:null,samples:clamp(Math.round(sh.samples||2048),16,65536),from:vec3(THREE,sh.from,[0,0,0]),to:vec3(THREE,sh.to,[0,1,0])}},
+    init:{life,speed:range(init.speed,[1,2]),dirMode,direction:dir,spread:clamp(+init.spread||0,0,Math.PI),size:range(init.size,[.1,.2]).map(v=>Math.max(0,v)),
+      color:[toColor(THREE,cols[0],linear),toColor(THREE,cols.length>1?cols[1]:cols[0],linear)],rotation:range(init.rotation,[0,0]),angularVelocity:range(init.angularVelocity,[0,0]),
+      inheritVelocity:+init.inheritVelocity||0,velocity:vec3(THREE,init.velocity,[0,0,0])},
+    forces:{gravity:vec3(THREE,fo.gravity,[0,0,0]),drag:Math.max(0,fo.drag===undefined?(wind.lengthSq()>0?.5:0):+fo.drag||0),wind,turbulence:Math.max(0,+fo.turbulence||0),maxSpeed:Math.max(0,+fo.maxSpeed||0),
+      curl:curl&&{strength:+curl.strength||0,scale:+curl.scale||1,speed:+curl.speed||0,octaves:clamp(Math.round(curl.octaves||2),1,4)},
+      vortex:vortex&&{axis:vec3(THREE,vortex.axis,[0,1,0]).normalize(),center:vec3(THREE,vortex.center,[0,0,0]),strength:+vortex.strength||0,pull:+vortex.pull||0},
+      attractor:attractor&&{position:vec3(THREE,attractor.position,[0,0,0]),strength:+attractor.strength||0,radius:Math.max(0,+attractor.radius||0)}},
+    collision,
+    render:{blending,texture:tex,flipbook:flip||null,stretch:Math.max(0,+re.stretch||0),
+      sizeOverLife:scalarCurve(re.sizeOverLife,[[0,1],[1,1]]),colorOverLife:colorCurve(THREE,re.colorOverLife,linear),
+      blendOverLife:blending==='additive'?[[0,1],[1,1]]:blending==='alpha'?[[0,0],[1,0]]:scalarCurve(re.blendOverLife,[[0,0],[1,0]]),
+      softness:Math.max(0,re.softness===undefined?.5:+re.softness||0),lit:!!re.lit,emissive:re.emissive===undefined?1:Math.max(0,+re.emissive),sortAlpha:!!re.sortAlpha,ribbons:!!re.ribbons,
+      ambient:toColor(THREE,re.ambient===undefined?0x5a6070:re.ambient,linear),wrap:re.wrap===undefined?.6:clamp(+re.wrap,0,1),translucency:re.translucency===undefined?.4:Math.max(0,+re.translucency),
+      curvature:re.curvature===undefined?.7:Math.max(0,+re.curvature),cameraOffset:Math.max(0,+re.cameraOffset||0),order:+re.order||0,cameraFade:range(re.cameraFade,[.05,.4]),layer:Number.isInteger(re.layer)?re.layer:null,
+      ribbonMaxGap:re.ribbonMaxGap===undefined?4:Math.max(1e-3,+re.ribbonMaxGap),ribbonMaxAgeGap:re.ribbonMaxAgeGap===undefined?.5:Math.max(1e-3,+re.ribbonMaxAgeGap),ribbonUV:re.ribbonUV==='length'?'length':'profile',
+      premultipliedTexture:re.premultipliedTexture},
+    events:{onDeath:typeof ev.onDeath==='function'?ev.onDeath:null},
+  };
+}
+
+/* ---------- GPU backend ---------- */
+class GPUBackend{
+  constructor(e){
+    const THREE=e.THREE,vfx=e.vfx,c=e.config,cap=e.capacity;this.e=e;this.vfx=vfx;this.renderer=vfx.renderer;
+    const W=Math.max(4,nextPow2(Math.ceil(Math.sqrt(cap)))),H=Math.max(1,Math.ceil(cap/W));this.W=W;this.H=H;
+    const mk=()=>{const rt=new THREE.WebGLRenderTarget(W,H,{type:THREE.FloatType,format:THREE.RGBAFormat,minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter,depthBuffer:false,stencilBuffer:false});rt.texture.generateMipmaps=false;return rt;};
+    this.targets=[{pos:mk(),vel:mk()},{pos:mk(),vel:mk()}];this.read=0;
+    const f=c.forces,col=c.collision,defines={KE_SHAPE:c.spawn.shape.code,KE_DIRMODE:c.init.dirMode};
+    if(f.curl)defines.KE_CURL=f.curl.octaves;if(f.turbulence>0)defines.KE_TURB=1;if(f.vortex)defines.KE_VORTEX=1;if(f.attractor)defines.KE_ATTRACT=1;if(f.maxSpeed>0)defines.KE_MAXSPEED=1;
+    if(col){defines.KE_COLLIDE=1;if(col.plane!==null)defines.KE_PLANE=1;if(col.heightAt)defines.KE_HEIGHT=1;if(col.die)defines.KE_DIE=1;}
+    const V3=()=>({value:new THREE.Vector3()});
+    this.uniforms={tPos:{value:null},tVel:{value:null},uSize:{value:new THREE.Vector2(W,H)},uCap:{value:cap},uDt:{value:0},uTime:{value:0},
+      uBatchCount:{value:0},uBatch:{value:Array.from({length:MAX_BATCHES},()=>new THREE.Vector4())},uBatchFrom:{value:Array.from({length:MAX_BATCHES},()=>new THREE.Vector3())},uBatchTo:{value:Array.from({length:MAX_BATCHES},()=>new THREE.Vector3())},
+      uEmitRot:{value:new THREE.Matrix3()},uEmitVel:V3(),uShape:{value:new THREE.Vector4()},uShapeSize:V3(),uLineA:V3(),uLineB:V3(),
+      tMesh:{value:e.meshTexture||null},uMeshInfo:V3(),uMeshMatrix:{value:new THREE.Matrix4()},uLife:{value:new THREE.Vector2()},uSpeed:{value:new THREE.Vector2()},uDir:V3(),uSpread:{value:0},uInitVel:V3(),
+      uGravity:V3(),uWind:V3(),uDrag:{value:0},uTurb:{value:0},uMaxSpeed:{value:0},uCurl:{value:new THREE.Vector4()},uVortexAxis:V3(),uVortexCenter:V3(),uVortex:{value:new THREE.Vector2()},
+      uAttractPos:V3(),uAttract:{value:new THREE.Vector2()},uCollide:{value:new THREE.Vector4()},tHeight:{value:e.heightTexture||null},uHeightRegion:{value:new THREE.Vector4(0,0,1,1)},uHeightRes:{value:2},
+      uToWorld:{value:new THREE.Matrix4()},uToLocal:{value:new THREE.Matrix4()}};
+    const mat=(fs)=>new THREE.ShaderMaterial({vertexShader:KE.FULLSCREEN_VS,fragmentShader:SIM_COMMON+fs,uniforms:this.uniforms,defines:{...defines},depthTest:false,depthWrite:false,blending:THREE.NoBlending,toneMapped:false});
+    this.velMat=mat(SIM_VEL);this.posMat=mat(SIM_POS);
+    for(const t of this.targets){vfx._clear(t.pos);vfx._clear(t.vel);}
+    this.sort=null;this.passes=0;
+  }
+  get position(){return this.targets[this.read].pos;}
+  get velocity(){return this.targets[this.read].vel;}
+  simulate(dt,e){
+    const u=this.uniforms,f=e.frame,b=e.batches,n=e.batchCount;
+    u.uDt.value=dt;u.uTime.value=e.vfx.time;u.uBatchCount.value=n;
+    for(let i=0;i<n;i++){const s=b[i];u.uBatch.value[i].set(s.start,s.count,s.span,s.seed);u.uBatchFrom.value[i].copy(s.from);u.uBatchTo.value[i].copy(s.to);}
+    u.uEmitRot.value.copy(f.emitRot);u.uEmitVel.value.copy(f.emitVel);u.uShape.value.copy(f.shape);u.uShapeSize.value.copy(f.shapeSize);u.uLineA.value.copy(f.lineA);u.uLineB.value.copy(f.lineB);
+    u.uMeshInfo.value.copy(f.meshInfo);u.uMeshMatrix.value.copy(f.meshMatrix);u.uLife.value.copy(f.life);u.uSpeed.value.copy(f.speed);u.uDir.value.copy(f.dir);u.uSpread.value=f.spread;u.uInitVel.value.copy(f.initVel);
+    u.uGravity.value.copy(f.gravity);u.uWind.value.copy(f.wind);u.uDrag.value=f.drag;u.uTurb.value=f.turb;u.uMaxSpeed.value=f.maxSpeed;u.uCurl.value.copy(f.curl);
+    u.uVortexAxis.value.copy(f.vortexAxis);u.uVortexCenter.value.copy(f.vortexCenter);u.uVortex.value.copy(f.vortex);u.uAttractPos.value.copy(f.attractPos);u.uAttract.value.copy(f.attract);
+    u.uCollide.value.copy(f.collide);u.uHeightRegion.value.copy(f.heightRegion);u.uHeightRes.value=f.heightRes;u.uToWorld.value.copy(f.toWorld);u.uToLocal.value.copy(f.toLocal);
+    const r=this.targets[this.read],w=this.targets[1-this.read],fsq=this.vfx.fsq;
+    u.tPos.value=r.pos.texture;u.tVel.value=r.vel.texture;fsq.render(this.renderer,w.vel,this.velMat);
+    u.tVel.value=w.vel.texture;fsq.render(this.renderer,w.pos,this.posMat);
+    this.read=1-this.read;this.passes=2;
+  }
+  clear(){for(const t of this.targets){this.vfx._clear(t.pos);this.vfx._clear(t.vel);}}
+  /* Bitonic sort of the live window by view depth; returns the sorted texture. */
+  sortWindow(win,modelView){
+    const THREE=this.e.THREE,cap=this.e.capacity;
+    if(!this.sort){const N=nextPow2(cap),SW=Math.max(1,nextPow2(Math.ceil(Math.sqrt(N)))),SH=Math.max(1,N/SW);
+      const mk=()=>new THREE.WebGLRenderTarget(SW,SH,{type:THREE.FloatType,format:THREE.RGBAFormat,minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter,depthBuffer:false,stencilBuffer:false});
+      const ku={tPos:{value:null},tVel:{value:null},uStateW:{value:this.W},uSortW:{value:SW},uBase:{value:0},uCap:{value:cap},uCount:{value:0},uModelView:{value:new THREE.Matrix4()}};
+      const mu={tSortIn:{value:null},uSortW:{value:SW},uK:{value:2},uJ:{value:1}};
+      const opts={vertexShader:KE.FULLSCREEN_VS,depthTest:false,depthWrite:false,blending:THREE.NoBlending,toneMapped:false};
+      this.sort={N,SW,SH,rt:[mk(),mk()],ku,mu,keyMat:new THREE.ShaderMaterial({...opts,fragmentShader:SORT_KEY,uniforms:ku}),mergeMat:new THREE.ShaderMaterial({...opts,fragmentShader:SORT_MERGE,uniforms:mu})};}
+    const s=this.sort,fsq=this.vfx.fsq,n=Math.max(2,nextPow2(win.count));
+    s.ku.tPos.value=this.position.texture;s.ku.tVel.value=this.velocity.texture;s.ku.uBase.value=win.base;s.ku.uCount.value=win.count;s.ku.uModelView.value.copy(modelView);
+    let cur=0;fsq.render(this.renderer,s.rt[0],s.keyMat);let passes=1;
+    for(let k=2;k<=n;k*=2)for(let j=k>>1;j>0;j>>=1){s.mu.tSortIn.value=s.rt[cur].texture;s.mu.uK.value=k;s.mu.uJ.value=j;fsq.render(this.renderer,s.rt[1-cur],s.mergeMat);cur=1-cur;passes++;}
+    this.passes+=passes;return s.rt[cur];
+  }
+  readState(){
+    const n=this.W*this.H*4,pos=new Float32Array(n),vel=new Float32Array(n);
+    this.renderer.readRenderTargetPixels(this.position,0,0,this.W,this.H,pos);this.renderer.readRenderTargetPixels(this.velocity,0,0,this.W,this.H,vel);return {position:pos,velocity:vel,width:this.W,height:this.H};
+  }
+  dispose(){for(const t of this.targets){t.pos.dispose();t.vel.dispose();}this.velMat.dispose();this.posMat.dispose();
+    if(this.sort){for(const rt of this.sort.rt)rt.dispose();this.sort.keyMat.dispose();this.sort.mergeMat.dispose();this.sort=null;}}
+}
+
+/* ---------- CPU backend ---------- */
+class CPUBackend{
+  constructor(e){const cap=e.capacity;this.e=e;this.pos=new Float32Array(cap*3);this.vel=new Float32Array(cap*3);this.age=new Float32Array(cap);this.life=new Float32Array(cap);
+    this.alive=0;this.rng=KE.random(e.config.seed);this._v=[0,0,0];this._c=[0,0,0];this._p=[0,0,0];this._d=[0,0,0];this.order=new Uint32Array(cap);this.keys=new Float32Array(cap);this.passes=0;
+    const keys=this.keys;this._byDepth=(a,b)=>keys[a]-keys[b];
+    const THREE=e.THREE;this._dp=new THREE.Vector3();this._dv=new THREE.Vector3();this.deathInfo={position:new THREE.Vector3(),velocity:new THREE.Vector3(),index:0,emitter:e};}
+  clear(){this.life.fill(0);this.age.fill(0);this.alive=0;}
+  _randDir(o){const r=this.rng,z=r()*2-1,ph=r()*TAU,s=Math.sqrt(Math.max(0,1-z*z));o[0]=s*Math.cos(ph);o[1]=z;o[2]=s*Math.sin(ph);return o;}
+  _cone(o,ax,ay,az,ang){const r=this.rng,ct=1+(Math.cos(ang)-1)*r(),st=Math.sqrt(Math.max(0,1-ct*ct)),ph=r()*TAU;
+    let tx,ty,tz;if(Math.abs(ay)<.99){tx=-az;ty=0;tz=ax;}else{tx=0;ty=az;tz=-ay;}const tl=Math.hypot(tx,ty,tz)||1;tx/=tl;ty/=tl;tz/=tl;
+    const bx=ay*tz-az*ty,by=az*tx-ax*tz,bz=ax*ty-ay*tx,c=Math.cos(ph)*st,s=Math.sin(ph)*st;
+    o[0]=ax*ct+tx*c+bx*s;o[1]=ay*ct+ty*c+by*s;o[2]=az*ct+tz*c+bz*s;const l=Math.hypot(o[0],o[1],o[2])||1;o[0]/=l;o[1]/=l;o[2]/=l;return o;}
+  /* Mirrors keShape/keSpawn in the GPU shader. */
+  _spawn(i,b,k,f){
+    const r=this.rng,sh=this.e.config.spawn.shape,R=sh.radius,inner=1-sh.thickness,p=this._p,d=this._d,R3=f.emitRot.elements;
+    switch(sh.code){
+      case 0:p[0]=p[1]=p[2]=0;this._randDir(d);break;
+      case 1:case 2:{this._randDir(d);if(sh.code===2)d[1]=Math.abs(d[1]);const rr=sh.surfaceOnly?R:R*Math.cbrt(inner*inner*inner+(1-inner*inner*inner)*r());p[0]=d[0]*rr;p[1]=d[1]*rr;p[2]=d[2]*rr;break;}
+      case 3:{const s=sh.size;for(let a=0;a<3;a++)p[a]=(r()*2-1)*s.getComponent(a)*.5;
+        if(sh.surfaceOnly){const hx=s.x*.5,hy=s.y*.5,hz=s.z*.5,ax=hy*hz,ay=hx*hz,az=hx*hy,u=r()*(ax+ay+az),sg=r()<.5?-1:1;d[0]=d[1]=d[2]=0;
+          if(u<ax){p[0]=sg*hx;d[0]=sg;}else if(u<ax+ay){p[1]=sg*hy;d[1]=sg;}else{p[2]=sg*hz;d[2]=sg;}}
+        else{const l=Math.hypot(p[0],p[1],p[2]);if(l>1e-5){d[0]=p[0]/l;d[1]=p[1]/l;d[2]=p[2]/l;}else{d[0]=0;d[1]=1;d[2]=0;}}break;}
+      case 4:{const ph=r()*TAU,rr=sh.surfaceOnly?R:R*Math.sqrt(inner*inner+(1-inner*inner)*r());p[0]=Math.cos(ph)*rr;p[1]=0;p[2]=Math.sin(ph)*rr;
+        if(R>0){const tilt=sh.angle*rr/R;this._cone(d,Math.cos(ph)*Math.sin(tilt),Math.cos(tilt),Math.sin(ph)*Math.sin(tilt),sh.angle*.3);}else this._cone(d,0,1,0,sh.angle);break;}
+      case 5:{const ph=r()*TAU,rr=sh.surfaceOnly?R:R*Math.sqrt(inner*inner+(1-inner*inner)*r());p[0]=Math.cos(ph)*rr;p[1]=0;p[2]=Math.sin(ph)*rr;d[0]=0;d[1]=1;d[2]=0;break;}
+      case 6:{const ph=r()*TAU,cx=Math.cos(ph),cz=Math.sin(ph);this._randDir(this._c);const j=sh.width*Math.cbrt(r());p[0]=cx*R+this._c[0]*j;p[1]=this._c[1]*j;p[2]=cz*R+this._c[2]*j;d[0]=cx;d[1]=0;d[2]=cz;break;}
+      case 7:{const u=r(),A=sh.from,B=sh.to;let ax=B.x-A.x,ay=B.y-A.y,az=B.z-A.z;const al=Math.hypot(ax,ay,az);if(al>1e-6){ax/=al;ay/=al;az/=al;}else{ax=0;ay=1;az=0;}
+        this._randDir(d);const dp=d[0]*ax+d[1]*ay+d[2]*az;d[0]-=ax*dp;d[1]-=ay*dp;d[2]-=az*dp;const dl=Math.hypot(d[0],d[1],d[2]);if(dl>1e-5){d[0]/=dl;d[1]/=dl;d[2]/=dl;}else{d[0]=0;d[1]=1;d[2]=0;}
+        const rr=sh.surfaceOnly?R:R*Math.sqrt(inner*inner+(1-inner*inner)*r());p[0]=A.x+(B.x-A.x)*u+d[0]*rr;p[1]=A.y+(B.y-A.y)*u+d[1]*rr;p[2]=A.z+(B.z-A.z)*u+d[2]*rr;break;}
+      default:{const M=this.e.meshSamples,n=M.count,idx=Math.min(n-1,Math.floor(r()*n)),m=f.meshMatrix.elements,lp=M.positions,ln=M.normals,x=lp[idx*3],y=lp[idx*3+1],z=lp[idx*3+2];
+        p[0]=m[0]*x+m[4]*y+m[8]*z+m[12];p[1]=m[1]*x+m[5]*y+m[9]*z+m[13];p[2]=m[2]*x+m[6]*y+m[10]*z+m[14];
+        const nx=ln[idx*3],ny=ln[idx*3+1],nz=ln[idx*3+2];d[0]=m[0]*nx+m[4]*ny+m[8]*nz;d[1]=m[1]*nx+m[5]*ny+m[9]*nz;d[2]=m[2]*nx+m[6]*ny+m[10]*nz;const l=Math.hypot(d[0],d[1],d[2])||1;d[0]/=l;d[1]/=l;d[2]/=l;}
+    }
+    const fr=(k+.5)/Math.max(1,b.count),age=(1-fr)*b.span,ox=b.from.x+(b.to.x-b.from.x)*fr,oy=b.from.y+(b.to.y-b.from.y)*fr,oz=b.from.z+(b.to.z-b.from.z)*fr;
+    if(sh.code!==8){const x=p[0],y=p[1],z=p[2];p[0]=ox+R3[0]*x+R3[3]*y+R3[6]*z;p[1]=oy+R3[1]*x+R3[4]*y+R3[7]*z;p[2]=oz+R3[2]*x+R3[5]*y+R3[8]*z;
+      const dx=d[0],dy=d[1],dz=d[2];d[0]=R3[0]*dx+R3[3]*dy+R3[6]*dz;d[1]=R3[1]*dx+R3[4]*dy+R3[7]*dz;d[2]=R3[2]*dx+R3[5]*dy+R3[8]*dz;}
+    const it=this.e.config.init,dir=this._v;
+    switch(it.dirMode){
+      case 0:{const v=f.dir;dir[0]=R3[0]*v.x+R3[3]*v.y+R3[6]*v.z;dir[1]=R3[1]*v.x+R3[4]*v.y+R3[7]*v.z;dir[2]=R3[2]*v.x+R3[5]*v.y+R3[8]*v.z;break;}
+      case 1:dir[0]=d[0];dir[1]=d[1];dir[2]=d[2];break;
+      case 2:this._randDir(dir);break;
+      default:{const ux=R3[3],uy=R3[4],uz=R3[5],rx=p[0]-ox,ry=p[1]-oy,rz=p[2]-oz;dir[0]=uy*rz-uz*ry;dir[1]=uz*rx-ux*rz;dir[2]=ux*ry-uy*rx;const l=Math.hypot(dir[0],dir[1],dir[2]);
+        if(l>1e-6){dir[0]/=l;dir[1]/=l;dir[2]/=l;}else this._randDir(dir);}
+    }
+    if(f.spread>0)this._cone(dir,dir[0],dir[1],dir[2],f.spread);
+    const speed=f.speed.x+(f.speed.y-f.speed.x)*r(),life=Math.max(1e-3,f.life.x+(f.life.y-f.life.x)*r()),iv=f.initVel,ev=f.emitVel;
+    const vx=dir[0]*speed+R3[0]*iv.x+R3[3]*iv.y+R3[6]*iv.z+ev.x,vy=dir[1]*speed+R3[1]*iv.x+R3[4]*iv.y+R3[7]*iv.z+ev.y,vz=dir[2]*speed+R3[2]*iv.x+R3[5]*iv.y+R3[8]*iv.z+ev.z;
+    const P=this.pos,V=this.vel,j=i*3;P[j]=p[0]+vx*age;P[j+1]=p[1]+vy*age;P[j+2]=p[2]+vz*age;V[j]=vx;V[j+1]=vy;V[j+2]=vz;this.age[i]=age;this.life[i]=life;
+  }
+  _ground(x,z){const col=this.e.config.collision;let h=-1e9;if(col.plane!==null)h=col.plane;if(col.heightAt){const g=col.heightAt(x,z);if(Number.isFinite(g)&&g>h)h=g;}return h;}
+  simulate(dt,e){
+    const f=e.frame,c=e.config,fo=c.forces,col=c.collision,cap=e.capacity,P=this.pos,V=this.vel,A=this.age,L=this.life,onDeath=c.events.onDeath;
+    const gx=f.gravity.x,gy=f.gravity.y,gz=f.gravity.z,wx=f.wind.x,wy=f.wind.y,wz=f.wind.z,damp=Math.exp(-f.drag*dt),t=e.vfx.time,cu=fo.curl,cv=this._c;
+    const tw=f.toWorld.elements,tl=f.toLocal.elements,local=c.space==='local',win=e.window;let alive=0;
+    /* only the ring window recorded by the spawn history can hold live particles */
+    for(let w=0;w<win.count;w++){const i=(win.base+w)%cap;
+      if(L[i]<=0||A[i]>=L[i])continue;const j=i*3;let px=P[j],py=P[j+1],pz=P[j+2],vx=V[j],vy=V[j+1],vz=V[j+2],ax=gx,ay=gy,az=gz;
+      if(cu){const s=cu.scale,o=t*cu.speed;curlNoise(px*s+.31*o,py*s+o,pz*s+.73*o,cv,cu.octaves);ax+=cv[0]*cu.strength;ay+=cv[1]*cu.strength;az+=cv[2]*cu.strength;}
+      if(f.turb>0){const qx=px*1.37+1.3*t,qy=py*1.37+.7*t,qz=pz*1.37-t,k=2*f.turb;ax+=(noise3(qx,qy,qz)-.5)*k;ay+=(noise3(qx+17.1,qy+3.3,qz+5.7)-.5)*k;az+=(noise3(qx-7.9,qy+11.3,qz+23.1)-.5)*k;}
+      if(fo.vortex){const va=f.vortexAxis,vc=f.vortexCenter,rx=px-vc.x,ry=py-vc.y,rz=pz-vc.z,dp=rx*va.x+ry*va.y+rz*va.z,qx=rx-va.x*dp,qy=ry-va.y*dp,qz=rz-va.z*dp,d=Math.hypot(qx,qy,qz)+1e-4,s=f.vortex.x/d,pl=f.vortex.y/d;
+        ax+=(va.y*qz-va.z*qy)*s-qx*pl;ay+=(va.z*qx-va.x*qz)*s-qy*pl;az+=(va.x*qy-va.y*qx)*s-qz*pl;}
+      if(fo.attractor){const ap=f.attractPos,dx=ap.x-px,dy=ap.y-py,dz=ap.z-pz,dist=Math.hypot(dx,dy,dz)+1e-4,rad=f.attract.y,fall=rad>0?clamp(1-dist/rad,0,1):1,x=clamp(dist/.3,0,1),s=f.attract.x*fall*x*x*(3-2*x)/dist;ax+=dx*s;ay+=dy*s;az+=dz*s;}
+      vx+=ax*dt;vy+=ay*dt;vz+=az*dt;vx=wx+(vx-wx)*damp;vy=wy+(vy-wy)*damp;vz=wz+(vz-wz)*damp;
+      if(f.maxSpeed>0){const sp=Math.hypot(vx,vy,vz);if(sp>f.maxSpeed){const k=f.maxSpeed/sp;vx*=k;vy*=k;vz*=k;}}
+      let dead=false;
+      if(col){let nx=px+vx*dt,ny=py+vy*dt,nz=pz+vz*dt;if(local){const x=nx,y=ny,z=nz;nx=tw[0]*x+tw[4]*y+tw[8]*z+tw[12];ny=tw[1]*x+tw[5]*y+tw[9]*z+tw[13];nz=tw[2]*x+tw[6]*y+tw[10]*z+tw[14];}
+        const g=this._ground(nx,nz)+col.radius;
+        if(ny<g){if(col.die){dead=true;L[i]=-1;}else{let wvx=vx,wvy=vy,wvz=vz;if(local){wvx=tw[0]*vx+tw[4]*vy+tw[8]*vz;wvy=tw[1]*vx+tw[5]*vy+tw[9]*vz;wvz=tw[2]*vx+tw[6]*vy+tw[10]*vz;}
+          let Nx=0,Ny=1,Nz=0;if(col.heightAt){const e2=.05;Nx=this._ground(nx-e2,nz)-this._ground(nx+e2,nz);Ny=2*e2;Nz=this._ground(nx,nz-e2)-this._ground(nx,nz+e2);const l=Math.hypot(Nx,Ny,Nz);Nx/=l;Ny/=l;Nz/=l;}
+          const vn=wvx*Nx+wvy*Ny+wvz*Nz;if(vn<0){const fr=1-col.friction;wvx=(wvx-vn*Nx)*fr-Nx*vn*col.bounce;wvy=(wvy-vn*Ny)*fr-Ny*vn*col.bounce;wvz=(wvz-vn*Nz)*fr-Nz*vn*col.bounce;}
+          if(local){vx=tl[0]*wvx+tl[4]*wvy+tl[8]*wvz;vy=tl[1]*wvx+tl[5]*wvy+tl[9]*wvz;vz=tl[2]*wvx+tl[6]*wvy+tl[10]*wvz;}else{vx=wvx;vy=wvy;vz=wvz;}}}}
+      if(!dead){px+=vx*dt;py+=vy*dt;pz+=vz*dt;A[i]+=dt;
+        if(col){let wx2=px,wy2=py,wz2=pz;if(local){wx2=tw[0]*px+tw[4]*py+tw[8]*pz+tw[12];wy2=tw[1]*px+tw[5]*py+tw[9]*pz+tw[13];wz2=tw[2]*px+tw[6]*py+tw[10]*pz+tw[14];}
+          const g=this._ground(wx2,wz2)+col.radius;if(wy2<g){if(local){wy2=g;px=tl[0]*wx2+tl[4]*wy2+tl[8]*wz2+tl[12];py=tl[1]*wx2+tl[5]*wy2+tl[9]*wz2+tl[13];pz=tl[2]*wx2+tl[6]*wy2+tl[10]*wz2+tl[14];}else py=g;}}
+        P[j]=px;P[j+1]=py;P[j+2]=pz;}
+      V[j]=vx;V[j+1]=vy;V[j+2]=vz;
+      if(dead||A[i]>=L[i]){if(onDeath){const info=this.deathInfo;info.index=i;info.position.set(px,py,pz);info.velocity.set(vx,vy,vz);if(local){info.position.applyMatrix4(f.toWorld);info.velocity.transformDirection(f.toWorld).multiplyScalar(Math.hypot(vx,vy,vz));}onDeath(info);}}
+      else alive++;
+    }
+    const b=e.batches;for(let n=0;n<e.batchCount;n++){const s=b[n];for(let k=0;k<s.count;k++){const i=(s.start+k)%cap;if(!(L[i]>0&&A[i]<L[i]))alive++;this._spawn(i,s,k,f);}}
+    this.alive=alive;this.passes=0;
+  }
+  /* Pack live particles into instance attributes (sorted back-to-front when requested). */
+  pack(e,camera){
+    const g=e.geometry,cap=e.capacity,P=this.pos,V=this.vel,A=this.age,L=this.life;
+    if(e.config.render.ribbons){
+      const aA=g.attributes.aA.array,aB=g.attributes.aB.array,aLS=g.attributes.aLS.array,aP=g.attributes.aP.array,aN=g.attributes.aN.array,win=e.window,gap=e.config.render.ribbonMaxGap,ag=e.config.render.ribbonMaxAgeGap;
+      const ok=(a,b)=>L[a]>0&&A[a]<L[a]&&L[b]>0&&A[b]<L[b]&&A[b]<=A[a]+1e-4&&A[a]-A[b]<ag&&Math.hypot(P[a*3]-P[b*3],P[a*3+1]-P[b*3+1],P[a*3+2]-P[b*3+2])<gap;
+      let n=0;for(let k=0;k+1<win.count;k++){const a=(win.base+k)%cap,b=(a+1)%cap;if(!ok(a,b))continue;const pa=(a-1+cap)%cap,nb=(b+1)%cap;
+        for(let c=0;c<3;c++){aA[n*4+c]=P[a*3+c];aB[n*4+c]=P[b*3+c];aP[n*3+c]=k>0&&ok(pa,a)?P[pa*3+c]:P[a*3+c];aN[n*3+c]=k+2<win.count&&ok(b,nb)?P[nb*3+c]:P[b*3+c];}
+        aA[n*4+3]=A[a];aB[n*4+3]=A[b];aLS[n*4]=L[a];aLS[n*4+1]=L[b];aLS[n*4+2]=a;aLS[n*4+3]=b;n++;}
+      for(const k of RIBBON_ATTRS){const at=g.attributes[k];at.updateRange.offset=0;at.updateRange.count=Math.max(1,n)*at.itemSize;at.needsUpdate=true;}
+      return n;
+    }
+    const order=this.order,win=e.window;let n=0;for(let w=0;w<win.count;w++){const i=(win.base+w)%cap;if(L[i]>0&&A[i]<L[i])order[n++]=i;}
+    if(e.config.render.sortAlpha&&camera&&n>1){const keys=this.keys,m=e._sortMatrix.elements;
+      for(let k=0;k<n;k++){const i=order[k],x=P[i*3],y=P[i*3+1],z=P[i*3+2];keys[i]=m[2]*x+m[6]*y+m[10]*z+m[14];}
+      order.subarray(0,n).sort(this._byDepth);}
+    const pa=g.attributes.aPosAge.array,va=g.attributes.aVelLife.array,sa=g.attributes.aSlot.array;
+    for(let k=0;k<n;k++){const i=order[k];pa[k*4]=P[i*3];pa[k*4+1]=P[i*3+1];pa[k*4+2]=P[i*3+2];pa[k*4+3]=A[i];va[k*4]=V[i*3];va[k*4+1]=V[i*3+1];va[k*4+2]=V[i*3+2];va[k*4+3]=L[i];sa[k]=i;}
+    for(const k of SPRITE_ATTRS){const at=g.attributes[k];at.updateRange.offset=0;at.updateRange.count=Math.max(1,n)*at.itemSize;at.needsUpdate=true;}
+    return n;
+  }
+  readState(){const cap=this.e.capacity,pos=new Float32Array(cap*4),vel=new Float32Array(cap*4);
+    for(let i=0;i<cap;i++){for(let c=0;c<3;c++){pos[i*4+c]=this.pos[i*3+c];vel[i*4+c]=this.vel[i*3+c];}pos[i*4+3]=this.age[i];vel[i*4+3]=this.life[i];}return {position:pos,velocity:vel,width:cap,height:1};}
+  dispose(){}
+}
+
+/* ---------- Emitter ---------- */
+class Emitter{
+  constructor(vfx,cfg){
+    const THREE=vfx.THREE;this.vfx=vfx;this.THREE=THREE;const c=this.config=normalizeConfig(THREE,cfg,vfx.linearColors);
+    this.name=c.name;this.forces=c.forces;this.attachTo=c.attachTo;this.position=c.position;this.orientation=c.orientation;this.rate=c.spawn.rate;
+    const wantGPU=c.gpu&&!c.events.onDeath&&vfx.gpuSupported();
+    let cap=c.scaleWithBudget?budgetCapacity(c.capacity,vfx.budget):c.capacity;if(!wantGPU)cap=Math.min(cap,vfx.cpuLimit);
+    this.capacity=cap;this.spawnScale=Math.min(1,cap/c.capacity);this.gpu=wantGPU;this.rng=KE.random((c.seed^0x5bd1e995)>>>0);
+    this.fallbackReason=wantGPU?null:!c.gpu?'gpu:false requested':c.events.onDeath?'events.onDeath needs CPU-visible particles':'float render targets unavailable';
+    /* transform and per-frame simulation parameters */
+    this.matrix=new THREE.Matrix4();this.inverse=new THREE.Matrix4();this.worldPos=new THREE.Vector3();this.prevPos=new THREE.Vector3();this.worldQuat=new THREE.Quaternion();this.velocity=new THREE.Vector3();
+    this._tp=new THREE.Vector3();this._tq=new THREE.Quaternion();this._ts=new THREE.Vector3();this._one=new THREE.Vector3(1,1,1);this._v=new THREE.Vector3();this._m=new THREE.Matrix4();this._q=new THREE.Quaternion();
+    this._sortMatrix=new THREE.Matrix4();
+    const V3=()=>new THREE.Vector3(),V2=()=>new THREE.Vector2(),V4=()=>new THREE.Vector4();
+    this.frame={emitRot:new THREE.Matrix3(),emitVel:V3(),shape:V4(),shapeSize:V3(),lineA:V3(),lineB:V3(),meshInfo:V3(),meshMatrix:new THREE.Matrix4(),life:V2(),speed:V2(),dir:V3(),spread:0,initVel:V3(),
+      gravity:V3(),wind:V3(),drag:0,turb:0,maxSpeed:0,curl:V4(),vortexAxis:V3(),vortexCenter:V3(),vortex:V2(),attractPos:V3(),attract:V2(),collide:V4(),heightRegion:new THREE.Vector4(0,0,1,1),heightRes:2,
+      toWorld:new THREE.Matrix4(),toLocal:new THREE.Matrix4()};
+    this.batches=Array.from({length:MAX_BATCHES},()=>({start:0,count:0,span:0,seed:0,from:V3(),to:V3()}));this.batchCount=0;
+    this.pending=Array.from({length:MAX_PENDING},()=>({count:0,pos:V3(),hasPos:false}));this.pendingHead=0;this.pendingCount=0;
+    this.history=new SpawnHistory();this.window={base:0,count:0};
+    this.cursor=0;this.seedCounter=(c.seed>>>0)%65536;this.rateAcc=0;this.elapsed=0;this.time=0;this.playing=false;this.started=false;this.visible=true;this.disposed=false;this._drawn=0;
+    /* optional resources */
+    this.meshSamples=null;this.meshTexture=null;this.heightTexture=null;this.heightData=null;this._heightCenter=null;this._heightBakeTime=-1;
+    if(c.spawn.shape.code===8)this._buildMeshSamples();
+    if(c.collision&&c.collision.heightAt&&wantGPU)this._initHeight();
+    this.backend=wantGPU?new GPUBackend(this):new CPUBackend(this);
+    this._buildRender();
+    this._computeTransform();this.prevPos.copy(this.worldPos);
+    if(c.autoplay)this.play();
+  }
+  /* ----- public API ----- */
+  play(){if(!this.playing){this.playing=true;this.elapsed=0;this._resetBursts();}return this;}
+  restart(){this.playing=false;return this.play();}
+  stop({clear=false}={}){this.playing=false;if(clear){this.backend.clear();this.history.reset();this.pendingCount=0;this.rateAcc=0;this._drawn=0;if(this.mesh)this.mesh.visible=false;}return this;}
+  burst(count,position){
+    count=Math.max(0,Math.floor(+count||0));if(!count)return this;
+    if(this.pendingCount===MAX_PENDING){const last=this.pending[(this.pendingHead+MAX_PENDING-1)%MAX_PENDING];last.count+=count;return this;}
+    const p=this.pending[(this.pendingHead+this.pendingCount)%MAX_PENDING];p.count=count;p.hasPos=!!position;if(position)this._toVec(position,p.pos);this.pendingCount++;return this;
+  }
+  setPosition(x,y,z){if(x&&(x.isVector3||Array.isArray(x)))this._toVec(x,this.position);else this.position.set(+x||0,+y||0,+z||0);return this;}
+  setRate(r){this.rate=Math.max(0,+r||0);return this;}
+  /* Simulates `seconds` immediately in coarse steps (<= 1/15 s, at most 240) so looping effects start in steady state. */
+  prewarm(seconds){seconds=Math.max(0,+seconds||0);if(!seconds||this.disposed)return this;this._computeTransform();if(!this.started){this.prevPos.copy(this.worldPos);this.started=true;}
+    const n=Math.min(240,Math.ceil(seconds*15)),h=seconds/n;for(let i=0;i<n;i++)this._step(h);return this;}
+  get alive(){return this.gpu?this.history.estimate(this.time,this.frame.life.x,this.frame.life.y,this.capacity):this.backend.alive;}
+  get drawn(){return this._drawn;}
+  /* Debug/test helpers: full state read-back (synchronous GPU stall on the GPU path). */
+  readState(){return this.backend.readState();}
+  countAlive(){const s=this.readState();let n=0;for(let i=0;i<this.capacity;i++){const life=s.velocity[i*4+3];if(life>0&&s.position[i*4+3]<life)n++;}return n;}
+  /* Approximate GPU + typed-array memory owned by this emitter, in bytes. */
+  memoryBytes(){const b=this.backend,cap=this.capacity;let n=CURVE_RES*2*4;
+    if(this.gpu){n+=b.W*b.H*16*4+cap*4;if(b.sort)n+=b.sort.SW*b.sort.SH*16*2;}else n+=cap*(this.config.render.ribbons?18:9)*4*2+cap*(8*4+8);
+    if(this.meshTexture)n+=this.meshTexture.image.width*this.meshTexture.image.height*16;if(this.heightTexture)n+=this.heightTexture.image.width*this.heightTexture.image.height*16;return n;}
+  get gpuState(){return this.gpu?{position:this.backend.position,velocity:this.backend.velocity,width:this.backend.W,height:this.backend.H}:null;}
+  dispose(){
+    if(this.disposed)return;this.disposed=true;const i=this.vfx.emitters.indexOf(this);if(i>=0)this.vfx.emitters.splice(i,1);
+    if(this.mesh&&this.mesh.parent)this.mesh.parent.remove(this.mesh);this.geometry.dispose();this.material.dispose();this.curveTexture.dispose();
+    if(this.heightTexture)this.heightTexture.dispose();if(this.meshTexture)this.meshTexture.dispose();this.backend.dispose();
+  }
+  /* ----- internals ----- */
+  _toVec(v,out){if(v.isVector3)return out.copy(v);return out.set(+v[0]||0,+v[1]||0,+v[2]||0);}
+  _resetBursts(){for(const b of this.config.spawn.bursts){b.next=b.time;b.left=b.repeat;}}
+  _computeTransform(){
+    if(this.attachTo){this.attachTo.updateWorldMatrix(true,false);this.attachTo.matrixWorld.decompose(this._tp,this._tq,this._ts);
+      if(this.config.attachRotation){this.worldPos.copy(this.position).applyQuaternion(this._tq).add(this._tp);this.worldQuat.copy(this._tq).multiply(this.orientation);}
+      else{this.worldPos.copy(this.position).add(this._tp);this.worldQuat.copy(this.orientation);}}
+    else{this.worldPos.copy(this.position);this.worldQuat.copy(this.orientation);}
+    this.matrix.compose(this.worldPos,this.worldQuat,this._one);this.inverse.copy(this.matrix).invert();
+  }
+  _buildMeshSamples(){
+    const THREE=this.THREE,sh=this.config.spawn.shape,src=sh.mesh;let geo=src.geometry,tmp=null;
+    if(!THREE.MeshSurfaceSampler)throw new Error('KE.VFX: shape "mesh" needs THREE.MeshSurfaceSampler (three-addons)');
+    if(geo.index){tmp=geo.toNonIndexed();geo=tmp;}
+    const sampler=new THREE.MeshSurfaceSampler(new THREE.Mesh(geo));if(sampler.setRandomGenerator)sampler.setRandomGenerator(KE.random(this.config.seed+7));sampler.build();
+    const n=sh.samples,positions=new Float32Array(n*3),normals=new Float32Array(n*3),p=new THREE.Vector3(),nn=new THREE.Vector3();
+    for(let i=0;i<n;i++){sampler.sample(p,nn);p.toArray(positions,i*3);nn.toArray(normals,i*3);}
+    if(tmp)tmp.dispose();this.meshSamples={count:n,positions,normals};
+    if(this.config.gpu&&!this.config.events.onDeath&&this.vfx.gpuSupported()){const tw=Math.min(1024,nextPow2(Math.ceil(Math.sqrt(2*n)))),th=Math.ceil(2*n/tw),data=new Float32Array(tw*th*4);
+      for(let i=0;i<n;i++)for(let c=0;c<3;c++){data[i*4+c]=positions[i*3+c];data[(n+i)*4+c]=normals[i*3+c];}
+      const t=new THREE.DataTexture(data,tw,th,THREE.RGBAFormat,THREE.FloatType);t.minFilter=t.magFilter=THREE.NearestFilter;t.generateMipmaps=false;t.needsUpdate=true;this.meshTexture=t;this._meshTexW=tw;}
+  }
+  _initHeight(){const THREE=this.THREE,res=this.config.collision.resolution;this.heightData=new Float32Array(res*res*4);
+    const t=new THREE.DataTexture(this.heightData,res,res,THREE.RGBAFormat,THREE.FloatType);t.minFilter=t.magFilter=THREE.NearestFilter;t.generateMipmaps=false;this.heightTexture=t;}
+  /* Bake heightAt over a square region into the float height texture (GPU collision). */
+  _bakeHeight(){
+    const col=this.config.collision,res=col.resolution,f=this.frame,rg=col.region;let cx,cz,size;
+    if(rg){cx=rg.center?+rg.center[0]:0;cz=rg.center?+rg.center[1]:0;size=+rg.size||32;if(this._heightCenter)return;}
+    else{const it=this.config.init,fo=this.config.forces,sh=this.config.spawn.shape;const reach=Math.max(sh.radius,sh.size.x*.5,sh.size.z*.5)+(it.speed[1]+fo.wind.length())*it.life[1];
+      size=clamp(reach*2+2,8,256);cx=this.worldPos.x;cz=this.worldPos.z;
+      if(this._heightCenter&&Math.abs(cx-this._heightCenter.x)<size*.25&&Math.abs(cz-this._heightCenter.y)<size*.25)return;
+      if(this._heightCenter&&this.time-this._heightBakeTime<.25)return;}
+    const d=this.heightData,x0=cx-size/2,z0=cz-size/2,st=size/(res-1);
+    for(let iz=0;iz<res;iz++)for(let ix=0;ix<res;ix++){const h=col.heightAt(x0+ix*st,z0+iz*st);d[(iz*res+ix)*4]=Number.isFinite(h)?h:-1e9;}
+    this.heightTexture.needsUpdate=true;(this._heightCenter||(this._heightCenter=new this.THREE.Vector2())).set(cx,cz);this._heightBakeTime=this.time;f.heightRegion.set(x0,z0,size,size);f.heightRes=res;
+  }
+  _buildRender(){
+    const THREE=this.THREE,c=this.config,r=c.render,vfx=this.vfx,cap=this.capacity,gpu=this.gpu,ribbon=r.ribbons;
+    /* curves LUT: row 0 = colour (sqrt-encoded) + alpha; row 1 = size/sizeMax, additive share */
+    const lut=new Uint8Array(CURVE_RES*2*4),sc=r.sizeOverLife;let smax=0;for(let i=0;i<CURVE_RES;i++)smax=Math.max(smax,evalCurve(sc,i/(CURVE_RES-1)));smax=Math.max(smax,1e-6);
+    for(let i=0;i<CURVE_RES;i++){const t=i/(CURVE_RES-1),k=i*4,k2=(CURVE_RES+i)*4;
+      for(let ch=0;ch<3;ch++)lut[k+ch]=Math.round(Math.sqrt(clamp(evalCurve(r.colorOverLife,t,ch+1),0,1))*255);lut[k+3]=Math.round(clamp(evalCurve(r.colorOverLife,t,4),0,1)*255);
+      lut[k2]=Math.round(clamp(evalCurve(sc,t)/smax,0,1)*255);lut[k2+1]=Math.round(clamp(evalCurve(r.blendOverLife,t),0,1)*255);lut[k2+2]=0;lut[k2+3]=255;}
+    const lt=new THREE.DataTexture(lut,CURVE_RES,2,THREE.RGBAFormat);lt.minFilter=lt.magFilter=THREE.LinearFilter;lt.generateMipmaps=false;lt.needsUpdate=true;this.curveTexture=lt;
+    /* geometry */
+    const g=new THREE.InstancedBufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute(ribbon?[0,-1,0,1,-1,0,1,1,0,0,1,0]:[-1,-1,0,1,-1,0,1,1,0,-1,1,0],3));g.setIndex([0,1,2,0,2,3]);
+    const inst=(n,size)=>{const a=new THREE.InstancedBufferAttribute(new Float32Array(n*size),size);a.setUsage(THREE.DynamicDrawUsage);return a;};
+    if(gpu){const idx=new Float32Array(cap);for(let i=0;i<cap;i++)idx[i]=i;g.setAttribute('aIndex',new THREE.InstancedBufferAttribute(idx,1));}
+    else if(ribbon){g.setAttribute('aA',inst(cap,4));g.setAttribute('aB',inst(cap,4));g.setAttribute('aLS',inst(cap,4));g.setAttribute('aP',inst(cap,3));g.setAttribute('aN',inst(cap,3));}
+    else{g.setAttribute('aPosAge',inst(cap,4));g.setAttribute('aVelLife',inst(cap,4));g.setAttribute('aSlot',inst(cap,1));}
+    g.instanceCount=0;this.geometry=g;
+    /* material */
+    const map=r.texture&&r.texture.isTexture?r.texture:vfx.texture(r.texture),straight=r.texture&&r.texture.isTexture?r.premultipliedTexture!==true:false;
+    const defines={};if(!gpu)defines.KE_CPU=1;if(ribbon)defines.KE_RIBBON=1;else{if(r.stretch>0)defines.KE_STRETCH=1;if(r.flipbook){defines.KE_FLIP=1;if(r.flipbook.blend)defines.KE_FLIP_BLEND=1;}if(r.sortAlpha&&gpu)defines.KE_SORT=1;}
+    if(r.softness>0)defines.KE_SOFT=1;if(r.lit&&!ribbon)defines.KE_LIT=1;if(straight)defines.KE_STRAIGHT_MAP=1;
+    const su=KE.sceneUniforms(THREE),fb=r.flipbook||{cols:1,rows:1,fps:0,frames:1,random:false};
+    const uniforms={...THREE.UniformsUtils.clone(THREE.UniformsLib.fog),
+      tPos:{value:null},tVel:{value:null},tSort:{value:null},uBase:{value:0},uCap:{value:cap},uStateW:{value:gpu?this.backend.W:1},uSortW:{value:1},uCount:{value:0},
+      tCurves:{value:lt},map:{value:map},uSizeInfo:{value:new THREE.Vector4(c.init.size[0],c.init.size[1],smax,r.stretch)},uColorA:{value:new THREE.Vector3(c.init.color[0].r,c.init.color[0].g,c.init.color[0].b)},
+      uColorB:{value:new THREE.Vector3(c.init.color[1].r,c.init.color[1].g,c.init.color[1].b)},uRotInfo:{value:new THREE.Vector4(c.init.rotation[0],c.init.rotation[1],c.init.angularVelocity[0],c.init.angularVelocity[1])},
+      uFlip:{value:new THREE.Vector4(fb.cols,fb.rows,fb.fps,fb.frames)},uFlipRandom:{value:fb.random?1:0},uWorldSpace:{value:c.space==='world'?1:0},uEmissive:{value:r.emissive},
+      uRibbon:{value:new THREE.Vector4(r.ribbonMaxGap,r.ribbonMaxAgeGap,r.ribbonUV==='length'?1:0,0)},uSoftness:{value:Math.max(r.softness,1e-3)},uCamOffset:{value:r.cameraOffset},uCameraFade:{value:new THREE.Vector2(r.cameraFade[0],r.cameraFade[1])},
+      uLitInfo:{value:new THREE.Vector4(r.curvature,r.wrap,r.translucency,0)},uAmbient:{value:new THREE.Vector3(r.ambient.r,r.ambient.g,r.ambient.b)},
+      keSceneDepth:su.keSceneDepth,keHasScene:su.keHasScene,keResolution:su.keResolution,keSunDirection:su.keSunDirection,keSunColor:su.keSunColor};
+    const m=new THREE.ShaderMaterial({vertexShader:RENDER_VS,fragmentShader:RENDER_FS,uniforms,defines,transparent:true,depthWrite:false,depthTest:true,fog:true,
+      blending:THREE.CustomBlending,blendEquation:THREE.AddEquation,blendSrc:THREE.OneFactor,blendDst:THREE.OneMinusSrcAlphaFactor,blendSrcAlpha:THREE.OneFactor,blendDstAlpha:THREE.OneMinusSrcAlphaFactor});
+    m.userData.keTextures=[lt];this.material=m;
+    const mesh=new THREE.Mesh(g,m);mesh.frustumCulled=false;mesh.matrixAutoUpdate=false;mesh.renderOrder=r.order;mesh.name='KE.VFX:'+c.name;mesh.userData.keVFX=this;mesh.visible=false;
+    mesh.castShadow=mesh.receiveShadow=false;
+    const translucent=r.softness>0||r.blending!=='additive';mesh.layers.set(r.layer!==null?r.layer:translucent?KE.LAYERS.TRANSLUCENT:KE.LAYERS.DEFAULT);
+    this.mesh=mesh;vfx.scene.add(mesh);
+  }
+  _schedule(dt){
+    const c=this.config,s=c.spawn,wp=this.worldPos,pp=this.prevPos,local=c.space==='local',scale=this.spawnScale;this.batchCount=0;this._budgetLeft=this.capacity;
+    const origin=this._v;
+    if(this.playing){
+      const t0=this.elapsed,t1=t0+dt,emitting=t0<s.duration;
+      if(emitting){const moved=pp.distanceTo(wp);this.rateAcc+=(this.rate*Math.min(dt,s.duration-t0)+moved*s.rateOverDistance)*scale;
+        const n=Math.floor(this.rateAcc);this.rateAcc-=n;if(n>0){if(local){origin.set(0,0,0);this._addBatch(n,dt,origin,origin);}else this._addBatch(n,dt,pp,wp);}}
+      if(local)origin.set(0,0,0);else origin.copy(wp);
+      for(const b of s.bursts){while(b.left>0&&b.next<t1&&b.next<s.duration){b.left--;const n=b.count[0]+Math.floor(this.rng()*(b.count[1]-b.count[0]+1));
+          if(this.rng()<=b.probability)this._addBatch(Math.round(n*scale),0,origin,origin);if(b.cycle>0)b.next+=b.cycle;else b.left=0;}}
+      this.elapsed=t1;
+      if(t1>=s.duration){if(s.loop){this.elapsed=t1-s.duration*Math.floor(t1/s.duration);this._resetBursts();}else this.playing=false;}
+    }
+    while(this.pendingCount&&this.batchCount<MAX_BATCHES&&this._budgetLeft>0){const p=this.pending[this.pendingHead];this.pendingHead=(this.pendingHead+1)%MAX_PENDING;this.pendingCount--;
+      if(p.hasPos){if(local)origin.copy(p.pos).applyMatrix4(this.inverse);else origin.copy(p.pos);}else if(local)origin.set(0,0,0);else origin.copy(wp);
+      this._addBatch(Math.max(1,Math.round(p.count*scale)),0,origin,origin);}
+    let total=0;for(let i=0;i<this.batchCount;i++)total+=this.batches[i].count;return total;
+  }
+  /* Reserve `count` ring slots (clamped to what is left of the capacity this frame) as one spawn batch.
+     span: seconds the spawns are spread over (sub-frame ages); from/to: origin at the start/end of that span. */
+  _addBatch(count,span,from,to){count=Math.min(count,this._budgetLeft);if(count<=0||this.batchCount>=MAX_BATCHES)return;const b=this.batches[this.batchCount++];
+    b.start=this.cursor;b.count=count;b.span=span;b.seed=(this.seedCounter=(this.seedCounter+1)%16777216);b.from.copy(from);b.to.copy(to);this.cursor=(this.cursor+count)%this.capacity;this._budgetLeft-=count;}
+  /* Convert config into simulation-space parameters for this frame (shared by both backends). */
+  _frameParams(dt){
+    const c=this.config,f=this.frame,fo=c.forces,it=c.init,sh=c.spawn.shape,local=c.space==='local',q=this._q;
+    if(local){f.emitRot.identity();f.toWorld.copy(this.matrix);f.toLocal.copy(this.inverse);}else{f.emitRot.setFromMatrix4(this._m.makeRotationFromQuaternion(this.worldQuat));f.toWorld.identity();f.toLocal.identity();}
+    if(dt>0)this.velocity.copy(this.worldPos).sub(this.prevPos).divideScalar(dt);
+    if(!local&&dt>0)f.emitVel.copy(this.velocity).multiplyScalar(it.inheritVelocity);else f.emitVel.set(0,0,0);
+    if(f.emitVel.lengthSq()>1e6)f.emitVel.set(0,0,0);
+    f.shape.set(sh.radius,sh.thickness,sh.angle,sh.surfaceOnly?1:0);if(sh.code===6)f.shapeSize.set(sh.width,0,0);else f.shapeSize.copy(sh.size);f.lineA.copy(sh.from);f.lineB.copy(sh.to);
+    if(sh.code===8){sh.mesh.updateWorldMatrix(true,false);if(local)f.meshMatrix.multiplyMatrices(this.inverse,sh.mesh.matrixWorld);else f.meshMatrix.copy(sh.mesh.matrixWorld);f.meshInfo.set(this.meshSamples.count,this._meshTexW||1,0);}
+    f.life.set(it.life[0],it.life[1]);f.speed.set(it.speed[0],it.speed[1]);f.dir.copy(it.direction);f.spread=it.spread;f.initVel.copy(it.velocity);
+    q.copy(this.worldQuat).invert();
+    if(local){f.gravity.copy(fo.gravity).applyQuaternion(q);f.wind.copy(fo.wind).applyQuaternion(q);}else{f.gravity.copy(fo.gravity);f.wind.copy(fo.wind);}
+    f.drag=fo.drag;f.turb=fo.turbulence;f.maxSpeed=fo.maxSpeed;
+    if(fo.curl)f.curl.set(fo.curl.strength,fo.curl.scale,fo.curl.speed,fo.curl.octaves);
+    if(fo.vortex){f.vortexAxis.copy(fo.vortex.axis);f.vortexCenter.copy(fo.vortex.center);if(!local){f.vortexAxis.applyQuaternion(this.worldQuat);f.vortexCenter.applyMatrix4(this.matrix);}f.vortex.set(fo.vortex.strength,fo.vortex.pull);}
+    if(fo.attractor){f.attractPos.copy(fo.attractor.position);if(!local)f.attractPos.applyMatrix4(this.matrix);f.attract.set(fo.attractor.strength,fo.attractor.radius);}
+    const col=c.collision;if(col){f.collide.set(col.plane!==null?col.plane:-1e9,col.bounce,col.friction,col.radius);if(col.heightAt&&this.gpu)this._bakeHeight();}
+  }
+  _update(dt,camera){
+    const c=this.config;this._computeTransform();
+    /* first frame or a jump larger than teleportDistance: do not interpolate spawns (or inherit velocity) along the jump */
+    if(!this.started||(c.teleportDistance>0&&this.prevPos.distanceToSquared(this.worldPos)>c.teleportDistance*c.teleportDistance)){this.prevPos.copy(this.worldPos);
+      if(!this.started){this.started=true;if(c.prewarm>0&&this.playing)this.prewarm(c.prewarm);}}
+    this._step(dt);
+    /* render state */
+    const r=c.render,u=this.material.uniforms,mesh=this.mesh;
+    if(c.space==='local')mesh.matrix.copy(this.matrix);else mesh.matrix.makeTranslation(this.worldPos.x,this.worldPos.y,this.worldPos.z);
+    mesh.matrixWorldNeedsUpdate=true;
+    if(camera){this._sortMatrix.copy(camera.matrixWorldInverse);if(c.space==='local')this._sortMatrix.multiply(this.matrix);}
+    let count;
+    if(this.gpu){const b=this.backend;u.tPos.value=b.position.texture;u.tVel.value=b.velocity.texture;u.uBase.value=this.window.base;u.uCount.value=this.window.count;
+      count=r.ribbons?Math.max(0,this.window.count-1):this.window.count;
+      if(r.sortAlpha&&!r.ribbons&&count>0){if(camera){const rt=b.sortWindow(this.window,this._sortMatrix);u.tSort.value=rt.texture;u.uSortW.value=b.sort.SW;}else if(!u.tSort.value)count=0;}}
+    else count=this.window.count>0||this.backend.alive>0?this.backend.pack(this,camera):0;
+    this.geometry.instanceCount=count;this._drawn=count;mesh.visible=this.visible&&count>0;
+  }
+  /* One simulation step: frame parameters, spawn scheduling, GPU/CPU integration, spawn history. */
+  _step(dt){
+    const c=this.config;this._frameParams(dt);
+    const spawned=this._schedule(dt),start=this.batchCount?this.batches[0].start:this.cursor;
+    this.time+=dt;
+    const lmax=c.init.life[1];this.history.prune(this.time,lmax);this.history.window(this.cursor,this.capacity,this.window);
+    const busy=this.gpu?(this.batchCount>0||this.window.count>0):(this.batchCount>0||this.backend.alive>0);
+    /* dt=0 (paused) still runs the passes when spawns are pending, otherwise they would be lost */
+    if(busy&&(dt>0||this.batchCount>0))this.backend.simulate(dt,this);else this.backend.passes=0;
+    this.history.add(this.time,spawned,start,Math.max(lmax/24,1/30));this.history.window(this.cursor,this.capacity,this.window);
+    this.prevPos.copy(this.worldPos);
+  }
+}
+
+/* A set of emitters driven together (e.g. layered presets such as explosion). */
+class EmitterGroup{
+  constructor(emitters,name='group'){this.emitters=emitters;this.name=name;}
+  play(){for(const e of this.emitters)e.play();return this;}
+  restart(){for(const e of this.emitters)e.restart();return this;}
+  stop(o){for(const e of this.emitters)e.stop(o);return this;}
+  /* Distributes count over the members in proportion to their configured burst sizes (equally if none). */
+  burst(count,position){const w=this.emitters.map(e=>e.config.spawn.bursts.reduce((s,b)=>s+(b.count[0]+b.count[1])/2,0)),tot=w.reduce((a,b)=>a+b,0);
+    this.emitters.forEach((e,i)=>e.burst(Math.round(count*(tot>0?w[i]/tot:1/this.emitters.length)),position));return this;}
+  setPosition(x,y,z){for(const e of this.emitters)e.setPosition(x,y,z);return this;}
+  setRate(r){for(const e of this.emitters)e.setRate(r);return this;}
+  get alive(){return this.emitters.reduce((s,e)=>s+e.alive,0);}
+  get drawn(){return this.emitters.reduce((s,e)=>s+e.drawn,0);}
+  countAlive(){return this.emitters.reduce((s,e)=>s+e.countAlive(),0);}
+  get playing(){return this.emitters.some(e=>e.playing);}
+  get capacity(){return this.emitters.reduce((s,e)=>s+e.capacity,0);}
+  set visible(v){for(const e of this.emitters)e.visible=v;}
+  get visible(){return this.emitters.some(e=>e.visible);}
+  dispose(){for(const e of this.emitters)e.dispose();this.emitters.length=0;}
+}
+
+/* ---------- presets ---------- */
+/* Each preset is (opts) => config (or {name, layers:[config,...]} for layered effects). Common opts:
+   position, attachTo, scale (world size multiplier), intensity (emissive/rate multiplier), color,
+   ground (collision plane height or heightAt function); anything else is deep-merged into the config. */
+function presetFactory(build){
+  return (opts={})=>{const {position,attachTo,scale=1,intensity=1,color,ground,...rest}=opts||{};
+    /* a preset's own position is an offset (e.g. rain starts above the given point) */
+    const apply=cfg=>{if(position!==undefined){const p=position.isVector3?position.toArray():position,o=cfg.position||[0,0,0];cfg.position=[+p[0]+o[0],+p[1]+o[1],+p[2]+o[2]];}
+      if(attachTo)cfg.attachTo=attachTo;return deepMerge(cfg,rest);};
+    const out=build({s:scale,k:intensity,color,ground});return out.layers?{name:out.name,layers:out.layers.map(apply)}:apply(out);};
+}
+const groundCollision=(ground,extra)=>ground===undefined||ground===null?undefined:{...(typeof ground==='function'?{heightAt:ground}:{plane:+ground}),...extra};
+const PRESETS={
+  fire:presetFactory(({s,k,color})=>({name:'fire',prewarm:.8,capacity:320,position:[0,.08*s,0],spawn:{rate:72*k,shape:{type:'disc',radius:.28*s}},
+    init:{life:[.5,.95],speed:[.5*s,1*s],direction:[0,1,0],spread:.1,size:[.5*s,.72*s],color:color||[0xffffff,0xffe4c0],rotation:[0,TAU],angularVelocity:[-1.4,1.4]},
+    /* buoyancy + an attractor above the base converge the flame into a tip; curl noise makes it lick */
+    forces:{gravity:[0,3*s,0],drag:1.8,curl:{strength:1.5*s,scale:1.4/s,speed:1.8},attractor:{position:[0,1.25*s,0],strength:1.8*s,radius:0}},
+    render:{blending:'premultiplied',texture:'smoke',flipbook:{cols:2,rows:2,fps:0,random:true},emissive:1.15*k,softness:.35*s,cameraOffset:.35*s,
+      sizeOverLife:[[0,.45],[.25,1],[.7,.62],[1,.15]],blendOverLife:[[0,1],[.5,.95],[1,.4]],
+      colorOverLife:[[0,0xffc860,0],[.08,0xffb040,.32],[.3,0xff7a1e,.42],[.55,0xe8440e,.34],[.8,0x6c1606,.18],[1,0x1a0402,0]]}})),
+  smoke:presetFactory(({s,k,color})=>({name:'smoke',prewarm:4,capacity:160,spawn:{rate:11*k,shape:{type:'disc',radius:.3*s}},
+    init:{life:[3.8,5.6],speed:[.45*s,.8*s],direction:[0,1,0],spread:.28,size:[1.3*s,2.1*s],color:color||[0x8e8e92,0x6c6c70],rotation:[0,TAU],angularVelocity:[-.35,.35]},
+    forces:{gravity:[0,.22*s,0],drag:.55,wind:[.3*s,0,.08*s],curl:{strength:.45*s,scale:.35/s,speed:.35}},
+    render:{blending:'alpha',texture:'smoke',lit:true,sortAlpha:true,softness:1.2*s,sizeOverLife:[[0,.3],[1,1]],
+      colorOverLife:[[0,0xffffff,0],[.12,0xffffff,.5],[.55,0xf0f0f0,.32],[1,0xe8e8e8,0]]}})),
+  sparks:presetFactory(({s,k,color,ground})=>({name:'sparks',capacity:600,spawn:{rate:34*k,bursts:[{time:0,count:[26,40],cycle:1.1}],shape:{type:'cone',radius:.06*s,angle:.5}},
+    init:{life:[.55,1.35],speed:[3.2*s,6.5*s],direction:'shape',size:[.03*s,.055*s],color:color||[0xfff3c0,0xffc060]},
+    forces:{gravity:[0,-9.8*s,0],drag:.35},collision:groundCollision(ground,{bounce:.35,friction:.25}),
+    render:{blending:'additive',texture:'spark',stretch:.055,emissive:5*k,softness:0,
+      colorOverLife:[[0,0xffffff,1],[.25,0xffd070,1],[.65,0xff6a18,.85],[1,0x901000,0]],sizeOverLife:[[0,1],[.7,.85],[1,.4]]}})),
+  embers:presetFactory(({s,k,color})=>({name:'embers',prewarm:3,capacity:160,spawn:{rate:14*k,shape:{type:'disc',radius:.5*s}},
+    init:{life:[2.4,4.4],speed:[.4*s,.9*s],direction:[0,1,0],spread:.4,size:[.07*s,.12*s],color:color||[0xffb050,0xff6a1a]},
+    forces:{gravity:[0,.45*s,0],drag:.8,curl:{strength:1.9*s,scale:.7/s,speed:.8}},
+    render:{blending:'additive',texture:'glow',emissive:4*k,softness:.2,sizeOverLife:[[0,0],[.08,1],[.75,.8],[1,0]],
+      colorOverLife:[[0,0xffffff,0],[.08,0xffffff,1],[.45,0xffc080,.9],[.7,0xff9050,.5],[.8,0xffc090,.9],[1,0xff4010,0]]}})),
+  fireflies:presetFactory(({s,k,color})=>{const c=color||0xe0ff80;return {name:'fireflies',prewarm:5,capacity:96,spawn:{rate:7*k,shape:{type:'box',size:[5*s,1.6*s,5*s]}},position:[0,1*s,0],
+    init:{life:[4.5,8],speed:[.05*s,.2*s],direction:'random',size:[.3*s,.42*s],color:[c,0xa8ff60]},
+    forces:{drag:.7,curl:{strength:.55*s,scale:.45/s,speed:.3}},
+    render:{blending:'additive',texture:'glow',emissive:3*k,softness:.3,sizeOverLife:[[0,.6],[.5,1],[1,.6]],
+      colorOverLife:[[0,0xffffff,0],[.12,0xffffff,1],[.24,0xffffff,.12],[.38,0xffffff,1],[.52,0xffffff,.2],[.66,0xffffff,1],[.8,0xffffff,.15],[.9,0xffffff,.9],[1,0xffffff,0]]}};}),
+  magic:presetFactory(({s,k,color})=>({name:'magic',prewarm:1.5,capacity:512,position:[0,.35*s,0],spawn:{rate:125*k,shape:{type:'ring',radius:.55*s,width:.08*s}},
+    /* tangential launch + vortex (swirl accel, pull toward the axis) keeps wisps orbiting; stretch turns them into arcs */
+    init:{life:[1.6,2.6],speed:[1.5*s,2.1*s],direction:'tangent',spread:.2,size:[.03*s,.06*s],color:color||[0x62e6ff,0xb07cff]},
+    forces:{gravity:[0,1*s,0],drag:.8,curl:{strength:1.1*s,scale:1.2/s,speed:.9},vortex:{axis:[0,1,0],strength:1.6*s,pull:5.5*s}},
+    render:{blending:'additive',texture:'soft',stretch:.16,emissive:3.2*k,softness:.3*s,sizeOverLife:[[0,0],[.12,1],[.7,.8],[1,0]],
+      colorOverLife:[[0,0xffffff,0],[.1,0xffffff,1],[.6,0xd0e0ff,.8],[1,0x7050ff,0]]}})),
+  rain:presetFactory(({s,k,color,ground})=>({name:'rain',prewarm:1.2,capacity:3000,spawn:{rate:1800*k,shape:{type:'box',size:[30*s,0,30*s]}},position:[0,14*s,0],
+    init:{life:[1.1,1.25],speed:[13*s,16*s],direction:[.08,-1,.03],spread:.02,size:[.018*s,.028*s],color:color||0xb8d0f0},
+    forces:{gravity:[0,-3*s,0]},collision:groundCollision(ground===undefined?0:ground,{die:true}),
+    render:{blending:'premultiplied',texture:'spark',stretch:.05,softness:0,emissive:1.2*k,blendOverLife:[[0,.4],[1,.4]],colorOverLife:[[0,0xffffff,0],[.05,0xffffff,.55],[1,0xffffff,.55]]}})),
+  snow:presetFactory(({s,k,color,ground})=>({name:'snow',prewarm:10,capacity:3000,spawn:{rate:170*k,shape:{type:'box',size:[30*s,0,30*s]}},position:[0,12*s,0],
+    init:{life:[12,16],speed:[.6*s,1.1*s],direction:[0,-1,0],spread:.3,size:[.05*s,.1*s],color:color||0xffffff,rotation:[0,TAU]},
+    forces:{gravity:[0,-.5*s,0],drag:.6,curl:{strength:.5*s,scale:.35/s,speed:.3}},collision:groundCollision(ground===undefined?0:ground,{bounce:0,friction:1,radius:.02*s}),
+    render:{blending:'alpha',texture:'soft',softness:.2,colorOverLife:[[0,0xffffff,0],[.05,0xffffff,.95],[.9,0xffffff,.9],[1,0xffffff,0]]}})),
+  dust:presetFactory(({s,k,color})=>({name:'dust',prewarm:6,capacity:96,spawn:{rate:6*k,shape:{type:'disc',radius:3*s}},position:[0,.9*s,0],
+    init:{life:[5,8],speed:[.05*s,.2*s],direction:'random',size:[1.6*s,2.8*s],color:color||0xb8a888,rotation:[0,TAU],angularVelocity:[-.2,.2]},
+    forces:{drag:.4,wind:[.3*s,0,0],curl:{strength:.3*s,scale:.3/s,speed:.25}},
+    render:{blending:'alpha',texture:'smoke',lit:true,softness:1*s,sizeOverLife:[[0,.6],[1,1]],colorOverLife:[[0,0xffffff,0],[.3,0xffffff,.09],[.7,0xffffff,.07],[1,0xffffff,0]]}})),
+  leaves:presetFactory(({s,k,color,ground})=>({name:'leaves',prewarm:8,capacity:128,spawn:{rate:6*k,shape:{type:'box',size:[10*s,0,10*s]}},position:[0,7*s,0],
+    init:{life:[8,11],speed:[.1*s,.4*s],direction:'random',size:[.18*s,.28*s],color:color||[0xe0a030,0xb8401a],rotation:[0,TAU],angularVelocity:[-2.6,2.6]},
+    forces:{gravity:[0,-1.2*s,0],drag:1.4,wind:[.5*s,0,.2*s],curl:{strength:1.6*s,scale:.5/s,speed:.6}},collision:groundCollision(ground===undefined?0:ground,{bounce:0,friction:.9,radius:.02*s}),
+    render:{blending:'alpha',texture:'leaf',lit:true,translucency:.8,curvature:.35,softness:.1,colorOverLife:[[0,0xffffff,0],[.03,0xffffff,1],[.9,0xffffff,1],[1,0xffffff,0]]}})),
+  waterSplash:presetFactory(({s,k,color,ground})=>({name:'waterSplash',layers:[
+    {name:'waterSplash.drops',capacity:256,spawn:{bursts:[{time:0,count:[90,120]}],duration:.2,loop:false,shape:{type:'cone',radius:.15*s,angle:.5}},
+      init:{life:[.6,1.1],speed:[2.2*s,4.8*s],direction:'shape',size:[.025*s,.05*s],color:color||[0xe8f6ff,0xb8dcff]},
+      forces:{gravity:[0,-9.8*s,0],drag:.3},collision:groundCollision(ground===undefined?0:ground,{die:true}),
+      render:{blending:'premultiplied',texture:'soft',stretch:.05,emissive:1.2*k,softness:.1,blendOverLife:[[0,.35],[1,.35]],colorOverLife:[[0,0xffffff,.95],[.7,0xffffff,.8],[1,0xffffff,0]]}},
+    {name:'waterSplash.mist',capacity:64,spawn:{bursts:[{time:0,count:[14,20]}],duration:.2,loop:false,shape:{type:'hemisphere',radius:.2*s}},
+      init:{life:[.7,1.2],speed:[.5*s,1.3*s],direction:'shape',size:[.35*s,.55*s],color:0xdde8f0,rotation:[0,TAU],angularVelocity:[-.8,.8]},
+      forces:{gravity:[0,-.5*s,0],drag:2.5},
+      render:{blending:'alpha',texture:'smoke',lit:true,softness:.4*s,cameraOffset:.2*s,sizeOverLife:[[0,.4],[1,1.4]],colorOverLife:[[0,0xffffff,0],[.1,0xffffff,.35],[1,0xffffff,0]]}}]})),
+  explosion:presetFactory(({s,k,color})=>({name:'explosion',layers:[
+    {name:'explosion.fireball',capacity:128,spawn:{bursts:[{time:0,count:[55,65]}],duration:.3,loop:false,shape:{type:'sphere',radius:.35*s}},
+      init:{life:[.9,1.9],speed:[1.2*s,4*s],direction:'shape',size:[1*s,1.7*s],color:color||[0xffc070,0xff9040],rotation:[0,TAU],angularVelocity:[-1,1]},
+      forces:{gravity:[0,1.1*s,0],drag:2.6,curl:{strength:1.2*s,scale:.5/s,speed:.6}},
+      render:{blending:'premultiplied',texture:'smoke',flipbook:{cols:2,rows:2,fps:0,random:true},emissive:2.2*k,softness:.6*s,cameraOffset:.5*s,sizeOverLife:[[0,.35],[.15,1],[1,1.6]],blendOverLife:[[0,1],[.25,.9],[.45,0],[1,0]],
+        colorOverLife:[[0,0xffe6b0,.8],[.1,0xffa840,.8],[.28,0xd04010,.75],[.45,0x3a2418,.7],[1,0x1a1818,0]]}},
+    {name:'explosion.sparks',capacity:256,spawn:{bursts:[{time:0,count:[140,170]}],duration:.3,loop:false,shape:{type:'sphere',radius:.2*s}},
+      init:{life:[.6,1.6],speed:[5*s,13*s],direction:'shape',size:[.03*s,.06*s],color:[0xfff0c0,0xffb050]},forces:{gravity:[0,-9.8*s,0],drag:.9},
+      render:{blending:'additive',texture:'spark',stretch:.05,emissive:6*k,softness:0,colorOverLife:[[0,0xffffff,1],[.4,0xffc060,1],[1,0xff4010,0]]}},
+    /* drawn before the fireball (order -1) so the glowing core stays in front of the rising smoke */
+    {name:'explosion.smoke',capacity:64,spawn:{bursts:[{time:.18,count:[18,24]}],duration:.3,loop:false,shape:{type:'sphere',radius:.6*s}},
+      init:{life:[2.6,4.2],speed:[.5*s,1.6*s],direction:'shape',size:[1.6*s,2.6*s],color:[0x6a6664,0x4a4644],rotation:[0,TAU],angularVelocity:[-.4,.4]},
+      forces:{gravity:[0,.7*s,0],drag:1.2,curl:{strength:.5*s,scale:.35/s,speed:.3}},
+      render:{blending:'alpha',texture:'smoke',lit:true,sortAlpha:true,order:-1,softness:1*s,cameraOffset:.5*s,sizeOverLife:[[0,.5],[1,1.3]],colorOverLife:[[0,0xffffff,0],[.12,0xffffff,.75],[.6,0xffffff,.45],[1,0xffffff,0]]}}]})),
+  portal:presetFactory(({s,k,color})=>({name:'portal',prewarm:1.5,capacity:600,space:'local',orientation:[Math.PI/2,0,0],position:[0,1.4*s,0],spawn:{rate:200*k,shape:{type:'ring',radius:1.15*s,width:.06*s}},
+    init:{life:[1.1,2],speed:[.5*s,1*s],direction:'tangent',spread:.15,size:[.04*s,.1*s],color:color||[0x9a70ff,0x50d8ff]},
+    forces:{drag:.9,vortex:{axis:[0,1,0],strength:1.8*s,pull:.9*s},curl:{strength:.6*s,scale:1.2/s,speed:.8}},
+    render:{blending:'additive',texture:'soft',stretch:.05,emissive:2.4*k,softness:.2,sizeOverLife:[[0,0],[.15,1],[1,.2]],colorOverLife:[[0,0xffffff,0],[.15,0xffffff,.9],[.7,0xe0d8ff,.6],[1,0x8060ff,0]]}})),
+  trail:presetFactory(({s,k,color})=>({name:'trail',capacity:256,spawn:{rate:0,rateOverDistance:14/s,shape:{type:'point'}},
+    init:{life:[.7,.7],speed:[0,0],size:[.28*s,.28*s],color:color||0x80e8ff},
+    render:{blending:'additive',texture:'soft',ribbons:true,emissive:3*k,softness:.2,sizeOverLife:[[0,1],[1,0]],colorOverLife:[[0,0xffffff,1],[.5,0xc0d8ff,.7],[1,0x6070ff,0]]}})),
+};
+
+/* ---------- VFX system ---------- */
+KE.VFX=class{
+  constructor(THREE,renderer,scene,{budget,cpuLimit=2048,maxDt=.1,prepareCamera=true,linearColors}={}){
+    if(!THREE||!renderer||!scene)throw new TypeError('new KE.VFX(THREE, renderer, scene, options)');
+    this.THREE=THREE;this.renderer=renderer;this.scene=scene;this.budget=clamp(Number.isFinite(budget)?budget:(Number.isFinite(KE.settings.vfx)?KE.settings.vfx:1),0,1);
+    /* Without an explicit budget the system follows KE.settings.vfx (quality panel, fx.Budget cvar). */
+    this._offSettings=Number.isFinite(budget)||!KE.events?null:KE.events.on('settings',st=>{if(st&&Number.isFinite(st.vfx)&&st.vfx!==this.budget)this.setBudget(st.vfx);});
+    this.cpuLimit=Math.max(64,Math.floor(cpuLimit));this.maxDt=maxDt;this.prepareCamera=prepareCamera;
+    this.linearColors=linearColors===undefined?renderer.outputEncoding===THREE.sRGBEncoding:!!linearColors;
+    this.emitters=[];this.time=0;this.frameCount=0;this.fsq=new KE.FullScreenQuad(THREE);this._textures={};this._gpuOK=undefined;this._iter=[];this._cc=new THREE.Color();this.disposed=false;
+    this.presets=PRESETS;
+  }
+  /* One-time probe: WebGL2, float colour attachments that really render and read back, vertex texture fetch. */
+  gpuSupported(){
+    if(this._gpuOK!==undefined)return this._gpuOK;const THREE=this.THREE,r=this.renderer,caps=KE.capabilities(r);
+    if(!caps.webgl2||!caps.floatRT||(r.capabilities.maxVertexTextures||0)<4)return this._gpuOK=false;
+    const rt=new THREE.WebGLRenderTarget(1,1,{type:THREE.FloatType,format:THREE.RGBAFormat,minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter,depthBuffer:false,stencilBuffer:false});
+    const m=new THREE.ShaderMaterial({vertexShader:KE.FULLSCREEN_VS,fragmentShader:PROBE_FS,depthTest:false,depthWrite:false,blending:THREE.NoBlending});let ok=false;
+    try{this.fsq.render(r,rt,m);const px=new Float32Array(4);r.readRenderTargetPixels(rt,0,0,1,1,px);ok=px[0]===1.5&&px[1]===-2.25&&px[2]===65536&&px[3]===.125;}catch(e){ok=false;}
+    rt.dispose();m.dispose();return this._gpuOK=ok;
+  }
+  get gpu(){return this.gpuSupported();}
+  /* Changes the particle budget. New emitters allocate capacity x budget; existing emitters keep their
+     allocation (GPU memory is not reallocated) but scale their spawn rates to the new budget. */
+  setBudget(b){this.budget=clamp(Number.isFinite(+b)?+b:1,0,1);
+    for(const e of this.emitters)if(e.config.scaleWithBudget)e.spawnScale=Math.min(1,e.capacity/e.config.capacity,budgetCapacity(e.config.capacity,this.budget)/e.config.capacity);return this;}
+  /* Builds an emitter (or EmitterGroup for layered presets) from a named preset: vfx.create('fire', {position}). */
+  create(name,opts){const f=Object.prototype.hasOwnProperty.call(PRESETS,name)?PRESETS[name]:null;if(!f)throw new RangeError('KE.VFX: unknown preset "'+name+'"');return this.emitter(f(opts));}
+  texture(name){
+    if(name&&name.isTexture)return name;if(!TEXTURE_PAINTERS[name])throw new RangeError('KE.VFX: unknown texture "'+name+'"');
+    if(!this._textures[name]){const t=new this.THREE.CanvasTexture(TEXTURE_PAINTERS[name]());t.premultiplyAlpha=true;t.anisotropy=1;t.userData={keVFX:name};this._textures[name]=t;}
+    return this._textures[name];
+  }
+  emitter(cfg){
+    if(this.disposed)throw new Error('KE.VFX: disposed');
+    const layers=Array.isArray(cfg)?cfg:cfg&&Array.isArray(cfg.layers)?cfg.layers:null;
+    if(layers){const list=[];try{for(const c of layers)list.push(this.emitter(c));}catch(err){for(const e of list)e.dispose();throw err;}return new EmitterGroup(list,cfg.name||'group');}
+    const e=new Emitter(this,cfg);this.emitters.push(e);return e;
+  }
+  update(dt,camera){
+    if(this.disposed)return;dt=clamp(Number(dt)||0,0,this.maxDt);
+    if(camera){if(this.prepareCamera&&KE.prepareCamera)KE.prepareCamera(camera);camera.updateMatrixWorld();}
+    this.time+=dt;this.frameCount++;const list=this._iter;list.length=0;for(const e of this.emitters)list.push(e);
+    for(const e of list)if(!e.disposed)e._update(dt,camera);list.length=0;
+  }
+  stats(){let capacity=0,alive=0,drawn=0,gpuEmitters=0,passes=0,bytes=0;
+    for(const e of this.emitters){capacity+=e.capacity;alive+=e.alive;drawn+=e.drawn;if(e.gpu)gpuEmitters++;passes+=e.backend.passes;bytes+=e.memoryBytes();}
+    for(const k of Object.keys(this._textures)){const im=this._textures[k].image;bytes+=im?im.width*im.height*4:0;}
+    return {emitters:this.emitters.length,capacity,alive,drawn,gpu:this.gpuSupported(),gpuEmitters,cpuEmitters:this.emitters.length-gpuEmitters,simPasses:passes,budget:this.budget,bytes};}
+  _clear(rt){const r=this.renderer,prev=r.getRenderTarget(),a=r.getClearAlpha();r.getClearColor(this._cc);r.setRenderTarget(rt);r.setClearColor(0x000000,0);r.clear(true,false,false);r.setClearColor(this._cc,a);r.setRenderTarget(prev);}
+  dispose(){if(this.disposed)return;if(this._offSettings){this._offSettings();this._offSettings=null;}for(const e of this.emitters.slice())e.dispose();for(const k of Object.keys(this._textures))this._textures[k].dispose();this._textures={};this.fsq.dispose();this.disposed=true;}
+};
+KE.VFX.presets=PRESETS;
+KE.VFX.Emitter=Emitter;
+KE.VFX.EmitterGroup=EmitterGroup;
+/* Exposed for tests and tooling. */
+KE.VFX.internals={normalizeConfig,SpawnHistory,evalCurve,noise3,noised3,curlNoise,deepMerge,TEXTURE_PAINTERS,MAX_BATCHES};
+KE.registerModule('vfx',{provides:['VFX']});
+})();
+
+/* ===== module: 60-animation.js ===== */
+/* kitsune enginev3 · animation
+   Easing and tweens, analytic two-bone IK, FABRIK/CCD chains with joint limits, look-at with limits,
+   spring chains (secondary motion), pose blending, an animation state machine with crossfades, 1D/2D
+   blend spaces with phase sync, procedural multi-legged locomotion, a keyframe sequencer with camera
+   cuts and events, Catmull-Rom camera rails, trauma camera shake, root-motion extraction and skinned
+   tube meshes. Everything works on plain Object3D hierarchies (Groups as joints) and on THREE.Bone
+   skeletons. CPU only; update paths reuse preallocated scratch objects and do not allocate per frame. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+
+/* ---------- shared helpers ---------- */
+const EPS=1e-9;
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const damp=(a,b,lambda,dt)=>lambda===Infinity?b:a+(b-a)*(1-Math.exp(-lambda*Math.max(0,dt)));
+const smooth01=t=>t<=0?0:t>=1?1:t*t*(3-2*t);
+const wrapAngle=a=>{a%=Math.PI*2;if(a>Math.PI)a-=Math.PI*2;else if(a<-Math.PI)a+=Math.PI*2;return a;};
+function toVec3(THREE,v,def){
+  if(v==null){if(def==null)return null;v=def;}
+  if(v.isVector3)return v.clone();
+  if(Array.isArray(v)||ArrayBuffer.isView(v))return new THREE.Vector3(+v[0]||0,+v[1]||0,+v[2]||0);
+  if(typeof v==='object')return new THREE.Vector3(+v.x||0,+v.y||0,+v.z||0);
+  throw new TypeError('Expected a Vector3, [x,y,z] or {x,y,z}');
+}
+/* Per-THREE scratch objects for static functions (each caller key gets its own set, so nesting is safe). */
+const scratchCache=new WeakMap();
+function scratch(THREE,key,make){let m=scratchCache.get(THREE);if(!m)scratchCache.set(THREE,m=new Map());let s=m.get(key);if(!s)m.set(key,s=make(THREE));return s;}
+function isDescendant(node,ancestor){for(let p=node.parent;p;p=p.parent)if(p===ancestor)return true;return false;}
+function checkChain(joints,what){
+  if(!Array.isArray(joints)||!joints.length)throw new TypeError(what+' needs an array of Object3D joints');
+  for(let i=0;i<joints.length;i++){const j=joints[i];if(!j||!j.isObject3D)throw new TypeError(what+' joint '+i+' is not an Object3D');
+    if(i&&!isDescendant(j,joints[i-1]))throw new Error(what+' joint '+i+' must be a descendant of joint '+(i-1));}
+}
+/* Rotation part of a (possibly scaled) world matrix; matrixWorld must be current. */
+function worldQuat(obj,out,tp,ts){obj.matrixWorld.decompose(tp,out,ts);return out;}
+function parentQuat(obj,out,tp,ts){return obj.parent?worldQuat(obj.parent,out,tp,ts):out.identity();}
+function anyPerpendicular(v,out){if(Math.abs(v.x)<.9)out.set(0,-v.z,v.y);else out.set(v.z,0,-v.x);return out.normalize();}
+/* Split q into swing (perpendicular to axis) and twist (about unit axis): q = swing * twist. */
+function swingTwist(q,axis,swing,twist){
+  const d=q.x*axis.x+q.y*axis.y+q.z*axis.z;twist.set(axis.x*d,axis.y*d,axis.z*d,q.w);
+  if(twist.lengthSq()<1e-12)twist.identity();else twist.normalize();
+  swing.copy(twist).invert().premultiply(q);return swing;
+}
+function slerpFlat(out,o,a,ao,b,bo,t){
+  const x0=a[ao],y0=a[ao+1],z0=a[ao+2],w0=a[ao+3];let x1=b[bo],y1=b[bo+1],z1=b[bo+2],w1=b[bo+3];
+  let cos=x0*x1+y0*y1+z0*z1+w0*w1;if(cos<0){cos=-cos;x1=-x1;y1=-y1;z1=-z1;w1=-w1;}
+  let s0=1-t,s1=t;if(cos<.9995){const ang=Math.acos(Math.min(1,cos)),sin=Math.sin(ang);s0=Math.sin(s0*ang)/sin;s1=Math.sin(t*ang)/sin;}
+  const x=s0*x0+s1*x1,y=s0*y0+s1*y1,z=s0*z0+s1*z1,w=s0*w0+s1*w1,l=Math.hypot(x,y,z,w)||1;
+  out[o]=x/l;out[o+1]=y/l;out[o+2]=z/l;out[o+3]=w/l;
+}
+
+/* ---------- easing ---------- */
+const PI=Math.PI;
+const bounceOut=t=>{const n=7.5625,d=2.75;if(t<1/d)return n*t*t;if(t<2/d)return n*(t-=1.5/d)*t+.75;if(t<2.5/d)return n*(t-=2.25/d)*t+.9375;return n*(t-=2.625/d)*t+.984375;};
+/* CSS-style cubic-bezier timing: Newton iterations with a bisection fallback. */
+function cubicBezier(x1,y1,x2,y2){
+  if(![x1,y1,x2,y2].every(Number.isFinite)||x1<0||x1>1||x2<0||x2>1)throw new RangeError('cubicBezier x control points must lie in [0,1]');
+  const cx=3*x1,bx=3*(x2-x1)-cx,ax=1-cx-bx,cy=3*y1,by=3*(y2-y1)-cy,ay=1-cy-by;
+  const sx=t=>((ax*t+bx)*t+cx)*t,sy=t=>((ay*t+by)*t+cy)*t,dx=t=>(3*ax*t+2*bx)*t+cx;
+  return x=>{if(x<=0)return 0;if(x>=1)return 1;let t=x;
+    for(let i=0;i<8;i++){const e=sx(t)-x;if(Math.abs(e)<1e-7)return sy(t);const d=dx(t);if(Math.abs(d)<1e-6)break;const n=t-e/d;if(n<0||n>1)break;t=n;}
+    let lo=0,hi=1;t=x;for(let i=0;i<48;i++){const v=sx(t);if(Math.abs(v-x)<1e-7)break;if(v<x)lo=t;else hi=t;t=(lo+hi)/2;}return sy(t);};
+}
+const easing={
+  linear:t=>t,
+  inQuad:t=>t*t,outQuad:t=>t*(2-t),inOutQuad:t=>t<.5?2*t*t:1-(-2*t+2)**2/2,
+  inCubic:t=>t*t*t,outCubic:t=>1-(1-t)**3,inOutCubic:t=>t<.5?4*t*t*t:1-(-2*t+2)**3/2,
+  inQuart:t=>t**4,outQuart:t=>1-(1-t)**4,inOutQuart:t=>t<.5?8*t**4:1-(-2*t+2)**4/2,
+  inQuint:t=>t**5,outQuint:t=>1-(1-t)**5,inOutQuint:t=>t<.5?16*t**5:1-(-2*t+2)**5/2,
+  inSine:t=>1-Math.cos(t*PI/2),outSine:t=>Math.sin(t*PI/2),inOutSine:t=>-(Math.cos(PI*t)-1)/2,
+  inExpo:t=>t<=0?0:2**(10*t-10),outExpo:t=>t>=1?1:1-2**(-10*t),inOutExpo:t=>t<=0?0:t>=1?1:t<.5?2**(20*t-10)/2:(2-2**(-20*t+10))/2,
+  inCirc:t=>1-Math.sqrt(1-t*t),outCirc:t=>Math.sqrt(1-(t-1)**2),inOutCirc:t=>t<.5?(1-Math.sqrt(1-(2*t)**2))/2:(Math.sqrt(1-(-2*t+2)**2)+1)/2,
+  inBack:t=>2.70158*t*t*t-1.70158*t*t,outBack:t=>1+2.70158*(t-1)**3+1.70158*(t-1)**2,
+  inOutBack:t=>{const c=1.70158*1.525;return t<.5?((2*t)**2*((c+1)*2*t-c))/2:((2*t-2)**2*((c+1)*(t*2-2)+c)+2)/2;},
+  inElastic:t=>t<=0?0:t>=1?1:-(2**(10*t-10))*Math.sin((t*10-10.75)*(2*PI/3)),
+  outElastic:t=>t<=0?0:t>=1?1:2**(-10*t)*Math.sin((t*10-.75)*(2*PI/3))+1,
+  inOutElastic:t=>{const c=2*PI/4.5;return t<=0?0:t>=1?1:t<.5?-(2**(20*t-10)*Math.sin((20*t-11.125)*c))/2:(2**(-20*t+10)*Math.sin((20*t-11.125)*c))/2+1;},
+  inBounce:t=>1-bounceOut(1-t),outBounce:bounceOut,inOutBounce:t=>t<.5?(1-bounceOut(1-2*t))/2:(1+bounceOut(2*t-1))/2,
+  smoothstep:t=>t<=0?0:t>=1?1:t*t*(3-2*t),smootherstep:t=>t<=0?0:t>=1?1:t*t*t*(t*(t*6-15)+10),
+};
+Object.assign(easing,{ease:cubicBezier(.25,.1,.25,1),easeIn:cubicBezier(.42,0,1,1),easeOut:cubicBezier(0,0,.58,1),easeInOut:cubicBezier(.42,0,.58,1)});
+const EASE_NAMES=Object.keys(easing);
+easing.cubicBezier=cubicBezier;
+easing.steps=(n,jump='end')=>{n=Math.max(1,n|0);return jump==='start'?t=>t>=1?1:Math.min(1,Math.ceil(t*n)/n):t=>t>=1?1:Math.floor(t*n)/n;};
+function getEase(e){
+  if(e==null)return easing.linear;if(typeof e==='function')return e;
+  if(typeof e==='string'&&EASE_NAMES.includes(e))return easing[e];
+  throw new RangeError('Unknown easing "'+e+'"');
+}
+function easeName(fn){if(fn==null)return null;if(typeof fn==='string')return fn;for(const k of EASE_NAMES)if(easing[k]===fn)return k;return null;}
+
+/* ---------- property paths and typed values (tweens and sequencer) ---------- */
+/* A value is stored as a flat run of numbers: number/boolean 1, Vector2/3/4 2-4, Euler 3, Color 3,
+   Quaternion 4 (slerped), arrays n. Writers mutate the existing property object in place. */
+const PROJECTION_KEYS=new Set(['fov','zoom','near','far','aspect','filmOffset','filmGauge','focus','left','right','top','bottom']);
+function resolvePath(target,path){
+  if(target==null)throw new TypeError('Animation target is null');
+  if(typeof path!=='string'||!path)throw new TypeError('Property path must be a non-empty string');
+  const parts=path.split('.');let obj=target;
+  for(let i=0;i<parts.length-1;i++){obj=obj[parts[i]];if(obj==null)throw new Error('Cannot resolve property path "'+path+'"');}
+  const key=parts[parts.length-1];
+  if(!(key in Object(obj)))throw new Error('Unknown property "'+path+'"');
+  return {obj,key};
+}
+function kindOf(v){
+  if(typeof v==='number')return 'number';if(typeof v==='boolean')return 'boolean';if(!v||typeof v!=='object')return null;
+  if(v.isQuaternion)return 'quaternion';if(v.isColor)return 'color';if(v.isEuler)return 'euler';
+  if(v.isVector2||v.isVector3||v.isVector4)return 'vector';if(Array.isArray(v)||ArrayBuffer.isView(v))return 'array';return null;
+}
+function sizeOf(kind,v){switch(kind){case 'number':case 'boolean':return 1;case 'quaternion':return 4;case 'color':case 'euler':return 3;case 'vector':return v.isVector2?2:v.isVector3?3:4;case 'array':return v.length;}return 0;}
+const VKEYS=['x','y','z','w'];
+function readValue(kind,v,out,o,size){
+  switch(kind){
+    case 'number':out[o]=v;break;case 'boolean':out[o]=v?1:0;break;
+    case 'quaternion':out[o]=v.x;out[o+1]=v.y;out[o+2]=v.z;out[o+3]=v.w;break;
+    case 'color':out[o]=v.r;out[o+1]=v.g;out[o+2]=v.b;break;
+    case 'euler':out[o]=v.x;out[o+1]=v.y;out[o+2]=v.z;break;
+    case 'vector':for(let i=0;i<size;i++)out[o+i]=v[VKEYS[i]];break;
+    case 'array':for(let i=0;i<size;i++)out[o+i]=+v[i]||0;break;
+  }
+}
+/* Parse a user value into the flat layout of the current property (setup time only). Numbers accept
+   relative strings '+=n', '-=n', '*=n'. Colors accept hex, CSS strings, arrays and Color objects. */
+function parseValue(kind,input,out,o,size,current){
+  const fail=()=>{throw new TypeError('Cannot animate a '+kind+' property with value '+String(input));};
+  switch(kind){
+    case 'number':{let v=input;if(typeof input==='string'){const m=/^\s*([+\-*])=\s*(-?[\d.]+(?:e[+-]?\d+)?)\s*$/i.exec(input);
+        if(m){const n=+m[2];v=m[1]==='+'?current+n:m[1]==='-'?current-n:current*n;}else v=+input;}
+      if(!Number.isFinite(v))fail();out[o]=v;break;}
+    case 'boolean':out[o]=input?1:0;break;
+    case 'color':{if(input&&input.isColor){out[o]=input.r;out[o+1]=input.g;out[o+2]=input.b;break;}
+      if(Array.isArray(input)){out[o]=+input[0];out[o+1]=+input[1];out[o+2]=+input[2];break;}
+      if(input&&typeof input==='object'&&'r' in input){out[o]=+input.r;out[o+1]=+input.g;out[o+2]=+input.b;break;}
+      if(typeof input==='number'||typeof input==='string'){const c=new current.constructor();c.set(input);out[o]=c.r;out[o+1]=c.g;out[o+2]=c.b;break;}
+      fail();break;}
+    case 'quaternion':{let q=input;if(input&&input.isEuler)q=new current.constructor().setFromEuler(input);
+      else if((Array.isArray(input)||ArrayBuffer.isView(input))&&input.length===3){// Euler angles, XYZ order
+        const cx=Math.cos(input[0]/2),cy=Math.cos(input[1]/2),cz=Math.cos(input[2]/2),sx=Math.sin(input[0]/2),sy=Math.sin(input[1]/2),sz=Math.sin(input[2]/2);
+        q=[sx*cy*cz+cx*sy*sz,cx*sy*cz-sx*cy*sz,cx*cy*sz+sx*sy*cz,cx*cy*cz-sx*sy*sz];}
+      if(Array.isArray(q)||ArrayBuffer.isView(q)){out[o]=+q[0];out[o+1]=+q[1];out[o+2]=+q[2];out[o+3]=+q[3];}
+      else if(q&&typeof q==='object'&&'w' in q){out[o]=+q.x;out[o+1]=+q.y;out[o+2]=+q.z;out[o+3]=+q.w;}else fail();
+      const l=Math.hypot(out[o],out[o+1],out[o+2],out[o+3]);if(!(l>0))fail();for(let i=0;i<4;i++)out[o+i]/=l;break;}
+    case 'euler':case 'vector':case 'array':{
+      if(typeof input==='number'&&kind!=='array'){for(let i=0;i<size;i++)out[o+i]=input;break;}
+      if(Array.isArray(input)||ArrayBuffer.isView(input)){if(input.length<size)fail();for(let i=0;i<size;i++)out[o+i]=+input[i];}
+      else if(input&&typeof input==='object'&&kind!=='array'){for(let i=0;i<size;i++){const k=VKEYS[i];out[o+i]=k in input?+input[k]:readComp(current,k);}}
+      else fail();break;}
+    default:fail();
+  }
+  for(let i=0;i<size;i++)if(!Number.isFinite(out[o+i]))fail();
+}
+const readComp=(v,k)=>+v[k]||0;
+function writeValue(kind,obj,key,flat,o,size){
+  switch(kind){
+    case 'number':obj[key]=flat[o];break;
+    case 'boolean':obj[key]=flat[o]>=.5;break;
+    case 'quaternion':obj[key].set(flat[o],flat[o+1],flat[o+2],flat[o+3]).normalize();break;
+    case 'euler':obj[key].set(flat[o],flat[o+1],flat[o+2]);break;
+    case 'color':obj[key].setRGB(flat[o],flat[o+1],flat[o+2]);break;
+    case 'vector':{const v=obj[key];v.x=flat[o];v.y=flat[o+1];if(size>2)v.z=flat[o+2];if(size>3)v.w=flat[o+3];break;}
+    case 'array':{const a=obj[key];for(let i=0;i<size;i++)a[i]=flat[o+i];break;}
+  }
+  if(obj.isCamera&&PROJECTION_KEYS.has(key))obj.updateProjectionMatrix();
+}
+function prepareMaterial(obj,key,values){if(obj&&obj.isMaterial&&key==='opacity'&&values.some(v=>v<1))obj.transparent=true;}
+
+/* ---------- tweens ---------- */
+class TweenManager{
+  constructor(){this.list=[];this.timeScale=1;}
+  get count(){let n=0;for(const t of this.list)if(t._active)n++;return n;}
+  add(t){if(!t._queued){t._queued=true;this.list.push(t);}t.manager=this;return t;}
+  /* Advance every running tween. Tweens started from callbacks during this call begin next update. */
+  update(dt){
+    if(!(dt>0))return this;dt*=this.timeScale;const list=this.list,n=list.length;
+    for(let i=0;i<n;i++){const t=list[i];if(t._active)t._advance(dt);}
+    let w=0;for(let r=0;r<list.length;r++){const t=list[r];if(t._active)list[w++]=t;else t._queued=false;}list.length=w;return this;
+  }
+  killTweensOf(target){for(const t of this.list)if(t.target===target)t.stop();return this;}
+  stopAll(){for(const t of this.list)t.stop();return this;}
+}
+class Tween{
+  constructor(target,props,opts={}){
+    if(!target||typeof target!=='object')throw new TypeError('tween target must be an object');
+    if(!props||typeof props!=='object')throw new TypeError('tween needs a property map');
+    const {duration=1,ease='outCubic',delay=0,repeat=0,repeatDelay=0,yoyo=false,from=null,onStart=null,onUpdate=null,onComplete=null,onRepeat=null,onStop=null,manager=KE.tweens,autoStart=true}=opts;
+    if(!(duration>=0)||!(delay>=0)||!(repeat>=0)||!(repeatDelay>=0))throw new RangeError('tween timing values must be non-negative');
+    if(repeat===Infinity&&duration+repeatDelay<=0)throw new RangeError('an infinitely repeating tween needs a positive duration');
+    Object.assign(this,{target,props,duration,delay,repeat,repeatDelay,yoyo,from,onStart,onUpdate,onComplete,onRepeat,onStop,manager});
+    this.ease=getEase(ease);this.elapsed=0;this.iteration=0;this.progress=0;this.started=false;this.done=false;this.paused=false;
+    this._active=false;this._queued=false;this._channels=null;this._next=null;this._promise=null;this._resolve=null;
+    if(autoStart)this.start();
+  }
+  get playing(){return this._active&&!this.paused;}
+  start(){this.elapsed=0;this.iteration=0;this.started=false;this.done=false;this.paused=false;this._active=true;(this.manager||KE.tweens).add(this);return this;}
+  _build(){
+    this._channels=[];
+    for(const path of Object.keys(this.props)){
+      const {obj,key}=resolvePath(this.target,path),cur=obj[key],kind=kindOf(cur);
+      if(!kind)throw new TypeError('Cannot tween property "'+path+'" of this type');
+      const size=sizeOf(kind,cur),from=new Float64Array(size),to=new Float64Array(size);
+      if(this.from&&path in this.from)parseValue(kind,this.from[path],from,0,size,cur);else readValue(kind,cur,from,0,size);
+      parseValue(kind,this.props[path],to,0,size,kind==='number'?from[0]:cur);
+      if(kind==='quaternion'&&from[0]*to[0]+from[1]*to[1]+from[2]*to[2]+from[3]*to[3]<0)for(let i=0;i<4;i++)to[i]=-to[i];
+      prepareMaterial(obj,key,[from[0],to[0]]);
+      this._channels.push({obj,key,kind,size,from,to,out:new Float64Array(size)});
+    }
+  }
+  _apply(p){
+    this.progress=p;const e=this.ease(p);
+    for(const c of this._channels){
+      if(c.kind==='quaternion')slerpFlat(c.out,0,c.from,0,c.to,0,e);
+      else if(c.kind==='boolean')c.out[0]=e>=1?c.to[0]:c.from[0];
+      else for(let i=0;i<c.size;i++)c.out[i]=c.from[i]+(c.to[i]-c.from[i])*e;
+      writeValue(c.kind,c.obj,c.key,c.out,0,c.size);
+    }
+    if(this.onUpdate)this.onUpdate(this.target,p,this);
+  }
+  _advance(dt){
+    if(this.paused||!this._active)return;
+    this.elapsed+=dt;const t=this.elapsed-this.delay;if(t<0)return;
+    if(!this.started){this.started=true;try{this._build();}catch(e){this._active=false;throw e;}if(this.onStart)this.onStart(this.target,this);}
+    const d=this.duration,cycle=d+this.repeatDelay,total=this.repeat===Infinity?Infinity:(this.repeat+1)*d+this.repeat*this.repeatDelay;
+    if(t>=total){this.iteration=this.repeat;this._apply(this.yoyo&&this.repeat%2===1?0:1);this._finish();return;}
+    const it=cycle>0?Math.floor(t/cycle):0;
+    if(it!==this.iteration){this.iteration=it;if(this.onRepeat)this.onRepeat(this.target,it,this);}
+    let p=d>0?Math.min(1,(t-it*cycle)/d):1;if(this.yoyo&&it%2===1)p=1-p;this._apply(p);
+  }
+  _finish(){this._active=false;this.done=true;if(this.onComplete)this.onComplete(this.target,this);if(this._resolve)this._resolve(true);if(this._next)for(const n of this._next)n.start();}
+  stop(){if(!this._active)return this;this._active=false;if(this.onStop)this.onStop(this.target,this);if(this._resolve)this._resolve(false);return this;}
+  pause(){this.paused=true;return this;}
+  resume(){this.paused=false;return this;}
+  /* Jump to a time (seconds since start, delay included) and apply it. */
+  seek(time){const p=this.paused;this.paused=false;this.elapsed=0;if(!this._active){this._active=true;(this.manager||KE.tweens).add(this);}this._advance(Math.max(0,time)+1e-12);this.paused=p;return this;}
+  /* Start the given tweens when this one completes (ones that have not begun yet are held back until then). */
+  chain(...tweens){for(const t of tweens)if(t._active&&!t.started&&t!==this)t._active=false;this._next=(this._next||[]).concat(tweens);return this;}
+  get finished(){if(!this._promise)this._promise=this.done?Promise.resolve(true):new Promise(r=>{this._resolve=r;});return this._promise;}
+}
+
+/* ---------- analytic two-bone IK ---------- */
+/* Law of cosines in the plane spanned by the target direction and the pole (or the current bend when no
+   pole is given). New mid/end positions are built first; each joint then receives the shortest-arc world
+   rotation that carries its old child direction onto the new one, converted back to local space. */
+const stretchRest=new WeakMap();
+function ikScratch(THREE){return scratch(THREE,'ik2',T=>{const V=()=>new T.Vector3(),Q=()=>new T.Quaternion();
+  return {a:V(),b:V(),c:V(),dir:V(),bend:V(),b1:V(),c1:V(),u:V(),w:V(),tmp:V(),tp:V(),ts:V(),qr:Q(),qrp:Q(),qm:Q(),qmp:Q(),q0:Q(),q1:Q(),sr:Q(),sm:Q()};});}
+function twoBone(THREE,root,mid,end,target,pole=null,opts={}){
+  if(!root||!mid||!end||!target)throw new TypeError('IK.twoBone needs root, mid, end and a target Vector3');
+  const weight=opts.weight===undefined?1:clamp(+opts.weight||0,0,1),stretch=!!opts.stretch,maxStretch=Math.max(1,opts.maxStretch===undefined?1.5:opts.maxStretch);
+  const soft=clamp(opts.soft||0,0,.5),update=opts.updateMatrices!==false,s=ikScratch(THREE);
+  let rest=stretchRest.get(mid);
+  if(stretch&&!rest){rest={mid:mid.position.clone(),end:end.parent===mid?end.position.clone():null};stretchRest.set(mid,rest);}
+  if(rest&&!stretch){mid.position.copy(rest.mid);if(rest.end)end.position.copy(rest.end);stretchRest.delete(mid);rest=null;}
+  end.updateWorldMatrix(true,false);
+  const a=s.a.setFromMatrixPosition(root.matrixWorld),b=s.b.setFromMatrixPosition(mid.matrixWorld),c=s.c.setFromMatrixPosition(end.matrixWorld);
+  let lab=a.distanceTo(b),lcb=b.distanceTo(c);
+  if(weight<=0||lab<EPS||lcb<EPS)return c.distanceTo(target);
+  const dir=s.dir.subVectors(target,a);let dist=dir.length();
+  if(dist<EPS){dir.subVectors(c,a);dist=0;if(dir.lengthSq()<EPS*EPS)return c.distanceTo(target);}
+  dir.normalize();
+  if(stretch){
+    const kMid=mid.position.length()/Math.max(EPS,rest.mid.length()),kEnd=rest.end?end.position.length()/Math.max(EPS,rest.end.length()):1;
+    const restAb=lab/kMid,restCb=lcb/kEnd,k=clamp(dist/(restAb+restCb),1,maxStretch);
+    mid.position.copy(rest.mid).multiplyScalar(k);if(rest.end)end.position.copy(rest.end).multiplyScalar(k);
+    const cb=s.tmp.subVectors(c,b).multiplyScalar(rest.end?k/kEnd:1);
+    b.sub(a).multiplyScalar(k/kMid).add(a);c.copy(b).add(cb);lab=restAb*k;if(rest.end)lcb=restCb*k;
+  }
+  const L=lab+lcb;let d=dist;
+  if(soft>0){const ds=soft*L,start=L-ds;if(d>start)d=start+ds*(1-Math.exp(-(d-start)/ds));}
+  d=clamp(d,Math.max(Math.abs(lab-lcb),1e-6*L),L);
+  const bend=s.bend,tmp=s.tmp;
+  if(pole)bend.subVectors(pole,a);else bend.subVectors(b,a);
+  bend.addScaledVector(dir,-bend.dot(dir));
+  if(bend.lengthSq()<1e-12*L*L){tmp.subVectors(b,a);bend.copy(tmp).addScaledVector(dir,-tmp.dot(dir));if(bend.lengthSq()<1e-12*L*L)anyPerpendicular(dir,bend);}
+  bend.normalize();
+  const cosA=clamp((lab*lab+d*d-lcb*lcb)/(2*lab*d),-1,1),sinA=Math.sqrt(Math.max(0,1-cosA*cosA));
+  const b1=s.b1.copy(a).addScaledVector(dir,cosA*lab).addScaledVector(bend,sinA*lab),c1=s.c1.copy(a).addScaledVector(dir,d);
+  worldQuat(root,s.qr,s.tp,s.ts);parentQuat(root,s.qrp,s.tp,s.ts);worldQuat(mid,s.qm,s.tp,s.ts);parentQuat(mid,s.qmp,s.tp,s.ts);
+  s.sr.copy(root.quaternion);s.sm.copy(mid.quaternion);
+  const u=s.u.subVectors(b,a).normalize(),w=s.w.subVectors(b1,a).normalize(),q0=s.q0.setFromUnitVectors(u,w);
+  s.qr.premultiply(q0);root.quaternion.copy(s.qrp).invert().multiply(s.qr);
+  const cr=tmp.subVectors(c,a).applyQuaternion(q0).add(a);
+  s.qm.premultiply(q0);s.qmp.premultiply(q0);
+  u.subVectors(cr,b1).normalize();w.subVectors(c1,b1).normalize();
+  s.qm.premultiply(s.q1.setFromUnitVectors(u,w));mid.quaternion.copy(s.qmp).invert().multiply(s.qm);
+  if(weight<1){s.q0.copy(root.quaternion);root.quaternion.copy(s.sr).slerp(s.q0,weight);s.q0.copy(mid.quaternion);mid.quaternion.copy(s.sm).slerp(s.q0,weight);}
+  if(update){root.updateMatrixWorld(true);return s.c.setFromMatrixPosition(end.matrixWorld).distanceTo(target);}
+  return c1.distanceTo(target);
+}
+
+/* ---------- iterative IK chains (FABRIK / CCD) with joint limits ---------- */
+function normalizeConstraint(THREE,c){
+  if(!c)return null;
+  let axis=c.axis;if(typeof axis==='string')axis={x:[1,0,0],y:[0,1,0],z:[0,0,1]}[axis.toLowerCase()];
+  const min=c.minAngle===undefined?-Math.PI:+c.minAngle,max=c.maxAngle===undefined?Math.PI:+c.maxAngle;
+  if(!(min<=max))throw new RangeError('IK constraint minAngle must not exceed maxAngle');
+  if(axis)return {type:'hinge',axis:toVec3(THREE,axis).normalize(),min,max};
+  const tw=c.twist||null;return {type:'cone',max:Math.max(0,max),twistMin:tw?+tw[0]:-Math.PI,twistMax:tw?+tw[1]:Math.PI};
+}
+class IKChain{
+  constructor(THREE,joints,opts={}){
+    checkChain(joints,'IKChain');if(joints.length<2)throw new RangeError('IKChain needs at least two joints');
+    const {iterations=12,tolerance=1e-3,method='fabrik',constraints=[],weight=1,maxStep=Infinity}=opts;
+    if(method!=='fabrik'&&method!=='ccd')throw new RangeError('IKChain method must be "fabrik" or "ccd"');
+    this.THREE=THREE;this.joints=joints.slice();this.iterations=Math.max(1,iterations|0);this.tolerance=tolerance;this.method=method;this.weight=weight;this.maxStep=maxStep;
+    const n=joints.length,V=()=>new THREE.Vector3(),Q=()=>new THREE.Quaternion(),arr=f=>Array.from({length:n},f);
+    Object.assign(this,{wp:arr(V),P:arr(V),wq:arr(Q),pq:arr(Q),restQ:arr(Q),startQ:arr(Q),boneAxis:arr(V),len:new Float64Array(n-1),total:0});
+    this.constraints=joints.map((_,i)=>normalizeConstraint(THREE,constraints[i]));this.hasConstraints=this.constraints.some(Boolean);
+    this._v=Array.from({length:6},V);this._q=Array.from({length:6},Q);this._m=new THREE.Matrix4();this.error=Infinity;this.iterationsUsed=0;
+    this.captureRest();
+  }
+  /* Rest pose = reference for joint limits (current local rotations). */
+  captureRest(){
+    const j=this.joints,n=j.length;j[n-1].updateWorldMatrix(true,false);
+    for(let i=0;i<n;i++){this.restQ[i].copy(j[i].quaternion);
+      if(i<n-1){const inv=this._m.copy(j[i].matrixWorld).invert();this.boneAxis[i].setFromMatrixPosition(j[i+1].matrixWorld).applyMatrix4(inv);
+        if(this.boneAxis[i].lengthSq()<EPS)this.boneAxis[i].set(0,1,0);this.boneAxis[i].normalize();}
+      else this.boneAxis[i].copy(i?this.boneAxis[i-1]:this.boneAxis[i].set(0,1,0));}
+    return this;
+  }
+  _read(){
+    const j=this.joints,n=j.length,tp=this._v[4],ts=this._v[5];j[n-1].updateWorldMatrix(true,false);
+    for(let i=0;i<n;i++){this.wp[i].setFromMatrixPosition(j[i].matrixWorld);worldQuat(j[i],this.wq[i],tp,ts);parentQuat(j[i],this.pq[i],tp,ts);}
+    let total=0;for(let i=0;i<n-1;i++){this.len[i]=this.wp[i].distanceTo(this.wp[i+1]);total+=this.len[i];}this.total=total;
+  }
+  _constrain(i,local){
+    const c=this.constraints[i];if(!c)return local;
+    const r=this._q[3].copy(this.restQ[i]).invert().multiply(local);
+    if(c.type==='hinge'){const a=c.axis,dot=r.x*a.x+r.y*a.y+r.z*a.z;r.setFromAxisAngle(a,clamp(wrapAngle(2*Math.atan2(dot,r.w)),c.min,c.max));}
+    else{const a=this.boneAxis[i],sw=this._q[4],tw=this._q[5];swingTwist(r,a,sw,tw);
+      const ang=2*Math.acos(clamp(Math.abs(sw.w),0,1));if(ang>c.max){if(sw.w<0)sw.set(-sw.x,-sw.y,-sw.z,-sw.w);const k=c.max/ang;r.identity().slerp(sw,k);sw.copy(r);}
+      if(c.twistMin>-Math.PI||c.twistMax<Math.PI){const t=wrapAngle(2*Math.atan2(tw.x*a.x+tw.y*a.y+tw.z*a.z,tw.w));tw.setFromAxisAngle(a,clamp(t,c.twistMin,c.twistMax));}
+      r.copy(sw).multiply(tw);}
+    return local.copy(this.restQ[i]).multiply(r);
+  }
+  /* Apply a world rotation at joint i (pivot = joint), honoring its limit, and propagate to descendants. */
+  _rotate(i,delta){
+    const n=this.joints.length,q=this._q[0].copy(delta).multiply(this.wq[i]),local=this._q[1].copy(this.pq[i]).invert().multiply(q);
+    if(this.constraints[i]){this._constrain(i,local);q.copy(this.pq[i]).multiply(local);}
+    const eff=this._q[2].copy(this.wq[i]).invert().premultiply(q);
+    this.joints[i].quaternion.copy(local);this.wq[i].copy(q);
+    for(let k=i+1;k<n;k++){this.wp[k].sub(this.wp[i]).applyQuaternion(eff).add(this.wp[i]);this.wq[k].premultiply(eff);this.pq[k].premultiply(eff);}
+  }
+  _applyPositions(){
+    const n=this.joints.length,cur=this._v[0],des=this._v[1],dq=this._q[3];
+    for(let i=0;i<n-1;i++){cur.subVectors(this.wp[i+1],this.wp[i]);des.subVectors(this.P[i+1],this.wp[i]);
+      if(cur.lengthSq()<EPS*EPS||des.lengthSq()<EPS*EPS)continue;cur.normalize();des.normalize();this._rotate(i,dq.setFromUnitVectors(cur,des));}
+  }
+  _fabrik(target,pole){
+    const n=this.joints.length,P=this.P,wp=this.wp,len=this.len,root=this._v[2].copy(wp[0]),dir=this._v[3];
+    for(let i=0;i<n;i++)P[i].copy(wp[i]);
+    if(root.distanceTo(target)>=this.total){dir.subVectors(target,root).normalize();for(let i=1;i<n;i++)P[i].copy(P[i-1]).addScaledVector(dir,len[i-1]);this._applyPositions();this.iterationsUsed=1;return;}
+    this.iterationsUsed=0;
+    for(let it=0;it<this.iterations;it++){
+      if(P[n-1].distanceTo(target)<=this.tolerance)break;this.iterationsUsed=it+1;
+      P[n-1].copy(target);
+      for(let i=n-2;i>=0;i--){dir.subVectors(P[i],P[i+1]);let l=dir.length();if(l<EPS){dir.subVectors(wp[i],wp[i+1]);l=dir.length()||1;}P[i].copy(P[i+1]).addScaledVector(dir,len[i]/l);}
+      P[0].copy(root);
+      for(let i=1;i<n;i++){dir.subVectors(P[i],P[i-1]);let l=dir.length();if(l<EPS){dir.subVectors(wp[i],wp[i-1]);l=dir.length()||1;}P[i].copy(P[i-1]).addScaledVector(dir,len[i-1]/l);}
+      if(pole)for(let i=1;i<n-1;i++)this._pole(i,pole);
+      if(this.hasConstraints){this._applyPositions();for(let i=0;i<n;i++)P[i].copy(wp[i]);}
+    }
+    if(!this.hasConstraints)this._applyPositions();
+  }
+  /* Rotate interior joint i about the line through its neighbours so it bends toward the pole. */
+  _pole(i,pole){
+    const P=this.P,axis=this._v[0].subVectors(P[i+1],P[i-1]),l=axis.length();if(l<EPS)return;axis.divideScalar(l);
+    const r=this._v[1].subVectors(P[i],P[i-1]),proj=r.dot(axis);r.addScaledVector(axis,-proj);const rl=r.length();if(rl<EPS)return;
+    const pr=this._v[5].subVectors(pole,P[i-1]);pr.addScaledVector(axis,-pr.dot(axis));const pl=pr.length();if(pl<EPS)return;
+    P[i].copy(P[i-1]).addScaledVector(axis,proj).addScaledVector(pr,rl/pl);
+  }
+  _ccd(target){
+    const n=this.joints.length,wp=this.wp,e=this._v[2],t=this._v[3],dq=this._q[3],id=this._q[4];this.iterationsUsed=0;
+    for(let it=0;it<this.iterations;it++){
+      if(wp[n-1].distanceTo(target)<=this.tolerance)break;this.iterationsUsed=it+1;
+      for(let i=n-2;i>=0;i--){e.subVectors(wp[n-1],wp[i]);t.subVectors(target,wp[i]);if(e.lengthSq()<1e-12||t.lengthSq()<1e-12)continue;
+        dq.setFromUnitVectors(e.normalize(),t.normalize());
+        if(this.maxStep<Math.PI){const ang=2*Math.acos(clamp(dq.w,-1,1));if(ang>this.maxStep){const k=this.maxStep/ang;dq.copy(id.identity().slerp(dq,k));}}
+        this._rotate(i,dq);}
+    }
+  }
+  /* Solve toward a world target; returns the remaining distance between the end joint and the target. */
+  solve(target,pole=null){
+    if(!target)throw new TypeError('IKChain.solve needs a target Vector3');
+    const j=this.joints,n=j.length;for(let i=0;i<n;i++)this.startQ[i].copy(j[i].quaternion);
+    this._read();
+    if(this.total<EPS)return this.error=this.wp[n-1].distanceTo(target);
+    // FABRIK with joint limits can stall against a limit; finish with CCD sweeps, which respect limits per joint
+    if(this.method==='ccd')this._ccd(target);
+    else{this._fabrik(target,pole);if(this.hasConstraints&&this.wp[n-1].distanceTo(target)>this.tolerance){const u=this.iterationsUsed;this._ccd(target);this.iterationsUsed+=u;}}
+    if(this.weight<1){const w=clamp(this.weight,0,1),tmp=this._q[0];for(let i=0;i<n;i++){tmp.copy(j[i].quaternion);j[i].quaternion.copy(this.startQ[i]).slerp(tmp,w);}}
+    j[0].updateMatrixWorld(true);
+    return this.error=this._v[0].setFromMatrixPosition(j[n-1].matrixWorld).distanceTo(target);
+  }
+}
+
+/* ---------- look-at with yaw/pitch limits ---------- */
+/* Yaw and pitch are measured in the rest frame of the first object and distributed over the chain;
+   each object receives its share as a world-space rotation about the shared up/right axes. */
+class LookAt{
+  constructor(THREE,objects,opts={}){
+    const list=Array.isArray(objects)?objects.slice():[objects];checkChain(list,'LookAt');
+    const {forward=[0,0,-1],up=[0,1,0],maxYaw=1.2,maxPitch=.7,minPitch=null,speed=10,weight=1,weights=null,releaseAngle=Infinity,base='rest',updateMatrices=true}=opts;
+    this.THREE=THREE;this.objects=list;this.forward=toVec3(THREE,forward).normalize();
+    this.up=toVec3(THREE,up);this.up.addScaledVector(this.forward,-this.up.dot(this.forward));if(this.up.lengthSq()<EPS)anyPerpendicular(this.forward,this.up);this.up.normalize();
+    this.right=new THREE.Vector3().crossVectors(this.forward,this.up).normalize();
+    const w=weights?weights.slice(0,list.length):list.map(()=>1),sum=w.reduce((a,b)=>a+Math.max(0,b),0)||1;this.shares=w.map(x=>Math.max(0,x)/sum);
+    Object.assign(this,{maxYaw,maxPitch,minPitch:minPitch==null?-maxPitch:minPitch,speed,weight,releaseAngle,base,updateMatrices});
+    this.yaw=0;this.pitch=0;this.targetYaw=0;this.targetPitch=0;this.engaged=false;
+    this.restQ=list.map(o=>o.quaternion.clone());const V=()=>new THREE.Vector3(),Q=()=>new THREE.Quaternion();
+    this._s={d:V(),eye:V(),uw:V(),rw:V(),rk:V(),tp:V(),ts:V(),pw:Q(),b:Q(),qy:Q(),qp:Q(),dq:Q()};
+  }
+  captureRest(){this.objects.forEach((o,i)=>this.restQ[i].copy(o.quaternion));return this;}
+  update(target,dt=1/60){
+    const s=this._s,objs=this.objects,n=objs.length;
+    if(this.base==='current')this.captureRest();
+    for(let k=0;k<n;k++)objs[k].quaternion.copy(this.restQ[k]);
+    objs[n-1].updateWorldMatrix(true,false);
+    parentQuat(objs[0],s.pw,s.tp,s.ts);s.b.copy(s.pw).multiply(this.restQ[0]);
+    let yawT=0,pitchT=0;this.engaged=false;
+    if(target){s.eye.setFromMatrixPosition(objs[n-1].matrixWorld);s.d.subVectors(target,s.eye);
+      if(s.d.lengthSq()>1e-12){s.d.applyQuaternion(s.dq.copy(s.b).invert());
+        const x=s.d.dot(this.right),y=s.d.dot(this.up),z=s.d.dot(this.forward),yaw=Math.atan2(x,z),pitch=Math.atan2(y,Math.hypot(x,z));
+        if(Math.abs(yaw)<=this.releaseAngle){this.engaged=true;yawT=clamp(yaw,-this.maxYaw,this.maxYaw);pitchT=clamp(pitch,this.minPitch,this.maxPitch);}}}
+    this.targetYaw=yawT;this.targetPitch=pitchT;
+    this.yaw=damp(this.yaw,yawT,this.speed,dt);this.pitch=damp(this.pitch,pitchT,this.speed,dt);
+    const yawA=this.yaw*this.weight,pitchA=this.pitch*this.weight;
+    s.uw.copy(this.up).applyQuaternion(s.b);s.rw.copy(this.right).applyQuaternion(s.b);
+    let cum=0;
+    for(let k=0;k<n;k++){const o=objs[k],share=this.shares[k];
+      if(k>0){o.parent.updateWorldMatrix(true,false);parentQuat(o,s.pw,s.tp,s.ts);}
+      s.rk.copy(s.rw).applyQuaternion(s.qy.setFromAxisAngle(s.uw,-cum));
+      s.dq.setFromAxisAngle(s.uw,-yawA*share).multiply(s.qp.setFromAxisAngle(s.rk,pitchA*share));
+      // local = inv(pw) * dq * pw * rest
+      o.quaternion.copy(s.pw).invert().multiply(s.dq).multiply(s.pw).multiply(this.restQ[k]);
+      cum+=yawA*share;}
+    if(this.updateMatrices)objs[0].updateMatrixWorld(true);
+    return this;
+  }
+}
+
+/* ---------- spring chains (secondary motion) ---------- */
+/* Each child joint is a particle pulled toward its rest-pose position relative to the already simulated
+   parent (a Gauss-Seidel sweep from root to tip), with damping relative to that goal's velocity, gravity,
+   wind and drag. Position-based constraints restore the bone length and cap the deflection angle; bone
+   rotations are then written as shortest-arc deltas from the rest pose. Fixed substeps keep it stable. */
+class SpringChain{
+  constructor(THREE,joints,opts={}){
+    checkChain(joints,'SpringChain');
+    const {stiffness=120,damping=12,gravity=[0,-2,0],inertia=1,maxAngle=Math.PI*.6,drag=0,substep=1/120,maxSubsteps=8,tip='auto',colliders=[],groundAt=null,radius=.02,teleportDistance=2,wind=null,weight=1,base='rest'}=opts;
+    const n=joints.length,hasTip=tip!==null&&tip!==false;
+    if(n<2&&(!hasTip||tip==='auto'))throw new Error('A single-joint SpringChain needs an explicit tip offset');
+    this.THREE=THREE;this.joints=joints.slice();this.count=n-1+(hasTip?1:0);this.tip=hasTip?tip:null;
+    Object.assign(this,{stiffness,damping,inertia,maxAngle,drag,substep,maxSubsteps,groundAt,radius,teleportDistance,wind,weight,base});
+    this.colliders=colliders.map(c=>({object:c.object||null,offset:toVec3(THREE,c.offset||c.center,[0,0,0]),radius:+c.radius||0,center:new THREE.Vector3()}));
+    this.gravity=toVec3(THREE,gravity,[0,0,0]);
+    const m=this.count,V=()=>new THREE.Vector3(),Q=()=>new THREE.Quaternion(),arr=(k,f)=>Array.from({length:k},f);
+    Object.assign(this,{x:arr(m,V),v:arr(m,V),goalPrev:arr(m,V),offset:arr(m,V),relQ:arr(m,Q),sim:arr(n,Q),restQ:arr(n,Q)});
+    this.time=0;this.initialized=false;this.lastPos=V();this.lastPw=Q();
+    this._s={pos0:V(),pw0:Q(),ap:V(),aq:Q(),bq:Q(),g:V(),gn:V(),goal:V(),gv:V(),acc:V(),xn:V(),d:V(),dn:V(),ax:V(),w:V(),c:V(),tp:V(),ts:V(),tq:Q(),dq:Q(),m:new THREE.Matrix4()};
+    this.captureRest();
+  }
+  captureRest(){
+    const j=this.joints,n=j.length,s=this._s;j[n-1].updateWorldMatrix(true,false);
+    for(let i=0;i<n;i++)this.restQ[i].copy(j[i].quaternion);
+    for(let k=0;k<n-1;k++){const inv=s.m.copy(j[k].matrixWorld).invert();this.offset[k].setFromMatrixPosition(j[k+1].matrixWorld).applyMatrix4(inv);
+      worldQuat(j[k],s.tq,s.tp,s.ts);parentQuat(j[k+1],this.relQ[k],s.tp,s.ts);this.relQ[k].premultiply(s.tq.invert());}
+    if(this.tip){const k=this.count-1;if(this.tip==='auto')this.offset[k].copy(this.offset[k-1]);else this.offset[k].copy(toVec3(this.THREE,this.tip));this.relQ[k].identity();}
+    this.initialized=false;return this;
+  }
+  _stiff(k){const s=this.stiffness;return typeof s==='number'?s:s[Math.min(k,s.length-1)];}
+  _damp(k){const s=this.damping;return typeof s==='number'?s:s[Math.min(k,s.length-1)];}
+  /* One sweep root->tip. integrate=false snaps particles to their goals (reset). */
+  _sweep(ap,aq,scale,h,integrate){
+    const s=this._s,m=this.count,cols=this.colliders,inv=h>0?1/h:0;
+    for(let k=0;k<m;k++){
+      const bq=s.bq;if(k===0)bq.copy(aq).multiply(this.restQ[0]);else bq.copy(this.sim[k-1]).multiply(this.relQ[k-1]).multiply(this.restQ[k]);
+      const base=k===0?ap:this.x[k-1],g=s.g.copy(this.offset[k]).multiplyScalar(scale).applyQuaternion(bq),L=g.length();
+      if(L<EPS){this.sim[k].copy(bq);this.x[k].copy(base);continue;}
+      const goal=s.goal.copy(base).add(g),x=this.x[k],v=this.v[k];
+      if(integrate){
+        const gv=s.gv.subVectors(goal,this.goalPrev[k]).multiplyScalar(inv);this.goalPrev[k].copy(goal);
+        const acc=s.acc.subVectors(goal,x).multiplyScalar(this._stiff(k));
+        acc.addScaledVector(s.d.subVectors(v,gv),-this._damp(k)).add(this.gravity).addScaledVector(v,-this.drag);
+        if(this.wind){if(typeof this.wind==='function')acc.add(this.wind(this.time,s.w.set(0,0,0),k)||s.w.set(0,0,0));else acc.add(this.wind);}
+        v.addScaledVector(acc,h);const xn=s.xn.copy(x).addScaledVector(v,h);
+        for(const c of cols){s.d.subVectors(xn,c.center);const dl=s.d.length(),r=c.radius+this.radius;if(dl<r)xn.copy(c.center).addScaledVector(dl>EPS?s.d.divideScalar(dl):s.d.set(0,1,0),r);}
+        if(this.groundAt){const gy=this.groundAt(xn.x,xn.z)+this.radius;if(xn.y<gy)xn.y=gy;}
+        this._limit(base,g,L,xn);v.subVectors(xn,x).multiplyScalar(inv);x.copy(xn);
+      }else{x.copy(goal);v.set(0,0,0);this.goalPrev[k].copy(goal);}
+      s.gn.copy(g).divideScalar(L);s.dn.subVectors(x,base).normalize();
+      this.sim[k].copy(s.dq.setFromUnitVectors(s.gn,s.dn)).multiply(bq);
+    }
+  }
+  /* Restore bone length and cap the angle between the bone and its rest direction. */
+  _limit(base,g,L,xn){
+    const s=this._s,d=s.d.subVectors(xn,base);let l=d.length();if(l<EPS){d.copy(g);l=L;}d.divideScalar(l);
+    const gn=s.gn.copy(g).divideScalar(L),cos=clamp(d.dot(gn),-1,1);
+    if(Math.acos(cos)>this.maxAngle){const ax=s.ax.crossVectors(gn,d);if(ax.lengthSq()<1e-12)anyPerpendicular(gn,ax);else ax.normalize();d.copy(gn).applyAxisAngle(ax,this.maxAngle);}
+    xn.copy(base).addScaledVector(d,L);
+  }
+  _anchor(){
+    const j0=this.joints[0],s=this._s;j0.updateWorldMatrix(true,false);s.pos0.setFromMatrixPosition(j0.matrixWorld);parentQuat(j0,s.pw0,s.tp,s.ts);
+    j0.matrixWorld.decompose(s.tp,s.tq,s.ts);return (Math.abs(s.ts.x)+Math.abs(s.ts.y)+Math.abs(s.ts.z))/3;
+  }
+  _write(){
+    const j=this.joints,n=j.length,m=this.count,s=this._s,pq=s.tq;
+    for(let k=0;k<m;k++){if(k===0)pq.copy(s.pw0);else pq.copy(this.sim[k-1]).multiply(this.relQ[k-1]);
+      const q=j[k].quaternion;q.copy(pq).invert().multiply(this.sim[k]);if(this.weight<1){s.dq.copy(q);q.copy(this.restQ[k]).slerp(s.dq,clamp(this.weight,0,1));}}
+    for(let k=m;k<n;k++)j[k].quaternion.copy(this.restQ[k]);
+    j[0].updateMatrixWorld(true);
+  }
+  /* Sphere colliders: {object?, offset|center, radius}; offset is local to object, center is world. */
+  _colliders(){for(const c of this.colliders){c.center.copy(c.offset);if(c.object){c.object.updateWorldMatrix(true,false);c.center.applyMatrix4(c.object.matrixWorld);}}}
+  /* Snap to the rest pose relative to the current anchor (use after teleports). */
+  reset(){
+    if(this.base==='current')for(let i=0;i<this.joints.length;i++)this.restQ[i].copy(this.joints[i].quaternion);
+    const scale=this._anchor(),s=this._s;this._sweep(s.pos0,s.pw0,scale,0,false);this.lastPos.copy(s.pos0);this.lastPw.copy(s.pw0);this.initialized=true;this._write();return this;
+  }
+  update(dt){
+    if(!(dt>0))return this;
+    if(!this.initialized)return this.reset();
+    if(this.base==='current')for(let i=0;i<this.joints.length;i++)this.restQ[i].copy(this.joints[i].quaternion);
+    const s=this._s,scale=this._anchor();
+    if(s.pos0.distanceTo(this.lastPos)>this.teleportDistance)return this.reset();
+    if(this.inertia<1){s.d.subVectors(s.pos0,this.lastPos).multiplyScalar(1-clamp(this.inertia,0,1));for(const x of this.x)x.add(s.d);}
+    this._colliders();
+    const steps=clamp(Math.ceil(dt/this.substep-1e-9),1,this.maxSubsteps),h=dt/steps;
+    for(let i=0;i<steps;i++){const f=(i+1)/steps;s.ap.lerpVectors(this.lastPos,s.pos0,f);s.aq.copy(this.lastPw).slerp(s.pw0,f);this.time+=h;this._sweep(s.ap,s.aq,scale,h,true);}
+    this.lastPos.copy(s.pos0);this.lastPw.copy(s.pw0);this._write();return this;
+  }
+  /* Largest particle speed (m/s): handy to detect a settled chain. */
+  get energy(){let e=0;for(const v of this.v)e=Math.max(e,v.length());return e;}
+  dispose(){}
+}
+
+/* ---------- procedural bone chains and skinned tubes ---------- */
+function createBoneChain(THREE,count,length=.1,{direction=[0,1,0],parent=null,name='bone'}={}){
+  if(!(count>=1))throw new RangeError('createBoneChain needs at least one bone');
+  const dir=toVec3(THREE,direction).normalize(),bones=[];
+  for(let i=0;i<count;i++){const b=new THREE.Bone();b.name=name+i;if(i>0){b.position.copy(dir).multiplyScalar(Array.isArray(length)?length[i-1]:length);bones[i-1].add(b);}bones.push(b);}
+  if(parent)parent.add(bones[0]);return bones;
+}
+/* A SkinnedMesh tube around a bone chain: rings follow a centripetal Catmull-Rom spline through the bone
+   origins with parallel-transport frames; each ring is skinned to its bone and blended half-way into the
+   neighbour near joints. Rounded caps close both ends. The mesh is added next to the root bone. */
+function buildSkinnedTube(THREE,bones,opts={}){
+  checkChain(bones,'buildSkinnedTube');if(!bones.every(b=>b.isBone))throw new TypeError('buildSkinnedTube needs THREE.Bone joints (see KE.createBoneChain)');
+  const {radius=.08,segments=12,rings=4,tip='auto',material=null,color=null,capRings=4,capStart=true,capEnd=true,up=[0,1,0]}=opts;
+  const n=bones.length,parent=bones[0].parent;bones[0].updateWorldMatrix(true,true);
+  const inv=parent?new THREE.Matrix4().copy(parent.matrixWorld).invert():new THREE.Matrix4();
+  const pts=bones.map(b=>new THREE.Vector3().setFromMatrixPosition(b.matrixWorld).applyMatrix4(inv));
+  let tipPt;
+  if(tip==='auto'){if(n<2)throw new Error('A single-bone tube needs an explicit tip offset');tipPt=pts[n-1].clone().add(pts[n-1].clone().sub(pts[n-2]));}
+  else tipPt=toVec3(THREE,tip).applyMatrix4(bones[n-1].matrixWorld).applyMatrix4(inv);
+  pts.push(tipPt);
+  const curve=new THREE.CatmullRomCurve3(pts,false,'centripetal'),rf=typeof radius==='function'?radius:()=>radius;
+  const total=pts.reduce((a,p,i)=>i?a+p.distanceTo(pts[i-1]):0,0);
+  const seg=Math.max(3,segments|0),per=Math.max(1,rings|0),R=n*per+1;
+  // parallel-transport frames along the body rings
+  const frames=[],T0=curve.getTangent(0).normalize(),N=new THREE.Vector3().copy(toVec3(THREE,up));N.addScaledVector(T0,-N.dot(T0));if(N.lengthSq()<1e-8)anyPerpendicular(T0,N);N.normalize();
+  for(let r=0;r<R;r++){const u=r/(R-1),p=curve.getPoint(u),t=curve.getTangent(u).normalize();N.addScaledVector(t,-N.dot(t));if(N.lengthSq()<1e-10)anyPerpendicular(t,N);N.normalize();
+    const B=new THREE.Vector3().crossVectors(t,N).normalize(),i=Math.min(n-1,Math.floor(r/per)),f=r/per-i;
+    const du=1/(R-1),dr=(rf(Math.min(1,u+du))-rf(Math.max(0,u-du)))/((Math.min(1,u+du)-Math.max(0,u-du))*total||1);
+    frames.push({p,t,n:N.clone(),b:B,r:Math.max(0,rf(u)),u,slope:dr,i,f});}
+  const ringList=[];// {p,t,n,b,r,normalT,u,skin:[i0,i1,w0,w1]}
+  const skinFor=(i,f)=>{if(f<.5&&i>0){const w=.5*(1-smooth01(2*f));return [i,i-1,1-w,w];}if(f>=.5&&i<n-1){const w=.5*smooth01(2*f-1);return [i,i+1,1-w,w];}return [i,i,1,0];};
+  const cap=(fr,sign,bone)=>{const out=[];for(let q=capRings;q>=1;q--){const phi=q/capRings*Math.PI/2;
+    out.push({p:fr.p.clone().addScaledVector(fr.t,sign*fr.r*Math.sin(phi)*.85),t:fr.t,n:fr.n,b:fr.b,r:fr.r*Math.cos(phi),cosPhi:Math.cos(phi),sinPhi:sign*Math.sin(phi),u:fr.u,skin:[bone,bone,1,0]});}return out;};
+  if(capStart&&frames[0].r>1e-4)ringList.push(...cap(frames[0],-1,0));
+  for(const fr of frames)ringList.push({p:fr.p,t:fr.t,n:fr.n,b:fr.b,r:fr.r,slope:fr.slope,u:fr.u,skin:skinFor(Math.min(fr.i,n-1),fr.i>=n?1:fr.f)});
+  if(capEnd&&frames[R-1].r>1e-4)ringList.push(...cap(frames[R-1],1,n-1).reverse());
+  const V=ringList.length*(seg+1),pos=new Float32Array(V*3),nor=new Float32Array(V*3),uv=new Float32Array(V*2),si=new Uint16Array(V*4),sw=new Float32Array(V*4);
+  const col=color?new Float32Array(V*3):null,cTmp=new THREE.Color(),dirv=new THREE.Vector3(),nv=new THREE.Vector3();
+  let k=0;
+  ringList.forEach((ring,ri)=>{
+    let cc=null;if(color){if(typeof color==='function'){cc=color(ring.u,cTmp)||cTmp;}else cc=cTmp.set(color);}
+    for(let j=0;j<=seg;j++){const a=j/seg*Math.PI*2,ca=Math.cos(a),sa=Math.sin(a);dirv.copy(ring.n).multiplyScalar(ca).addScaledVector(ring.b,sa);
+      pos[k*3]=ring.p.x+dirv.x*ring.r;pos[k*3+1]=ring.p.y+dirv.y*ring.r;pos[k*3+2]=ring.p.z+dirv.z*ring.r;
+      if(ring.cosPhi!==undefined)nv.copy(dirv).multiplyScalar(ring.cosPhi).addScaledVector(ring.t,ring.sinPhi);else nv.copy(dirv).addScaledVector(ring.t,-ring.slope);
+      nv.normalize();nor[k*3]=nv.x;nor[k*3+1]=nv.y;nor[k*3+2]=nv.z;uv[k*2]=j/seg;uv[k*2+1]=ri/(ringList.length-1);
+      si[k*4]=ring.skin[0];si[k*4+1]=ring.skin[1];sw[k*4]=ring.skin[2];sw[k*4+1]=ring.skin[3];
+      if(col){col[k*3]=cc.r;col[k*3+1]=cc.g;col[k*3+2]=cc.b;}k++;}
+  });
+  const idx=[];for(let r=0;r<ringList.length-1;r++)for(let j=0;j<seg;j++){const a=r*(seg+1)+j,b=a+seg+1;idx.push(a,a+1,b,a+1,b+1,b);}
+  const g=new THREE.BufferGeometry();g.setIndex(idx);g.setAttribute('position',new THREE.BufferAttribute(pos,3));g.setAttribute('normal',new THREE.BufferAttribute(nor,3));
+  g.setAttribute('uv',new THREE.BufferAttribute(uv,2));g.setAttribute('skinIndex',new THREE.Uint16BufferAttribute(si,4));g.setAttribute('skinWeight',new THREE.Float32BufferAttribute(sw,4));
+  if(col)g.setAttribute('color',new THREE.BufferAttribute(col,3));
+  g.computeBoundingSphere();g.boundingSphere.radius+=total*.6;g.computeBoundingBox();
+  const mat=material||new THREE.MeshStandardMaterial({color:col?0xffffff:0xcc793f,roughness:.88,vertexColors:!!col});
+  if('skinning' in mat&&!mat.skinning){mat.skinning=true;mat.needsUpdate=true;}
+  const mesh=new THREE.SkinnedMesh(g,mat);mesh.name='keSkinnedTube';mesh.castShadow=true;mesh.receiveShadow=true;
+  if(parent)parent.add(mesh);mesh.updateMatrixWorld(true);mesh.bind(new THREE.Skeleton(bones));
+  mesh.userData.keTube={bones:n,rings:ringList.length,segments:seg,length:total,ownsMaterial:!material};
+  return mesh;
+}
+
+/* ---------- pose blending ---------- */
+/* Weighted accumulation of local transforms (nlerp for rotations, hemisphere-aligned to the rest pose).
+   Missing weight (sum < 1) is filled with the captured rest pose. */
+class PoseBlender{
+  constructor(THREE,objects,{position=true,rotation=true,scale=false}={}){
+    if(!Array.isArray(objects)||!objects.length)throw new TypeError('PoseBlender needs an array of objects');
+    this.THREE=THREE;this.objects=objects.slice();this.position=position;this.rotation=rotation;this.scale=scale;
+    const n=objects.length;this.index=new Map(objects.map((o,i)=>[o,i]));this.acc=new Float64Array(n*10);this.wsum=new Float64Array(n);this.rest=this.capture();
+  }
+  capture(out=new Float32Array(this.objects.length*10)){
+    this.objects.forEach((o,i)=>{const b=i*10;out[b]=o.position.x;out[b+1]=o.position.y;out[b+2]=o.position.z;out[b+3]=o.quaternion.x;out[b+4]=o.quaternion.y;out[b+5]=o.quaternion.z;out[b+6]=o.quaternion.w;out[b+7]=o.scale.x;out[b+8]=o.scale.y;out[b+9]=o.scale.z;});return out;
+  }
+  captureRest(){this.capture(this.rest);return this;}
+  reset(){this.acc.fill(0);this.wsum.fill(0);return this;}
+  _acc(i,src,o,w){
+    if(!(w>0))return;const a=this.acc,b=i*10,r=this.rest;
+    a[b]+=src[o]*w;a[b+1]+=src[o+1]*w;a[b+2]+=src[o+2]*w;
+    const sgn=src[o+3]*r[b+3]+src[o+4]*r[b+4]+src[o+5]*r[b+5]+src[o+6]*r[b+6]<0?-w:w;
+    a[b+3]+=src[o+3]*sgn;a[b+4]+=src[o+4]*sgn;a[b+5]+=src[o+5]*sgn;a[b+6]+=src[o+6]*sgn;
+    a[b+7]+=src[o+7]*w;a[b+8]+=src[o+8]*w;a[b+9]+=src[o+9]*w;this.wsum[i]+=w;
+  }
+  addPose(snapshot,weight){for(let i=0;i<this.objects.length;i++)this._acc(i,snapshot,i*10,weight);return this;}
+  /* Add one object's transform: {position?, quaternion?, scale?}; missing parts use the rest pose. */
+  add(object,t,weight){
+    const i=typeof object==='number'?object:this.index.get(object);if(i===undefined)throw new Error('Object is not part of this PoseBlender');
+    const tmp=this._tmp||(this._tmp=new Float64Array(10)),r=this.rest,b=i*10;for(let k=0;k<10;k++)tmp[k]=r[b+k];
+    if(t.position){tmp[0]=t.position.x;tmp[1]=t.position.y;tmp[2]=t.position.z;}if(t.quaternion){tmp[3]=t.quaternion.x;tmp[4]=t.quaternion.y;tmp[5]=t.quaternion.z;tmp[6]=t.quaternion.w;}
+    if(t.scale){tmp[7]=t.scale.x;tmp[8]=t.scale.y;tmp[9]=t.scale.z;}this._acc(i,tmp,0,weight);return this;
+  }
+  apply(){
+    const a=this.acc,r=this.rest;
+    this.objects.forEach((o,i)=>{const b=i*10,W=this.wsum[i],fill=Math.max(0,1-W),tot=W+fill;
+      if(W<=0){if(this.position)o.position.set(r[b],r[b+1],r[b+2]);if(this.rotation)o.quaternion.set(r[b+3],r[b+4],r[b+5],r[b+6]);if(this.scale)o.scale.set(r[b+7],r[b+8],r[b+9]);return;}
+      if(this.position)o.position.set((a[b]+r[b]*fill)/tot,(a[b+1]+r[b+1]*fill)/tot,(a[b+2]+r[b+2]*fill)/tot);
+      if(this.rotation)o.quaternion.set(a[b+3]+r[b+3]*fill,a[b+4]+r[b+4]*fill,a[b+5]+r[b+5]*fill,a[b+6]+r[b+6]*fill).normalize();
+      if(this.scale)o.scale.set((a[b+7]+r[b+7]*fill)/tot,(a[b+8]+r[b+8]*fill)/tot,(a[b+9]+r[b+9]*fill)/tot);});
+    return this;
+  }
+}
+
+/* ---------- blend spaces ---------- */
+/* Entries hold an AnimationAction or a pose(weight,dt,time,phase) function. With sync:true all actions
+   share one normalized phase whose speed follows the weighted cycle length (like UE sync groups). */
+class BlendSpaceBase{
+  constructor(entries,{sync=false,smoothing=0}={}){
+    if(!Array.isArray(entries)||!entries.length)throw new TypeError('A blend space needs at least one entry');
+    for(const e of entries)if(!e||(!e.action&&typeof e.pose!=='function'))throw new TypeError('Blend space entries need an action or a pose function');
+    this.entries=entries.map(e=>({...e}));const n=entries.length;this.weights=new Float64Array(n);this._target=new Float64Array(n);
+    this.sync=sync;this.smoothing=smoothing;this.weight=1;this.phase=0;this.time=0;this._init=false;
+  }
+  _commit(dt){
+    const n=this.entries.length,w=this.weights,t=this._target;
+    if(this.smoothing>0&&this._init&&dt>0){const k=1-Math.exp(-this.smoothing*dt);let s=0;for(let i=0;i<n;i++){w[i]+=(t[i]-w[i])*k;s+=w[i];}if(s>0)for(let i=0;i<n;i++)w[i]/=s;}
+    else for(let i=0;i<n;i++)w[i]=t[i];
+    this._init=true;this._apply(dt);return w;
+  }
+  _cycle(e){return e.action?e.action.getClip().duration:(e.duration||1);}
+  _apply(dt){
+    const n=this.entries.length,W=this.weight;let D=0;
+    if(this.sync)for(let i=0;i<n;i++)D+=this.weights[i]*this._cycle(this.entries[i]);
+    for(let i=0;i<n;i++){const e=this.entries[i],w=this.weights[i]*W;
+      if(e.action){const a=e.action;a.enabled=true;if(w>0&&!a.isRunning())a.play();a.setEffectiveWeight(w);
+        if(this.sync&&D>0){const c=this._cycle(e);a.time=this.phase*c;a.setEffectiveTimeScale(c/D);}}
+      if(e.pose)e.pose(w,dt,this.sync&&D>0?this.phase*this._cycle(e):this.time,this.phase);}
+    if(this.sync&&D>0&&dt>0)this.phase=(this.phase+dt/D)%1;this.time+=Math.max(0,dt);
+  }
+  weightOf(i){return this.weights[i];}
+}
+class BlendSpace1D extends BlendSpaceBase{
+  constructor(entries,opts={}){
+    super(entries,opts);for(const e of this.entries)if(!Number.isFinite(e.value))throw new TypeError('BlendSpace1D entries need a numeric value');
+    this.entries.sort((a,b)=>a.value-b.value);this.value=this.entries[0].value;this.isBlendSpace1D=true;
+  }
+  update(value,dt=0){
+    const e=this.entries,n=e.length,t=this._target;t.fill(0);value=+value;if(!Number.isFinite(value))value=this.value;this.value=value;
+    if(n===1||value<=e[0].value)t[0]=1;else if(value>=e[n-1].value)t[n-1]=1;
+    else for(let i=0;i<n-1;i++){const a=e[i].value,b=e[i+1].value;if(value>=a&&value<=b){if(b-a<EPS)t[i]=1;else{const f=(value-a)/(b-a);t[i]=1-f;t[i+1]=f;}break;}}
+    return this._commit(dt);
+  }
+}
+/* Bowyer-Watson Delaunay triangulation of a small point set (coordinates normalized to ~[0,1]). */
+function delaunay(pts){
+  const n=pts.length;if(n<3)return [];
+  const P=pts.map(p=>[p[0],p[1]]);P.push([-10,-10],[30,-10],[-10,30]);
+  const circ=(a,b,c)=>{const [ax,ay]=P[a],[bx,by]=P[b],[cx,cy]=P[c],d=2*(ax*(by-cy)+bx*(cy-ay)+cx*(ay-by));if(Math.abs(d)<1e-14)return {x:0,y:0,r2:Infinity};
+    const a2=ax*ax+ay*ay,b2=bx*bx+by*by,c2=cx*cx+cy*cy,x=(a2*(by-cy)+b2*(cy-ay)+c2*(ay-by))/d,y=(a2*(cx-bx)+b2*(ax-cx)+c2*(bx-ax))/d;return {x,y,r2:(ax-x)**2+(ay-y)**2};};
+  let tris=[{v:[n,n+1,n+2],c:circ(n,n+1,n+2)}];
+  for(let i=0;i<n;i++){const [px,py]=P[i],bad=[],keep=[];
+    for(const t of tris)((px-t.c.x)**2+(py-t.c.y)**2<t.c.r2-1e-12?bad:keep).push(t);
+    const edges=[];for(const t of bad)for(let e=0;e<3;e++){const a=t.v[e],b=t.v[(e+1)%3];const j=edges.findIndex(x=>x[0]===b&&x[1]===a);if(j>=0)edges.splice(j,1);else edges.push([a,b]);}
+    tris=keep;for(const [a,b] of edges)tris.push({v:[a,b,i],c:circ(a,b,i)});}
+  const area=(a,b,c)=>((P[b][0]-P[a][0])*(P[c][1]-P[a][1])-(P[c][0]-P[a][0])*(P[b][1]-P[a][1]))/2;
+  return tris.filter(t=>t.v.every(v=>v<n)&&Math.abs(area(...t.v))>1e-10).map(t=>t.v);
+}
+class BlendSpace2D extends BlendSpaceBase{
+  constructor(entries,opts={}){
+    super(entries,opts);const {method='triangulate',power=2}=opts;
+    for(const e of this.entries)if(!Number.isFinite(e.x)||!Number.isFinite(e.y))throw new TypeError('BlendSpace2D entries need numeric x and y');
+    const xs=this.entries.map(e=>e.x),ys=this.entries.map(e=>e.y);this.minX=Math.min(...xs);this.minY=Math.min(...ys);
+    this.sx=(Math.max(...xs)-this.minX)||1;this.sy=(Math.max(...ys)-this.minY)||1;this.power=power;this.isBlendSpace2D=true;
+    this.pts=this.entries.map(e=>[(e.x-this.minX)/this.sx,(e.y-this.minY)/this.sy]);
+    this.triangles=method==='triangulate'?delaunay(this.pts):[];this.method=this.triangles.length?'triangulate':'idw';
+    const count=new Map(),key=(a,b)=>a<b?a+','+b:b+','+a;
+    for(const t of this.triangles)for(let e=0;e<3;e++){const k=key(t[e],t[(e+1)%3]);count.set(k,(count.get(k)||0)+1);}
+    this.hull=[...count].filter(([,c])=>c===1).map(([k])=>k.split(',').map(Number));this.x=this.entries[0].x;this.y=this.entries[0].y;
+  }
+  update(x,y,dt=0){
+    const t=this._target,P=this.pts,n=P.length;t.fill(0);if(Number.isFinite(x))this.x=x;if(Number.isFinite(y))this.y=y;
+    const qx=(this.x-this.minX)/this.sx,qy=(this.y-this.minY)/this.sy;
+    if(this.method==='triangulate'){let done=false;
+      for(const [a,b,c] of this.triangles){const [ax,ay]=P[a],[bx,by]=P[b],[cx,cy]=P[c],d=(by-cy)*(ax-cx)+(cx-bx)*(ay-cy);
+        const l1=((by-cy)*(qx-cx)+(cx-bx)*(qy-cy))/d,l2=((cy-ay)*(qx-cx)+(ax-cx)*(qy-cy))/d,l3=1-l1-l2;
+        if(l1>=-1e-9&&l2>=-1e-9&&l3>=-1e-9){t[a]=Math.max(0,l1);t[b]=Math.max(0,l2);t[c]=Math.max(0,l3);done=true;break;}}
+      if(!done){let best=Infinity,ba=0,bb=0,bf=0;
+        for(const [a,b] of this.hull){const [ax,ay]=P[a],[bx,by]=P[b],ex=bx-ax,ey=by-ay,l2=ex*ex+ey*ey,f=l2>0?clamp(((qx-ax)*ex+(qy-ay)*ey)/l2,0,1):0,dx=ax+ex*f-qx,dy=ay+ey*f-qy,d=dx*dx+dy*dy;
+          if(d<best){best=d;ba=a;bb=b;bf=f;}}
+        t[ba]+=1-bf;t[bb]+=bf;}
+      const s=t.reduce((a,b)=>a+b,0)||1;for(let i=0;i<n;i++)t[i]/=s;
+    }else{let s=0,hit=-1;for(let i=0;i<n;i++){const d=Math.hypot(P[i][0]-qx,P[i][1]-qy);if(d<1e-6){hit=i;break;}t[i]=1/d**this.power;s+=t[i];}
+      if(hit>=0){t.fill(0);t[hit]=1;}else for(let i=0;i<n;i++)t[i]/=s;}
+    return this._commit(dt);
+  }
+}
+
+/* ---------- animation state machine ---------- */
+/* States play an AnimationAction, a procedural pose function or a blend space. Transitions run in
+   priority order; a crossfade blends from the current weights of every active state, so interrupted
+   fades stay continuous and the weights always sum to 1. */
+class AnimStateMachine{
+  constructor(a,b){
+    let THREE=null,opts=a||{};if(a&&(a.REVISION||a.AnimationMixer)){THREE=a;opts=b||{};}
+    this.THREE=THREE||(typeof window!=='undefined'&&window.THREE)||null;
+    const {params={},mixer=null,blender=null,defaultDuration=.2,initial=null}=opts;
+    Object.assign(this,{params:Object.assign({},params),mixer,blender,defaultDuration,_initial:initial});
+    this.states=new Map();this.transitions=[];this.active=[];this.current=null;this.previous=null;this.fade=null;
+    this.onEnter=null;this.onExit=null;this.onTransition=null;
+  }
+  addState(name,def={}){
+    if(typeof name!=='string'||!name||name==='*')throw new TypeError('State names must be non-empty strings other than "*"');
+    if(this.states.has(name))throw new Error('Duplicate animation state "'+name+'"');
+    const {action=null,pose=null,blend=null,param=null,speed=1,loop=true,duration=null,onEnter=null,onExit=null,onUpdate=null,notifies=[]}=def;
+    if(pose&&typeof pose!=='function')throw new TypeError('pose must be a function(weight,dt,time)');
+    const st={name,action,pose,blend,param,speed,loop,onEnter,onExit,onUpdate,time:0,weight:0,w0:0,
+      notifies:notifies.map(x=>({t:+x.t,fn:x.fn})).sort((p,q)=>p.t-q.t),length:Math.max(1e-6,duration||(action?action.getClip().duration:blend&&blend.entries[0].action?blend.entries[0].action.getClip().duration:1)),_out:[0,0]};
+    if(action){const T=this.THREE;action.setLoop(loop?(T?T.LoopRepeat:2201):(T?T.LoopOnce:2200),Infinity);action.clampWhenFinished=!loop;action.enabled=true;action.setEffectiveWeight(0);}
+    this.states.set(name,st);return this;
+  }
+  addTransition(from,to,def={}){
+    const {when=null,duration=this.defaultDuration,exitTime=null,ease='linear',priority=0,trigger=null,allowSelf=false}=def;
+    if(when&&typeof when!=='function')throw new TypeError('Transition "when" must be a function(params)');
+    const froms=from==='*'?null:Array.isArray(from)?from.slice():[from];
+    this.transitions.push({from:froms,to,when,duration:Math.max(0,duration),exitTime:when||trigger||exitTime!=null?exitTime:1,ease:getEase(ease),priority,trigger,allowSelf,order:this.transitions.length});
+    this.transitions.sort((p,q)=>q.priority-p.priority||p.order-q.order);return this;
+  }
+  set(name,value){this.params[name]=value;return this;}
+  get(name){return this.params[name];}
+  trigger(name){this.params[name]=true;return this;}
+  get state(){return this.current?this.current.name:null;}
+  get normalizedTime(){const c=this.current;return c?c.time/c.length:0;}
+  get blending(){return !!this.fade;}
+  weightOf(name){const s=this.states.get(name);return s?s.weight:0;}
+  get weights(){const o={};for(const e of this.active)o[e.name]=e.weight;return o;}
+  /* Force a state change (crossfade when duration > 0). */
+  play(name,duration=0,ease='linear'){this._enter(name,duration,getEase(ease),null);return this;}
+  _speed(st){const s=st.speed;return typeof s==='function'?s(this.params,this):typeof s==='string'?(+this.params[s]||0):s;}
+  _enter(name,duration,ease,tr){
+    const to=this.states.get(name);if(!to)throw new Error('Unknown animation state "'+name+'"');
+    const from=this.current,fromName=from?from.name:null;
+    if(from){if(from.onExit)from.onExit(fromName,name,this);if(this.onExit)this.onExit(fromName,name,this);}
+    if(!this.active.includes(to)){to.time=0;to.weight=0;if(to.action){to.action.reset();to.action.setEffectiveWeight(0);to.action.play();}if(to.blend){to.blend.phase=0;to.blend.time=0;}this.active.push(to);}
+    else if(to===from){to.time=0;if(to.action)to.action.reset().play();}
+    for(const e of this.active)e.w0=e.weight;
+    this.previous=from;this.current=to;this.fade=duration>0&&this.active.length>1?{duration,elapsed:0,ease:ease||easing.linear}:null;
+    if(!this.fade)for(const e of this.active)e.weight=e===to?1:0;
+    if(to.onEnter)to.onEnter(name,fromName,this);if(this.onEnter)this.onEnter(name,fromName,this);if(this.onTransition)this.onTransition(fromName,name,tr,this);
+  }
+  _find(){
+    const cur=this.current;
+    for(const tr of this.transitions){
+      if(tr.from&&!tr.from.includes(cur.name))continue;if(tr.to===cur.name&&!tr.allowSelf)continue;
+      if(tr.exitTime!=null&&cur.time<tr.exitTime*cur.length-1e-9)continue;if(tr.trigger&&!this.params[tr.trigger])continue;
+      if(tr.when&&!tr.when(this.params,this))continue;return tr;}
+    return null;
+  }
+  _paramValue(st,i){
+    const p=st.param;if(typeof p==='function'){const v=p(this.params,st._out,this);return Array.isArray(v)?v[i]:i?st._out[1]:v;}
+    if(Array.isArray(p))return +this.params[p[i]]||0;return p?+this.params[p]||0:0;
+  }
+  update(dt){
+    dt=dt>0?dt:0;
+    if(!this.current){const first=this._initial||this.states.keys().next().value;if(first===undefined)return this;this._enter(first,0,null,null);}
+    const tr=this._find();if(tr){if(tr.trigger)this.params[tr.trigger]=false;this._enter(tr.to,tr.duration,tr.ease,tr);}
+    if(this.fade){const f=this.fade,cur=this.current;f.elapsed+=dt;const a=clamp(f.ease(clamp(f.elapsed/f.duration,0,1)),0,1);
+      for(const e of this.active)e.weight=e===cur?e.w0+(1-e.w0)*a:e.w0*(1-a);
+      if(f.elapsed>=f.duration){this.fade=null;for(const e of this.active)e.weight=e===cur?1:0;}}
+    for(let i=this.active.length-1;i>=0;i--){const e=this.active[i];if(e!==this.current&&e.weight<=1e-6){e.weight=0;
+      if(e.action){e.action.setEffectiveWeight(0);e.action.stop();}if(e.blend){e.blend.weight=0;e.blend._apply(0);}if(e.pose)e.pose(0,dt,e.time,e);this.active.splice(i,1);}}
+    if(this.blender)this.blender.reset();
+    for(const e of this.active){
+      const sp=this._speed(e),prev=e.time;e.time+=dt*sp;if(!e.loop&&e.time>e.length)e.time=e.length;
+      if(e===this.current&&e.notifies.length&&e.time>prev){const L=e.length;
+        for(const nt of e.notifies){const at=nt.t*L;if(e.loop){const c0=Math.floor((prev-at)/L),c1=Math.floor((e.time-at)/L);for(let c=c0;c<c1;c++)nt.fn(this,e.name);}else if(prev<at&&e.time>=at)nt.fn(this,e.name);}}
+      if(e.action){e.action.enabled=true;e.action.setEffectiveWeight(e.weight);e.action.setEffectiveTimeScale(sp);}
+      if(e.blend){e.blend.weight=e.weight;if(e.blend.isBlendSpace2D)e.blend.update(this._paramValue(e,0),this._paramValue(e,1),dt*sp);else e.blend.update(this._paramValue(e,0),dt*sp);}
+      if(e.pose)e.pose(e.weight,dt,e.time,e);
+      if(e.onUpdate)e.onUpdate(e.weight,dt,e.time,this);
+    }
+    if(this.mixer)this.mixer.update(dt);
+    if(this.blender)this.blender.apply();
+    return this;
+  }
+}
+
+/* ---------- procedural locomotion ---------- */
+/* Reactive stepping with gait groups. Each foot has a home point (its rest point under the moving root,
+   projected onto heightAt). Planted feet stay exactly on their contact point while the body moves; a
+   foot's drift is measured from its home predicted `leadTime` ahead (velocity and yaw rate
+   extrapolated, lead = half a step), so a stance sweeps symmetrically around the hip for straight
+   walking, curves and turning in place. Groups swing one at a time in cycle order: the next group lifts
+   after drifting `trigger` steps, or earlier when a waiting group would exceed `maxDrift` before its turn.
+   Landing points are re-predicted during the first 85% of the swing; the swing follows a raised arc that
+   clears the terrain. Swing time shortens with speed. At idle, groups settle feet back under the hips.
+   The body follows a least-squares plane through the footholds (pitch/roll), leans with acceleration,
+   bobs and sways with the swing, and its height is clamped into the window where every planted foot is
+   reachable (pelvis adjust). Legs are solved with IK.twoBone (hip > knee > foot) or, for knee-less legs,
+   by aiming the hip and stretching it slightly along the leg axis (legStretch). */
+class ProceduralGait{
+  constructor(THREE,opts={}){
+    const {body,legs,heightAt,root=body&&body.parent,stepLength=.45,stepHeight=.12,stepDuration=.18,bodyHeight=null,lean=.15,leanAccel=8,pelvisAdjust=true,
+      forward=[0,0,-1],slopeAlign=null,maxTilt=.6,bob=null,sway=null,breathe=.004,idleSpeed=.05,settleDistance=null,smoothing=10,footAlign=.7,toeCurl=.5,
+      reach=.985,minReach=null,slopeFeet=null,trigger=.95,maxDrift=1,legStretch=.15,onFootPlant=null,onFootLift=null,pivot=null}=opts;
+    if(!body||!body.isObject3D)throw new TypeError('ProceduralGait needs a body Object3D');
+    if(!root||!root.isObject3D||!isDescendant(body,root))throw new Error('ProceduralGait needs a root ancestor of the body (the object your game moves); wrap the visual parts and legs in a child Group and pass it as body');
+    if(typeof heightAt!=='function')throw new TypeError('ProceduralGait needs heightAt(x,z)');
+    if(!Array.isArray(legs)||!legs.length)throw new TypeError('ProceduralGait needs at least one leg');
+    if(!(stepLength>0)||!(stepDuration>0)||!(stepHeight>=0))throw new RangeError('stepLength and stepDuration must be positive');
+    Object.assign(this,{THREE,body,root,heightAt,stepLength,stepHeight,stepDuration,lean,leanAccel,pelvisAdjust,slopeAlign,maxTilt,breathe,idleSpeed,smoothing,footAlign,toeCurl,reach,minReach,slopeFeet,trigger,maxDrift,legStretch,onFootPlant,onFootLift});
+    this.bob=bob==null?stepHeight*.18:bob;this.sway=sway==null?stepLength*.03:sway;this.settleDistance=settleDistance==null?stepLength*.14:settleDistance;
+    const V=()=>new THREE.Vector3(),Q=()=>new THREE.Quaternion(),M=()=>new THREE.Matrix4();
+    this.forward=toVec3(THREE,forward);this.forward.y=0;if(this.forward.lengthSq()<EPS)this.forward.set(0,0,-1);this.forward.normalize();
+    this.pitchAxis=new THREE.Vector3().crossVectors(this.forward,new THREE.Vector3(0,1,0)).normalize();
+    root.updateMatrixWorld(true);
+    const rootInv=M().copy(root.matrixWorld).invert(),bodyInv=M().copy(body.matrixWorld).invert();
+    this.bodyRootMat=M().multiplyMatrices(rootInv,body.matrixWorld);this.bodyRootPos=V();this.bodyRootQ=Q();this.bodyRootScale=V();
+    this.bodyRootMat.decompose(this.bodyRootPos,this.bodyRootQ,this.bodyRootScale);
+    const rootQ=Q(),tp=V(),ts=V();root.matrixWorld.decompose(tp,rootQ,ts);const rootQInv=rootQ.clone().invert();
+    this.legs=legs.map((L,i)=>{
+      if(!L||!L.hip||!L.foot||!L.hip.isObject3D||!L.foot.isObject3D)throw new TypeError('Leg '+i+' needs hip and foot Object3Ds');
+      if(!isDescendant(L.foot,L.hip)||(L.knee&&(!isDescendant(L.knee,L.hip)||!isDescendant(L.foot,L.knee))))throw new Error('Leg '+i+' joints must be nested hip > knee > foot');
+      if(!isDescendant(L.hip,body))throw new Error('Leg '+i+' hip must be a descendant of the body');
+      const fw=V().setFromMatrixPosition(L.foot.matrixWorld),hw=V().setFromMatrixPosition(L.hip.matrixWorld),kw=L.knee?V().setFromMatrixPosition(L.knee.matrixWorld):null;
+      const rest=L.rest?toVec3(THREE,L.rest):fw.clone().applyMatrix4(bodyInv),restRoot=rest.clone().applyMatrix4(this.bodyRootMat);
+      const hipBody=hw.clone().applyMatrix4(bodyInv),kneeBody=kw?kw.clone().applyMatrix4(bodyInv):null,footBody=fw.clone().applyMatrix4(bodyInv);
+      const len=kneeBody?hipBody.distanceTo(kneeBody)+kneeBody.distanceTo(footBody):hipBody.distanceTo(footBody);
+      let pole=L.pole?toVec3(THREE,L.pole):null;
+      if(!pole){const mid=hipBody.clone().add(footBody).multiplyScalar(.5),out=kneeBody?kneeBody.clone().sub(mid):V();out.y=0;
+        if(out.lengthSq()<1e-8)out.copy(this.forward).applyQuaternion(this.bodyRootQ.clone().invert());out.normalize();pole=(kneeBody||mid).clone().addScaledVector(out,len);}
+      const footQW=Q();L.foot.matrixWorld.decompose(tp,footQW,ts);
+      const fh=V().copy(fw).applyMatrix4(M().copy(L.hip.matrixWorld).invert()),ax=Math.abs(fh.x)>Math.abs(fh.y)?(Math.abs(fh.x)>Math.abs(fh.z)?'x':'z'):(Math.abs(fh.y)>Math.abs(fh.z)?'y':'z');
+      return {index:i,hip:L.hip,knee:L.knee||null,foot:L.foot,rest,restRoot,hipBody,len,pole,group:L.group==null?i%2:L.group|0,
+        footOffset:L.footOffset==null?Math.max(0,restRoot.y):+L.footOffset,
+        hipRestQ:L.hip.quaternion.clone(),kneeRestQ:L.knee?L.knee.quaternion.clone():null,footRestQ:L.foot.quaternion.clone(),hipRestScale:L.hip.scale.clone(),
+        footRootQ:rootQInv.clone().multiply(footQW),stretchAxis:ax,
+        planted:true,contact:V(),from:V(),to:V(),pos:V(),home:V(),swingT:0,swingDur:stepDuration,swingHeight:0,err:0,plantTime:0,liftTime:0,ground:0};
+    });
+    // rigid (knee-less) legs can only stretch a little, so by default they tilt the body to the actual footholds
+    const rigid=this.legs.some(l=>!l.knee);if(this.slopeFeet==null)this.slopeFeet=rigid?1:0;if(this.slopeAlign==null)this.slopeAlign=rigid?1:.85;
+    this.groupCount=Math.max(...this.legs.map(l=>l.group))+1;this.nextGroup=0;this.stepCount=0;this.history=[];
+    this.pivot=pivot?toVec3(THREE,pivot):this.legs.reduce((a,l)=>a.add(l.hipBody),V()).divideScalar(this.legs.length);
+    this.pivotRestRoot=this.pivot.clone().applyMatrix4(this.bodyRootMat);
+    this.bodyHeight=bodyHeight==null?this.pivotRestRoot.y:bodyHeight;
+    this.homeCenter=this.legs.reduce((a,l)=>a.add(l.restRoot),V()).divideScalar(this.legs.length);
+    this.hipRadius=Math.max(...this.legs.map(l=>Math.hypot(l.restRoot.x,l.restRoot.z)));
+    Object.assign(this,{pitch:0,roll:0,height:0,speed:0,drift:0,leadTime:0,yawRate:0,time:0,moveBlend:0,initialized:false,velocity:V(),accel:V(),lastRootPos:V(),lastYaw:0,_bob:0,_sway:0});
+    this._s={rootPos:V(),rootQ:Q(),rootScale:V(),F:V(),R:V(),vel:V(),tmp:V(),tmp2:V(),ft:V(),pole:V(),hip:V(),n:V(),up:new THREE.Vector3(0,1,0),
+      tilt:Q(),q1:Q(),q2:Q(),q3:Q(),pw:Q(),bq:Q(),bp:V(),piv:V(),m:M(),m2:M(),tp:V(),ts:V(),pa:V(),ra:V()};
+  }
+  get legCount(){return this.legs.length;}
+  get planted(){return this.legs.every(l=>l.planted);}
+  /* Snap all feet to their homes and the body to its target pose (call after teleporting the root). */
+  reset(){this.initialized=false;return this;}
+  _frame(){
+    const s=this._s,root=this.root;root.updateWorldMatrix(true,false);root.matrixWorld.decompose(s.rootPos,s.rootQ,s.rootScale);
+    const F=s.F.copy(this.forward).applyQuaternion(s.rootQ);F.y=0;if(F.lengthSq()<1e-10)F.set(0,0,-1);F.normalize();s.R.set(-F.z,0,F.x);
+    return (Math.abs(s.rootScale.x)+Math.abs(s.rootScale.y)+Math.abs(s.rootScale.z))/3;
+  }
+  _homes(){for(const l of this.legs){l.home.copy(l.restRoot).applyMatrix4(this.root.matrixWorld);l.home.y=this.heightAt(l.home.x,l.home.z);}}
+  /* Where the foot should land `ahead` seconds from now: home extrapolated by velocity and yaw rate, plus lead. */
+  /* Where the home point will be `ahead` seconds from now, extrapolating velocity and yaw rate. The step
+     target is this point at landing time plus the lead time, so a planted foot sweeps symmetrically
+     around its home for straight walking, curves and turning in place alike. */
+  _predict(l,ahead,out,ground=true){
+    const s=this._s,a=this.yawRate*ahead,c=Math.cos(a),sn=Math.sin(a),rx=l.home.x-s.rootPos.x,rz=l.home.z-s.rootPos.z;
+    out.set(s.rootPos.x+rx*c+rz*sn+s.vel.x*ahead,0,s.rootPos.z-rx*sn+rz*c+s.vel.z*ahead);if(ground)out.y=this.heightAt(out.x,out.z);return out;
+  }
+  _snap(){
+    for(const l of this.legs){l.contact.copy(l.home);l.pos.copy(l.home);l.to.copy(l.home);l.from.copy(l.home);l.planted=true;l.swingT=0;l.err=0;}
+    this.initialized=true;this._snapBody=true;
+  }
+  update(dt,velocity=null){
+    if(!(dt>0))return this;
+    const s=this._s,rs=this._frame(),F=s.F;
+    const yaw=Math.atan2(F.x,F.z);
+    if(!this.initialized){this.lastRootPos.copy(s.rootPos);this.lastYaw=yaw;this.velocity.set(0,0,0);this.accel.set(0,0,0);this.yawRate=0;s.vel.set(0,0,0);this._homes();this._snap();}
+    if(s.rootPos.distanceTo(this.lastRootPos)>Math.max(2,this.stepLength*8)*rs){this.initialized=false;return this.update(dt,velocity);}
+    if(velocity)s.vel.set(velocity.x,0,velocity.z);else s.vel.subVectors(s.rootPos,this.lastRootPos).divideScalar(dt).setY(0);
+    s.tmp.subVectors(s.vel,this.velocity).divideScalar(dt);this.accel.lerp(s.tmp,1-Math.exp(-8*dt));this.velocity.copy(s.vel);
+    this.yawRate=damp(this.yawRate,wrapAngle(yaw-this.lastYaw)/dt,14,dt);this.lastYaw=yaw;this.lastRootPos.copy(s.rootPos);
+    this.time+=dt;const speed=this.speed=Math.hypot(s.vel.x,s.vel.z),L=this.stepLength*rs,vRef=L/(2*this.stepDuration);
+    // drift: how fast planted feet slide away from their homes (translation plus rotation about the root)
+    const drift=this.drift=speed+Math.abs(this.yawRate)*this.hipRadius*rs,idle=this.idleSpeed*rs;
+    const moving=drift>idle;this.moveBlend=damp(this.moveBlend,moving?1:0,5,dt);
+    const leadLen=drift>idle?L*.5*smooth01((drift-idle)/(vRef*.35)):0,leadTime=this.leadTime=leadLen>0?leadLen/drift:0;
+    const swingDur=moving?this.stepDuration*clamp(Math.sqrt(vRef/Math.max(drift,1e-4)),.55,1):this.stepDuration*1.25;
+    this._homes();
+    // advance swings and land
+    let swinging=false;
+    for(const l of this.legs){
+      if(l.planted){l.pos.copy(l.contact);continue;}
+      l.swingT=Math.min(1,l.swingT+dt/l.swingDur);
+      if(l.swingT<.85)this._predict(l,(1-l.swingT)*l.swingDur+leadTime,l.to);
+      if(l.swingT>=1){l.contact.copy(l.to);l.contact.y=this.heightAt(l.to.x,l.to.z);l.planted=true;l.plantTime=this.time;l.pos.copy(l.contact);if(this.onFootPlant)this.onFootPlant(l,l.index,l.contact,this);continue;}
+      swinging=true;const t=l.swingT,e=.5-.5*Math.cos(Math.PI*t),arc=l.swingHeight*Math.sin(Math.PI*Math.pow(t,.8));
+      l.pos.set(l.from.x+(l.to.x-l.from.x)*e,0,l.from.z+(l.to.z-l.from.z)*e);
+      const g=this.heightAt(l.pos.x,l.pos.z);l.pos.y=Math.max(l.from.y+(l.to.y-l.from.y)*e+arc,g+arc*.6);
+    }
+    // step scheduling: one group swings at a time, in cycle order. The next group lifts once it has
+    // drifted `trigger` steps, or earlier when a group further back in the queue would otherwise
+    // overstretch (drift + speed * swings still to wait > maxDrift) - this makes starts and speed-ups
+    // take short catch-up steps instead of dragging feet.
+    const G=this.groupCount,gErr=this._gErr||(this._gErr=new Float64Array(G));gErr.fill(0);
+    for(const l of this.legs){if(l.planted){this._predict(l,leadTime,s.tmp,false);l.err=Math.hypot(l.contact.x-s.tmp.x,l.contact.z-s.tmp.z);}else l.err=0;if(l.err>gErr[l.group])gErr[l.group]=l.err;}
+    if(!swinging){let g=-1;const nx=this.nextGroup;
+      if(moving){
+        if(gErr[nx]>L*this.trigger)g=nx;
+        else if(gErr[nx]>L*.2)for(let j=1;j<G;j++){const k=(nx+j)%G;if(gErr[k]+drift*swingDur*j>L*this.maxDrift){g=nx;break;}}
+        if(g<0)for(let k=0;k<G;k++)if(gErr[k]>L*1.8){g=k;break;}}
+      else{let best=this.settleDistance*rs;for(let k=0;k<G;k++){const kk=(nx+k)%G;if(gErr[kk]>best+1e-9){best=gErr[kk];g=kk;}}}
+      if(g>=0)this._lift(g,moving,swingDur+leadTime,swingDur,L);}
+    this._body(dt,rs,L,vRef);
+    this._legs(rs);
+    return this;
+  }
+  _lift(g,moving,ahead,swingDur,L){
+    const minErr=moving?-1:this.settleDistance*.4;
+    for(const l of this.legs){if(l.group!==g||!l.planted||l.err<=minErr)continue;
+      l.planted=false;l.from.copy(l.contact);l.swingT=0;l.swingDur=swingDur;l.liftTime=this.time;this._predict(l,ahead,l.to);
+      const dist=Math.hypot(l.to.x-l.from.x,l.to.z-l.from.z);l.swingHeight=this.stepHeight*(L/this.stepLength)*clamp(dist/L,moving?.35:.25,1.25);
+      if(this.onFootLift)this.onFootLift(l,l.index,l.from,this);}
+    this.nextGroup=(g+1)%this.groupCount;this.stepCount++;this.history.push(g);if(this.history.length>64)this.history.shift();
+  }
+  _body(dt,rs,L,vRef){
+    const s=this._s,F=s.F,R=s.R;
+    // support points: planted contacts, swinging feet interpolated toward their landing point
+    let sup=0;for(const l of this.legs){if(l.planted)l.ground=l.contact.y;else{const e=smooth01(l.swingT);l.ground=l.from.y+(l.to.y-l.from.y)*e;}sup+=l.ground;}sup/=this.legs.length;
+    // least-squares plane y = a*u + b*w + c (u along right, w along forward) through points blended
+    // between the home ground points (smooth, anticipates slopes) and the support points (slopeFeet)
+    let n=0,su=0,sw=0,sy=0,suu=0,sww=0,suw=0,suy=0,swy=0;const kf=clamp(this.slopeFeet,0,1);
+    for(const l of this.legs){let px=l.home.x,pz=l.home.z,y=l.home.y;
+      if(kf>0){const e=l.planted?1:smooth01(l.swingT),fx=l.planted?l.contact.x:l.from.x+(l.to.x-l.from.x)*e,fz=l.planted?l.contact.z:l.from.z+(l.to.z-l.from.z)*e;px+=(fx-px)*kf;pz+=(fz-pz)*kf;y+=(l.ground-y)*kf;}
+      const dx=px-s.rootPos.x,dz=pz-s.rootPos.z,u=dx*R.x+dz*R.z,w=dx*F.x+dz*F.z;n++;su+=u;sw+=w;sy+=y;suu+=u*u;sww+=w*w;suw+=u*w;suy+=u*y;swy+=w*y;}
+    const cu=suu-su*su/n,cw=sww-sw*sw/n,cuw=suw-su*sw/n,cuy=suy-su*sy/n,cwy=swy-sw*sy/n,det=cu*cw-cuw*cuw;
+    let a=0,b=0;if(Math.abs(det)>1e-10*(cu*cw+1e-12)&&det>1e-12){a=(cuy*cw-cwy*cuw)/det;b=(cwy*cu-cuy*cuw)/det;}else if(cw>cu&&cw>1e-9)b=cwy/cw;else if(cu>1e-9)a=cuy/cu;
+    const pitchT=clamp(Math.atan(b)*this.slopeAlign,-this.maxTilt,this.maxTilt),rollT=clamp(Math.atan(a)*this.slopeAlign,-this.maxTilt,this.maxTilt);
+    const aF=this.accel.x*F.x+this.accel.z*F.z,aR=this.accel.x*R.x+this.accel.z*R.z,mb=this.moveBlend;
+    const leanP=-this.lean*Math.tanh(aF/this.leanAccel)*mb,leanR=-this.lean*Math.tanh(aR/this.leanAccel)*mb;
+    // swing bob (body dips at mid-swing, i.e. mid-stance of the supporting group) and lateral sway
+    let bob=0,sway=0,cnt=0;for(const l of this.legs){if(l.planted)continue;const k=Math.sin(Math.PI*l.swingT);bob+=k;sway-=Math.sign(l.restRoot.x-this.homeCenter.x)*k;cnt++;}
+    const amp=smooth01(this.drift/(vRef*.6));if(cnt){bob/=cnt;sway/=cnt;}
+    this._bob=damp(this._bob,-bob*this.bob*rs*amp,30,dt);this._sway=damp(this._sway,sway*this.sway*amp,12,dt);
+    const breath=this.breathe*rs*Math.sin(this.time*Math.PI*2*.3)*(1-mb);
+    let target=sup+this.bodyHeight*rs+this._bob+breath;
+    const snap=this._snapBody;this._snapBody=false;
+    if(snap){this.pitch=pitchT;this.roll=rollT;this.height=target;}
+    else{this.pitch=damp(this.pitch,pitchT+leanP,this.smoothing,dt);this.roll=damp(this.roll,rollT+leanR,this.smoothing,dt);this.height=damp(this.height,target,this.smoothing*1.6,dt);}
+    const tilt=s.tilt.setFromAxisAngle(this.pitchAxis,this.pitch).multiply(s.q1.setFromAxisAngle(this.forward,-this.roll));
+    // pelvis adjust: keep the pivot inside the height window where every planted (or landing) foot is
+    // reachable: not farther than the leg's reach (lower the body) and, for legs that cannot fold much,
+    // not closer than their shortest length (raise the body). Conflicting limits meet half-way.
+    const pivR=this.pivotRestRoot;
+    if(this.pelvisAdjust){const bs=Math.max(this.bodyRootScale.x,1e-6)*rs;let hi=Infinity,lo=-Infinity,hiL=Infinity,loL=-Infinity;
+      for(const l of this.legs){if(!l.planted&&l.swingT<.7)continue;
+        const hr=s.hip.subVectors(l.hipBody,this.pivot).multiply(this.bodyRootScale).applyQuaternion(this.bodyRootQ).applyQuaternion(tilt);// hip offset from pivot, root space
+        const off=hr.y*rs;hr.add(pivR).applyMatrix4(this.root.matrixWorld);// world hip at rest height (only x/z are used)
+        const fx=l.planted?l.contact.x:l.to.x,fz=l.planted?l.contact.z:l.to.z,fy=(l.planted?l.contact.y:l.to.y)+l.footOffset*rs;
+        const hd2=(hr.x-fx)**2+(hr.z-fz)**2,st=l.knee?0:clamp(this.legStretch,0,.9);
+        const maxR=l.len*bs*this.reach*(1+st),minR=l.len*bs*(l.knee?(this.minReach==null?.35:this.minReach):(this.minReach==null?(1-st)/this.reach:this.minReach));
+        const top=fy+Math.sqrt(Math.max(0,maxR*maxR-hd2))-off,bottom=minR*minR>hd2?fy+Math.sqrt(minR*minR-hd2)-off:-Infinity;
+        if(l.planted){if(top<hi)hi=top;if(bottom>lo)lo=bottom;}else{if(top<hiL)hiL=top;if(bottom>loL)loL=bottom;}}
+      // planted feet are hard limits; feet about to land only narrow the window the planted ones leave
+      if(lo>hi)lo=hi=(lo+hi)/2;
+      else{const l2=clamp(loL,lo,hi),h2=clamp(hiL,lo,hi);if(l2<=h2){lo=l2;hi=h2;}else lo=hi=(l2+h2)/2;}
+      this.heightMin=lo;this.heightMax=hi;if(this.height>hi)this.height=hi;else if(this.height<lo)this.height=lo;}
+    // compose body transform in root space: rotate about the pivot, then place the pivot at the target height
+    const dyRoot=(this.height-(s.rootPos.y+pivR.y*rs))/rs;
+    const bq=s.bq.copy(tilt).multiply(this.bodyRootQ),piv=s.piv.copy(pivR);piv.y+=dyRoot;piv.addScaledVector(this.pitchAxis,this._sway);
+    const bp=s.bp.copy(this.pivot).multiply(this.bodyRootScale).applyQuaternion(bq);bp.subVectors(piv,bp);
+    const body=this.body;
+    if(body.parent===this.root){body.position.copy(bp);body.quaternion.copy(bq);}
+    else{s.m.compose(bp,bq,this.bodyRootScale).premultiply(this.root.matrixWorld);s.m2.copy(body.parent.matrixWorld).invert().multiply(s.m);s.m2.decompose(body.position,body.quaternion,body.scale);}
+    body.updateMatrixWorld(true);
+  }
+  _legs(rs){
+    const s=this._s,T=this.THREE,R=s.R;
+    for(const l of this.legs){
+      const ft=s.ft.copy(l.planted?l.contact:l.pos);ft.y+=l.footOffset*rs;
+      if(l.knee){l.hip.quaternion.copy(l.hipRestQ);l.knee.quaternion.copy(l.kneeRestQ);s.pole.copy(l.pole).applyMatrix4(this.body.matrixWorld);twoBone(T,l.hip,l.knee,l.foot,ft,s.pole);}
+      else{const hip=l.hip;hip.quaternion.copy(l.hipRestQ);hip.scale.copy(l.hipRestScale);l.foot.updateWorldMatrix(true,false);
+        const hw=s.hip.setFromMatrixPosition(hip.matrixWorld),u=s.tmp.setFromMatrixPosition(l.foot.matrixWorld).sub(hw),w=s.tmp2.subVectors(ft,hw),lu=u.length(),lw=w.length();
+        if(lu>EPS&&lw>EPS){parentQuat(hip,s.pw,s.tp,s.ts);worldQuat(hip,s.q2,s.tp,s.ts);s.q2.premultiply(s.q3.setFromUnitVectors(u.divideScalar(lu),w.divideScalar(lw)));
+          hip.quaternion.copy(s.pw).invert().multiply(s.q2);if(this.legStretch>0)hip.scale[l.stretchAxis]=l.hipRestScale[l.stretchAxis]*clamp(lw/lu,1-this.legStretch,1+this.legStretch);}
+        hip.updateMatrixWorld(true);}
+      // foot orientation: keep the paw's rest heading, align it to the ground normal, curl it during the swing
+      if(this.footAlign>0||this.toeCurl>0){const e=.04*rs,x=ft.x,z=ft.z,h=this.heightAt;
+        const nrm=s.n.set(h(x-e,z)-h(x+e,z),2*e,h(x,z-e)-h(x,z+e)).normalize(),align=l.planted?this.footAlign:this.footAlign*(1-Math.sin(Math.PI*l.swingT));
+        s.q1.setFromUnitVectors(s.up,nrm);s.q2.identity().slerp(s.q1,align);
+        const curl=l.planted?0:-this.toeCurl*Math.sin(Math.PI*Math.min(1,l.swingT*1.15));s.ra.copy(R);
+        s.q3.setFromAxisAngle(s.ra,curl).multiply(s.q2).multiply(s.rootQ).multiply(l.footRootQ);
+        parentQuat(l.foot,s.pw,s.tp,s.ts);l.foot.quaternion.copy(s.pw).invert().multiply(s.q3);l.foot.updateMatrixWorld(true);}
+    }
+  }
+  dispose(){}
+}
+
+/* ---------- sequencer (cinematics) ---------- */
+const INTERP={linear:0,cubic:1,step:2};const INTERP_NAMES=['linear','cubic','step'];
+class SequencerTrack{
+  constructor(spec){
+    const {target,path,keys,name=null,interp='linear',ease=null,enabled=true}=spec||{};
+    if(!target)throw new TypeError('Sequencer track needs a target');if(!Array.isArray(keys)||!keys.length)throw new TypeError('Sequencer track needs keys');
+    const {obj,key}=resolvePath(target,path),cur=obj[key],kind=kindOf(cur);if(!kind)throw new TypeError('Cannot animate property "'+path+'" of this type');
+    const size=sizeOf(kind,cur),sorted=keys.map((k,i)=>({k,i})).sort((p,q)=>p.k.t-q.k.t||p.i-q.i).map(o=>o.k),n=sorted.length;
+    Object.assign(this,{target,path,obj,key,kind,size,name,enabled});
+    this.times=new Float64Array(n);this.values=new Float64Array(n*size);this.modes=new Uint8Array(n);this.eases=new Array(n);this.easeNames=new Array(n);
+    sorted.forEach((k,i)=>{if(!Number.isFinite(k.t)||k.t<0)throw new RangeError('Key times must be finite and non-negative');this.times[i]=k.t;
+      parseValue(kind,k.value,this.values,i*size,size,kind==='number'?(typeof cur==='number'?cur:0):cur);
+      const m=INTERP[k.interp||interp];if(m===undefined)throw new RangeError('Unknown interpolation "'+(k.interp||interp)+'"');this.modes[i]=kind==='boolean'?2:m;
+      const e=k.ease||ease;this.eases[i]=e?getEase(e):null;this.easeNames[i]=easeName(e);});
+    if(kind==='quaternion')for(let i=1;i<n;i++){const a=(i-1)*4,b=i*4,V=this.values;if(V[a]*V[b]+V[a+1]*V[b+1]+V[a+2]*V[b+2]+V[a+3]*V[b+3]<0)for(let c=0;c<4;c++)V[b+c]=-V[b+c];}
+    // Catmull-Rom style finite-difference tangents for non-uniform key times
+    this.tangents=new Float64Array(n*size);
+    for(let i=0;i<n;i++){const i0=Math.max(0,i-1),i1=Math.min(n-1,i+1),dt=this.times[i1]-this.times[i0];for(let c=0;c<size;c++)this.tangents[i*size+c]=dt>0?(this.values[i1*size+c]-this.values[i0*size+c])/dt:0;}
+    this.out=new Float64Array(size);this._cursor=0;
+    if(kind==='number')prepareMaterial(obj,key,Array.from(this.values));
+  }
+  get start(){return this.times[0];}
+  get end(){return this.times[this.times.length-1];}
+  /* Evaluate at time t into this.out and write the property. Key i's interp/ease control segment i -> i+1. */
+  evaluate(t){
+    const T=this.times,n=T.length,S=this.size,V=this.values,out=this.out;
+    if(n===1||t<=T[0]){for(let c=0;c<S;c++)out[c]=V[c];}
+    else if(t>=T[n-1]){const o=(n-1)*S;for(let c=0;c<S;c++)out[c]=V[o+c];}
+    else{let i=this._cursor;if(i>=n-1||T[i]>t||T[i+1]<=t){let lo=0,hi=n-1;while(hi-lo>1){const m=(lo+hi)>>1;if(T[m]<=t)lo=m;else hi=m;}i=lo;}this._cursor=i;
+      const h=T[i+1]-T[i],mode=this.modes[i];let u=h>0?(t-T[i])/h:1;const a=i*S,b=a+S;
+      if(mode===2){for(let c=0;c<S;c++)out[c]=V[a+c];}
+      else{if(this.eases[i])u=this.eases[i](u);
+        if(mode===1){const u2=u*u,u3=u2*u,h00=2*u3-3*u2+1,h10=u3-2*u2+u,h01=-2*u3+3*u2,h11=u3-u2,M=this.tangents;
+          for(let c=0;c<S;c++)out[c]=h00*V[a+c]+h10*h*M[a+c]+h01*V[b+c]+h11*h*M[b+c];
+          if(this.kind==='quaternion'){const l=Math.hypot(out[0],out[1],out[2],out[3])||1;for(let c=0;c<4;c++)out[c]/=l;}}
+        else if(this.kind==='quaternion')slerpFlat(out,0,V,a,V,b,u);
+        else for(let c=0;c<S;c++)out[c]=V[a+c]+(V[b+c]-V[a+c])*u;}}
+    writeValue(this.kind,this.obj,this.key,out,0,S);return out;
+  }
+  toJSON(idOf){
+    const S=this.size,keys=[];for(let i=0;i<this.times.length;i++){const v=S===1?(this.kind==='boolean'?this.values[i]>=.5:this.values[i]):Array.from(this.values.subarray(i*S,i*S+S));
+      const k={t:this.times[i],value:v};if(this.modes[i])k.interp=INTERP_NAMES[this.modes[i]];if(this.easeNames[i])k.ease=this.easeNames[i];keys.push(k);}
+    const j={target:idOf(this.target),path:this.path,keys};if(this.name)j.name=this.name;return j;
+  }
+}
+class Sequencer{
+  constructor(THREE,opts={}){
+    const {loop=false,speed=1,duration=null,reverseEvents=false}=opts;
+    Object.assign(this,{THREE,loop,speed,reverseEvents});this._duration=duration;
+    this.tracks=[];this.cuts=[];this.events=[];this.time=0;this.playing=false;this._last=0;this.camera=null;
+    this.onFinish=null;this.onCameraCut=null;this.onUpdate=null;
+  }
+  get duration(){if(this._duration!=null)return this._duration;let d=0;for(const t of this.tracks)d=Math.max(d,t.end);for(const c of this.cuts)d=Math.max(d,c.t);for(const e of this.events)d=Math.max(d,e.t);return d;}
+  set duration(v){this._duration=v==null?null:Math.max(0,+v);}
+  addTrack(spec){const t=spec instanceof SequencerTrack?spec:new SequencerTrack(spec);this.tracks.push(t);return t;}
+  removeTrack(t){const i=this.tracks.indexOf(t);if(i>=0)this.tracks.splice(i,1);return this;}
+  addCameraCut({t,camera}){if(!Number.isFinite(t)||t<0||!camera||!camera.isCamera)throw new TypeError('Camera cut needs {t, camera}');this.cuts.push({t,camera});this.cuts.sort((a,b)=>a.t-b.t);return this;}
+  addEvent({t,fn,name=null}){if(!Number.isFinite(t)||t<0||typeof fn!=='function')throw new TypeError('Event needs {t, fn}');this.events.push({t,fn,name});this.events.sort((a,b)=>a.t-b.t);return this;}
+  play(){if(!this.loop&&this.time>=this.duration&&this.duration>0)this.seek(0);if(this.time<=0)this._last=-1;this.playing=true;return this;}
+  pause(){this.playing=false;return this;}
+  stop(){this.playing=false;return this.seek(0);}
+  _fire(a,b){for(const e of this.events)if(e.t>a&&e.t<=b)e.fn(this,e);}
+  _fireReverse(a,b){for(let i=this.events.length-1;i>=0;i--){const e=this.events[i];if(e.t>=b&&e.t<a)e.fn(this,e);}}
+  /* Jump without firing events (unless fireEvents and moving forward). */
+  seek(t,{fireEvents=false}={}){const D=this.duration;t=clamp(+t||0,0,D);if(fireEvents&&t>this.time)this._fire(this._last,t);this.time=t;this._last=t;this._evaluate();return this;}
+  update(dt){
+    if(!this.playing||!(dt>0))return this;
+    const D=this.duration;let t=this.time+dt*this.speed,finished=false;
+    if(this.speed>=0){
+      if(t>=D){if(this.loop&&D>0){this._fire(this._last,D);t%=D;this._last=-1;}else{t=D;finished=true;}}
+      this._fire(this._last,t);
+    }else{
+      if(t<=0){if(this.loop&&D>0){if(this.reverseEvents)this._fireReverse(this._last,0);t=D+(t%D);this._last=D+1e-9;}else{t=0;finished=true;}}
+      if(this.reverseEvents)this._fireReverse(this._last,t);
+    }
+    this.time=t;this._last=t;this._evaluate();
+    if(finished){this.playing=false;if(this.onFinish)this.onFinish(this);}
+    return this;
+  }
+  _evaluate(){
+    const t=this.time;for(const tr of this.tracks)if(tr.enabled)tr.evaluate(t);
+    let cam=null;for(const c of this.cuts){if(c.t<=t)cam=c.camera;else break;}
+    if(cam!==this.camera){const prev=this.camera;this.camera=cam;if(this.onCameraCut)this.onCameraCut(cam,prev,this);}
+    if(this.onUpdate)this.onUpdate(t,this);
+  }
+  /* Tracks/cuts/events as JSON. Targets and cameras are referenced by name (or uuid when unnamed). */
+  toJSON(){
+    const idOf=o=>o&&(o.name||o.uuid);
+    return {version:1,duration:this._duration,loop:this.loop,speed:this.speed,tracks:this.tracks.map(t=>t.toJSON(idOf)),cuts:this.cuts.map(c=>({t:c.t,camera:idOf(c.camera)})),events:this.events.filter(e=>e.name).map(e=>({t:e.t,name:e.name}))};
+  }
+  /* resolve: an Object3D to search by name/uuid, or a function(id) -> target. handlers: {eventName: fn}. */
+  fromJSON(json,resolve,handlers={}){
+    if(!json||!Array.isArray(json.tracks))throw new TypeError('Invalid sequencer JSON');
+    const find=typeof resolve==='function'?resolve:id=>{let hit=null;resolve.traverse(o=>{if(!hit&&(o.name===id||o.uuid===id))hit=o;});return hit;};
+    const lookup=id=>{const o=find(id);if(!o)throw new Error('Sequencer target "'+id+'" not found');return o;};
+    this.tracks=[];this.cuts=[];this.events=[];
+    for(const t of json.tracks)this.addTrack({target:lookup(t.target),path:t.path,keys:t.keys,name:t.name||null});
+    for(const c of json.cuts||[])this.addCameraCut({t:c.t,camera:lookup(c.camera)});
+    for(const e of json.events||[]){const fn=handlers[e.name];if(typeof fn==='function')this.addEvent({t:e.t,fn,name:e.name});}
+    if(json.duration!=null)this._duration=json.duration;if(typeof json.loop==='boolean')this.loop=json.loop;if(Number.isFinite(json.speed))this.speed=json.speed;
+    this.time=0;this._last=0;this.camera=null;return this;
+  }
+  static fromJSON(THREE,json,resolve,handlers){return new Sequencer(THREE).fromJSON(json,resolve,handlers);}
+}
+
+/* ---------- camera rail ---------- */
+class CameraRail{
+  constructor(THREE,points,opts={}){
+    if(!Array.isArray(points)||points.length<2)throw new TypeError('CameraRail needs at least two points');
+    const {closed=false,tension=null,lookAt=null,lookAhead=.02,up=[0,1,0],roll=0,divisions=null}=opts;
+    // an explicit tension selects a uniform Catmull-Rom with that tension; otherwise centripetal (no cusps or loops)
+    const curveType=opts.curveType||(tension==null?'centripetal':'catmullrom');
+    this.THREE=THREE;this.curve=new THREE.CatmullRomCurve3(points.map(p=>toVec3(THREE,p)),closed,curveType,tension==null?.5:tension);
+    this.curve.arcLengthDivisions=divisions||Math.max(200,points.length*60);this.curve.updateArcLengths();
+    Object.assign(this,{closed,lookAt,lookAhead,roll});this.up=toVec3(THREE,up).normalize();
+    this._p=new THREE.Vector3();this._q=new THREE.Vector3();this._t=new THREE.Vector3();this._look=new THREE.Vector3();
+  }
+  get length(){return this.curve.getLength();}
+  _u(t){if(this.closed){t%=1;if(t<0)t+=1;return t;}return clamp(t,0,1);}
+  getPoint(t,out=new this.THREE.Vector3()){return this.curve.getPointAt(this._u(t),out);}
+  getTangent(t,out=new this.THREE.Vector3()){return this.curve.getTangentAt(this._u(t),out);}
+  /* Look target: fixed point/object, or the rail point lookAhead further on (tangent at the open end). */
+  getLookTarget(t,out=new this.THREE.Vector3()){
+    const L=this.lookAt;if(L){if(L.isObject3D){L.updateWorldMatrix(true,false);return out.setFromMatrixPosition(L.matrixWorld);}return out.copy(L);}
+    const u=this._u(t),p=this.curve.getPointAt(u,this._q);let u2=u+this.lookAhead;
+    if(this.closed)u2%=1;else if(u2>1)u2=1;
+    this.curve.getPointAt(u2,out);if(out.distanceToSquared(p)<1e-10){this.curve.getTangentAt(u,this._t);out.copy(p).add(this._t);}return out;
+  }
+  apply(camera,t){
+    const p=this.getPoint(t,this._p),look=this.getLookTarget(t,this._look);camera.position.copy(p);
+    camera.up.copy(this.up);if(look.distanceToSquared(p)>1e-12)camera.lookAt(look);
+    const r=typeof this.roll==='function'?this.roll(this._u(t)):this.roll;if(r)camera.rotateZ(r);
+    camera.updateMatrixWorld();return camera;
+  }
+  createHelper(divisions=200,color=0xffcc66){const T=this.THREE,g=new T.BufferGeometry().setFromPoints(this.curve.getSpacedPoints(divisions));return new T.Line(g,new T.LineBasicMaterial({color}));}
+  dispose(){}
+}
+
+/* ---------- camera shake ---------- */
+/* Trauma model: shake = trauma^exponent drives seeded 1D gradient (Perlin) noise per channel. The offset
+   from the previous frame is removed first unless something else already rewrote the camera transform. */
+class Perlin1D{
+  constructor(seed=1){const r=KE.random(seed);this.g=new Float32Array(256);this.p=new Uint8Array(512);const perm=[];for(let i=0;i<256;i++){this.g[i]=r()*2-1;perm.push(i);}
+    for(let i=255;i>0;i--){const j=Math.floor(r()*(i+1));[perm[i],perm[j]]=[perm[j],perm[i]];}for(let i=0;i<512;i++)this.p[i]=perm[i&255];}
+  noise(x){const i=Math.floor(x),f=x-i,a=i&255,g0=this.g[this.p[a]],g1=this.g[this.p[a+1]],u=f*f*f*(f*(f*6-15)+10);return 2*(g0*f+u*(g1*(f-1)-g0*f));}
+}
+class CameraShake{
+  constructor(THREE,opts={}){
+    const {maxYaw=.06,maxPitch=.06,maxRoll=.09,maxOffset=[.12,.12,.06],frequency=16,decay=1.1,exponent=2,seed=7,octaves=2}=opts;
+    Object.assign(this,{THREE,maxYaw,maxPitch,maxRoll,frequency,decay,exponent,octaves});this.maxOffset=toVec3(THREE,maxOffset);
+    this.trauma=0;this.time=0;this.noise=[0,1,2,3,4,5].map(i=>new Perlin1D(seed*31+i*1013));
+    const V=()=>new THREE.Vector3(),Q=()=>new THREE.Quaternion();this._off=V();this._rot=Q();this._inv=Q();this._pos=V();this._q=Q();this._applied=false;this._e=new THREE.Euler();this._tmp=V();
+  }
+  get shake(){return Math.pow(this.trauma,this.exponent);}
+  add(amount){this.trauma=clamp(this.trauma+(+amount||0),0,1);return this;}
+  set(amount){this.trauma=clamp(+amount||0,0,1);return this;}
+  _n(i){let s=0,a=1,f=1,norm=0;for(let o=0;o<this.octaves;o++){s+=a*this.noise[i].noise(this.time*this.frequency*f+o*17.3);norm+=a;a*=.5;f*=2.1;}return s/norm;}
+  /* Remove the offset applied last frame (only if the camera was not moved since). */
+  restore(camera){if(!this._applied)return this;this._applied=false;
+    if(camera.position.distanceToSquared(this._pos)<1e-12&&Math.abs(camera.quaternion.dot(this._q))>1-1e-10){camera.position.sub(this._off);camera.quaternion.multiply(this._inv.copy(this._rot).invert());}
+    return this;}
+  update(dt,camera){
+    this.restore(camera);this.time+=Math.max(0,dt);this.trauma=Math.max(0,this.trauma-this.decay*Math.max(0,dt));
+    const k=this.shake;if(k<=1e-5||!camera)return this;
+    this._e.set(this.maxPitch*k*this._n(0),this.maxYaw*k*this._n(1),this.maxRoll*k*this._n(2),'YXZ');this._rot.setFromEuler(this._e);
+    this._off.set(this.maxOffset.x*k*this._n(3),this.maxOffset.y*k*this._n(4),this.maxOffset.z*k*this._n(5)).applyQuaternion(camera.quaternion);
+    camera.quaternion.multiply(this._rot);camera.position.add(this._off);camera.updateMatrixWorld();
+    this._pos.copy(camera.position);this._q.copy(camera.quaternion);this._applied=true;return this;
+  }
+}
+
+/* ---------- root motion ---------- */
+/* Extracts the horizontal (by default) translation of a root position track so the character controller
+   can move the actor while the clip plays in place. update(action,out) returns the displacement since
+   the previous call in the clip's local space, including loop wrap-around. */
+class RootMotion{
+  constructor(THREE,clip,opts={}){
+    const {track=null,axes='xz',inPlace=true}=opts;
+    const tr=track?clip.tracks.find(t=>t.name===track):clip.tracks.find(t=>/\.position$/.test(t.name));
+    if(!tr||tr.getValueSize()!==3)throw new Error('RootMotion needs a 3-component position track'+(track?' named '+track:''));
+    this.THREE=THREE;this.clip=clip;this.track=tr;this.times=Float64Array.from(tr.times);this.values=Float64Array.from(tr.values);
+    this.mask=[axes.includes('x'),axes.includes('y'),axes.includes('z')];const n=this.times.length;
+    this.start=new THREE.Vector3(this.values[0],this.values[1],this.values[2]);this.end=new THREE.Vector3(this.values[(n-1)*3],this.values[(n-1)*3+1],this.values[(n-1)*3+2]);
+    this.loopDelta=this.end.clone().sub(this.start);for(let a=0;a<3;a++)if(!this.mask[a])this.loopDelta.setComponent(a,0);
+    if(inPlace)for(let i=0;i<n;i++)for(let a=0;a<3;a++)if(this.mask[a])tr.values[i*3+a]=this.values[a];
+    this._last=null;this._a=new THREE.Vector3();this._b=new THREE.Vector3();
+  }
+  sample(time,out){
+    const T=this.times,V=this.values,n=T.length;time=clamp(time,T[0],T[n-1]);let lo=0,hi=n-1;while(hi-lo>1){const m=(lo+hi)>>1;if(T[m]<=time)lo=m;else hi=m;}
+    const f=T[hi]>T[lo]?(time-T[lo])/(T[hi]-T[lo]):0;out.set(V[lo*3]+(V[hi*3]-V[lo*3])*f,V[lo*3+1]+(V[hi*3+1]-V[lo*3+1])*f,V[lo*3+2]+(V[hi*3+2]-V[lo*3+2])*f);
+    for(let a=0;a<3;a++)if(!this.mask[a])out.setComponent(a,0);return out;
+  }
+  reset(action=null){this._last=action?action.time:null;return this;}
+  update(action,out){
+    const t=action.time;out.set(0,0,0);if(this._last===null){this._last=t;return out;}
+    const a=this.sample(this._last,this._a),b=this.sample(t,this._b);out.subVectors(b,a);
+    const forward=action.timeScale>=0;if(forward&&t<this._last-1e-9)out.add(this.loopDelta);else if(!forward&&t>this._last+1e-9)out.sub(this.loopDelta);
+    this._last=t;return out;
+  }
+}
+
+/* ---------- exports ---------- */
+const tweens=new TweenManager();
+Object.assign(KE,{easing,Tween,TweenManager,tweens,tween:(target,props,opts)=>new Tween(target,props,opts),
+  IK:{twoBone,swingTwist},IKChain,LookAt,SpringChain,PoseBlender,AnimStateMachine,BlendSpace1D,BlendSpace2D,ProceduralGait,
+  Sequencer,SequencerTrack,CameraRail,CameraShake,RootMotion,createBoneChain,buildSkinnedTube,
+  animation:{resolvePath,delaunay}});
+KE.registerModule('animation',{provides:['easing','tween','tweens','Tween','TweenManager','IK','IKChain','LookAt','SpringChain','PoseBlender','AnimStateMachine','BlendSpace1D','BlendSpace2D',
+  'ProceduralGait','Sequencer','SequencerTrack','CameraRail','CameraShake','RootMotion','createBoneChain','buildSkinnedTube']});
 })();

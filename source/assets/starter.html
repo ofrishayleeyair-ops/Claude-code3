@@ -75,6 +75,21 @@ function curvedRoof(){const p=[],uv=[],idx=[],nx=28,nz=22;for(let j=0;j<=nz;j++)
 mesh(curvedRoof(),black,0,0,0,shrine);beam([-3.35,5.3,0],[3.35,5.3,0],.14,gold,shrine);
 for(let i=0;i<17;i++){const x=-3.15+i*.39375;for(const sign of [-1,1]){const pts=[];for(let k=0;k<=12;k++){const e=k/12,z=sign*e*2.625,y=5.3-e*1.65+e**4*.55+(Math.abs(x)/3.25)**5*.26+.035;pts.push(new T.Vector3(x,y,z));}const rib=new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(pts),16,.036,5,false),black);shrine.add(rib);}}
 for(let i=0;i<4;i++)mesh(new T.BoxGeometry(2.6,.18,1.1),stoneMat,0,.08+i*.16,2.75-i*.4,shrine);
+/* Procedural forest (foliage module): broadleaf and sakura inland, conifers on the high ground, bushes as understory,
+   Poisson-disc placed, wind-animated, instanced per cell with a lower-detail far level. */
+let forest=null;const forestKit=[];
+if(has('foliage')){const lod=clamp(S.lod||1,.5,1.25),texSize=S.preset==='low'?256:512;
+ const clearing=(x,z)=>ground(x,z)>1.9&&Math.abs(x-48-Math.sin(z*.13)*2)>5.4&&Math.hypot(x-48,z-62)>4.5&&Math.hypot(x-48,z-28)>7&&Math.hypot(x-48,z-49)>4&&Math.hypot(x-48,z-37)>4;
+ const kind=(species,seed,height,leafOpts={})=>{const tex=KE.leafTexture(T,{species,size:texSize,seed}),near=KE.treeGeometry(T,{species,seed,height,detail:lod,leafCards:{texture:tex}}),far=KE.treeGeometry(T,{species,seed:seed+7,height,detail:.5,leafCards:{texture:tex}});
+  const leaves=KE.foliageMaterial(T,{map:tex,vertexColors:true,...leafOpts}),bark=KE.barkMaterial(T,{species,vertexColors:true});forestKit.push(tex,near.trunk,near.leaves,far.trunk,far.leaves,leaves,bark);
+  return {geometry:near,material:{trunk:bark,leaves},lods:[{geometry:far,material:{trunk:bark,leaves}}],lodDistances:[26,Math.max(60,S.view*.9)]};};
+ forest=new KE.FoliageSpawner(T,scene,{bounds:{minX:16,minZ:16,maxX:82,maxZ:80},heightAt:ground,seed:2026,cellSize:12,types:[
+  {name:'sakura',...kind('sakura',3,4.6),spacing:7.5,scale:[.85,1.15],density:(x,z)=>clearing(x,z)&&Math.hypot(x-48,z-40)<17?.9:0},
+  {name:'broadleaf',...kind('broadleaf',4,5.6),spacing:5.2,scale:[.8,1.2],density:(x,z)=>clearing(x,z)?.8:0},
+  {name:'conifer',...kind('conifer',5,7.2),spacing:5,scale:[.8,1.25],density:(x,z)=>clearing(x,z)&&ground(x,z)>4.2?.9:0},
+  {name:'bush',...kind('bush',6,1.3),spacing:3.2,scale:[.8,1.3],castShadow:true,density:(x,z)=>clearing(x,z)?.45:0}]});
+ forest.groups.forEach(g=>{if(g.name==='bush')return;for(let i=0;i<g.count;i++){const m=g.matrices,k=i*16;solids.push({x:m[k+12],z:m[k+14],r:.3*Math.hypot(m[k],m[k+1],m[k+2])});}});
+}else{
 /* Branch silhouettes plus layered canopy clusters and individually shaped cutout leaves. */
 const treePoints=[];for(let i=0;i<185;i++){const x=20+rng()*58,z=20+rng()*56;if(ground(x,z)>1.9&&Math.abs(x-48-Math.sin(z*.13)*2)>5.4&&Math.hypot(x-48,z-62)>4&&Math.hypot(x-48,z-28)>6)treePoints.push([x,z,.75+rng()*.8]);}
 const trunks=new T.InstancedMesh(new T.CylinderGeometry(.12,.27,3.6,10),wood,treePoints.length),branches=new T.InstancedMesh(new T.CylinderGeometry(.045,.12,1.8,7),wood,treePoints.length*4),canopyMat=KE.surface(T,'leaf',{color:0x92a76b,scale:1.25,bump:.055,textureSize:detailSize}),canopies=new T.InstancedMesh(new T.SphereGeometry(1,12,8),canopyMat,treePoints.length*5);
@@ -86,6 +101,7 @@ treePoints.forEach(([x,z,s],i)=>{const y=ground(x,z);dummy.rotation.set(0,rng()*
  for(let k=0;k<22;k++){const a=rng()*6.283,el=(rng()-.5)*1.5,rad=(1.5+rng()*.6)*s;dummy.position.set(x+Math.cos(a)*rad,y+3.65*s+Math.sin(el)*rad*.7,z+Math.sin(a)*rad);dummy.rotation.set(rng()*Math.PI,a,rng()*2);dummy.scale.setScalar((.55+rng()*.6)*s);dummy.updateMatrix();sprays.setMatrixAt(i*22+k,dummy.matrix);tempColor.setHSL(.2+rng()*.08,.28,.62+rng()*.2);sprays.setColorAt(i*22+k,tempColor);}
 });
 for(const m of [trunks,branches,canopies,sprays]){m.castShadow=m.receiveShadow=true;scene.add(m);}
+}
 const rocks=new T.InstancedMesh(new T.IcosahedronGeometry(1,2),rockMat,90);for(let i=0;i<90;i++){const a=rng()*6.283,r=25+rng()*9,x=48+Math.sin(a)*r,z=49+Math.cos(a)*r,s=.25+rng()*1.4;dummy.position.set(x,ground(x,z)+s*.25,z);dummy.scale.set(s*1.6,s*.8,s);dummy.rotation.set(rng(),rng()*3,rng()*.5);dummy.updateMatrix();rocks.setMatrixAt(i,dummy.matrix);}rocks.castShadow=rocks.receiveShadow=true;scene.add(rocks);
 /* Fern fronds and small flower heads add readable close-range detail. */
 const fernMat=new T.MeshStandardMaterial({vertexColors:true,side:T.DoubleSide,roughness:1});KE.wind(T,fernMat,{amp:.09});const fernPoints=[];for(let i=0;i<650;i++){const x=24+rng()*50,z=24+rng()*49;if(ground(x,z)>1.5&&Math.abs(x-48-Math.sin(z*.13)*2)>2.1)fernPoints.push([x,z]);}const ferns=new T.InstancedMesh(KE.fernGeometry(T),fernMat,fernPoints.length);fernPoints.forEach(([x,z],i)=>{dummy.position.set(x,ground(x,z),z);dummy.rotation.set(0,rng()*6.28,0);dummy.scale.setScalar(.6+rng()*.65);dummy.updateMatrix();ferns.setMatrixAt(i,dummy.matrix);});ferns.receiveShadow=true;scene.add(ferns);
@@ -105,7 +121,7 @@ let grass=null,pipeline=null,csm=null;
 const grassOptions=()=>({count:S.grass,radius:19,heightAt:ground,density:(x,z)=>ground(x,z)>1.5&&Math.abs(x-48-Math.sin(z*.13)*2)>2?.8:0,color:()=>[.5,.7,.31]});
 const pipelineOptions={sun,exposureKey:.2,minExposure:.35,maxExposure:4.5,bloomStrength:.05,aoRadius:1,fog:{density:.0065,falloff:.09,height:0,start:8,maxOpacity:.85,inscatter:1,inscatterExponent:10,sky:.2},grading:{saturation:1.08,contrast:1.05,vignette:.2,grain:.01,chromaticAberration:.12}};
 function applyQuality(){KE.applyRendererSettings(T,renderer,camera,sun,scene);renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=S.shadows;
- if(grass)grass.dispose();grass=KE.grass(T,scene,grassOptions());if(grass&&csm)csm.setupMaterial(grass.mesh.material);
+ if(grass)grass.dispose();grass=has('foliage')?(S.grass>0?KE.grassField(T,scene,{count:S.grass,radius:22,heightAt:ground,density:(x,z)=>ground(x,z)>1.5&&Math.abs(x-48-Math.sin(z*.13)*2)>2?.85:0}):null):KE.grass(T,scene,grassOptions());if(grass&&csm)(grass.setShadowSource?grass.setShadowSource(csm):csm.setupMaterial(grass.mesh.material));
  if(!pipeline)pipeline=new KE.Pipeline(T,renderer,pipelineOptions);else pipeline.applySettings(S);pipeline.resetHistory();
  if(csm){csm.enabled=S.shadows;}
  scene.traverse(o=>{for(const m of [o.material].flat())if(m)m.needsUpdate=true;});}
@@ -128,8 +144,14 @@ const foxTail=new T.Group();foxTail.position.set(0,.55,.41);hero.add(foxTail);
 const tailCurve=new T.CatmullRomCurve3([new T.Vector3(0,0,0),new T.Vector3(.06,.08,.23),new T.Vector3(.13,.17,.48),new T.Vector3(.21,.29,.74),new T.Vector3(.21,.43,.9)]);
 const tailG=new T.TubeGeometry(tailCurve,24,.19,12,false);const pa=tailG.attributes.position;for(let i=0;i<=24;i++){const c=tailCurve.getPointAt(i/24),radius=Math.sin((i/24*.86+.09)*Math.PI)*.94+.08;for(let j=0;j<=12;j++){const k=i*13+j;pa.setXYZ(k,c.x+(pa.getX(k)-c.x)*radius,c.y+(pa.getY(k)-c.y)*radius,c.z+(pa.getZ(k)-c.z)*radius);}}tailG.computeVertexNormals();mesh(tailG,orange,0,0,0,foxTail);orb(.13,cream,.21,.44,.89,.7,1.12,1.12,foxTail);
 const whiskerPos=[];for(const side of [-1,1])for(let i=0;i<3;i++)whiskerPos.push(side*.12,.945-i*.017,-.735,side*(.31+i*.025),.955-i*.04,-.70);const whiskers=new T.BufferGeometry();whiskers.setAttribute('position',new T.Float32BufferAttribute(whiskerPos,3));hero.add(new T.LineSegments(whiskers,new T.LineBasicMaterial({color:0xe5d9bc,transparent:true,opacity:.54})));
+/* Shell fur on the orange and cream coat; a procedural gait plants the paws on the terrain and a spring swings the tail. */
+const fur=has('foliage')?KE.fur(T,hero,{renderer,shells:S.preset==='ultra'||S.preset==='cinematic'?24:16,length:.075,lod:{maxDistance:30},include:m=>m.material===orange?1:m.material===cream?.7:false}):null;
+let foxGait=null,tailSpring=null,wasAirborne=false;
+if(has('animation')){const foxBody=new T.Group();while(hero.children.length)foxBody.add(hero.children[0]);hero.add(foxBody);
+ foxGait=new KE.ProceduralGait(T,{body:foxBody,heightAt:ground,legs:foxLegs.map((leg,i)=>({hip:leg,foot:leg.children[2],group:i===0||i===3?0:1})),stepLength:.42,stepHeight:.1,stepDuration:.17});
+ tailSpring=new KE.SpringChain(T,[foxTail],{tip:[.21,.43,.9],stiffness:70,damping:9,gravity:[0,-.6,0],maxAngle:.7});}
 /* ---------- cascaded shadows for everything lit ---------- */
-csm=new KE.CascadedShadows(T,scene,{sun,maxFar:110,margin:40});csm.setupScene();csm.enabled=S.shadows;pipeline.setShadowSource(csm);
+csm=new KE.CascadedShadows(T,scene,{sun,maxFar:110,margin:40});csm.setupScene();csm.enabled=S.shadows;pipeline.setShadowSource(csm);if(KE.foliage)KE.foliage.setShadowSource(csm);if(grass&&grass.setShadowSource)grass.setShadowSource(csm);
 /* Probe-volume diffuse GI over the island: refreshed a probe per frame, nearest first. */
 const gi=new KE.ProbeVolume(T,renderer,scene,{bounds:new T.Box3(new T.Vector3(10,0,10),new T.Vector3(86,12,86)),spacing:7,heightAt:ground,faceSize:16,probesPerFrame:1});gi.tag(scene);gi.setupScene();
 /* Surface weather: rain wets and darkens the ground, stones and wood, fills puddles on flat ground and ripples them.
@@ -148,6 +170,24 @@ const stoneLocations=[[48,59],[46,49],[49,40],[42,32],[58,34]],stones=stoneLocat
 csm.setupMaterial(spiritMat);
 /* Rain is bounded around the player and only simulated when visible. */
 let raining=false,wet=0;const rainCount=500,rainPos=new Float32Array(rainCount*6),rainData=Array.from({length:rainCount},()=>({x:(rng()-.5)*26,z:(rng()-.5)*26,y:rng()*16,s:9+rng()*5})),rainGeometry=new T.BufferGeometry();rainGeometry.setAttribute('position',new T.BufferAttribute(rainPos,3).setUsage(T.DynamicDrawUsage));const rain=new T.LineSegments(rainGeometry,new T.LineBasicMaterial({color:0x9fb8c4,transparent:true,opacity:.35,depthWrite:false}));rain.frustumCulled=false;scene.add(rain);
+/* GPU particles: fireflies by the shrine and lanterns at night, rain that follows the camera, and spirit sparks when a stone is found. */
+let vfx=null,vfxRain=null,collectFx=null,firefliesOn=false;const fireflies=[];
+if(has('vfx')){vfx=new KE.VFX(T,renderer,scene,{budget:S.vfx});
+ for(const [x,z] of [[44,53],[53,45],[41,36],[56,31],[45,24],[53,60],[38,46]])fireflies.push(vfx.create('fireflies',{position:[x,ground(x,z)+.5,z]}));fireflies.forEach(f=>f.stop({clear:true}));
+ vfxRain=vfx.emitter(vfx.presets.rain({attachTo:camera,attachRotation:false,ground}));vfxRain.stop({clear:true});
+ collectFx=vfx.emitter({capacity:256,spawn:{rate:0,shape:{type:'sphere',radius:.3}},init:{life:[.7,1.4],speed:[1.5,4.2],size:[.05,.12],color:[0xc9fff8,0x4fe3d2]},forces:{gravity:[0,-2.2,0],drag:.7},collision:{heightAt:ground,bounce:.35},render:{blending:'additive',texture:'glow',emissive:5}});}
+/* Rigid-body props (Rapier): offering crates and barrels by the shrine that the fox can shove, and paper lanterns bobbing off the south shore. */
+let physics=null,heroBody=null;const props=[];
+if(has('physics3d')&&KE.Physics3D.available){try{physics=await KE.Physics3D.create(T,{scene});physics.addTerrain(terrain);
+  const crateGeo=new T.BoxGeometry(.55,.55,.55),barrelGeo=new T.CylinderGeometry(.27,.27,.66,14);
+  for(const [x,z,k,h] of [[43.4,33.2,0,0],[43.4,33.2,0,1],[44.1,33.9,1,0],[52.8,33.5,0,0],[53.3,34.3,1,0],[52.3,57.2,0,0],[43.7,57.8,1,0],[44.3,57.1,0,0]]){
+   const m=new T.Mesh(k?barrelGeo:crateGeo,wood);m.position.set(x,ground(x,z)+.36+h*.56+(k?.06:0),z);m.rotation.y=rng()*6.28;m.castShadow=m.receiveShadow=true;scene.add(m);
+   props.push(k?physics.addCylinder(m,{density:.5,friction:.7}):physics.addBox(m,{density:.45,friction:.7}));}
+  heroBody=physics.addCapsule(null,{type:'kinematic',radius:.32,halfHeight:.35,position:[player.x,player.y+.3,player.z]});
+  const paper=new T.MeshStandardMaterial({color:0xfff1d6,emissive:0xffa24a,emissiveIntensity:1.2,roughness:.8});csm.setupMaterial(paper);
+  for(let i=0;i<7;i++){const a=-.55+i*.18,x=48+Math.sin(a)*36.5,z=49+Math.cos(a)*35;const m=new T.Mesh(new T.BoxGeometry(.42,.36,.42),paper);m.position.set(x,.5,z);m.castShadow=true;scene.add(m);
+   const b=physics.addBox(m,{density:.3,friction:.4});physics.addBuoyancy(b,{waterLevel:(x,z)=>water.heightAt(x,z),density:1,drag:1.2});props.push(b);}
+ }catch(e){console.warn('Spirit Isle: rigid-body props disabled',e);physics=null;}}
 let started=false,paused=false,toastTimer=0,coyote=0,jumpBuffer=0,walkTime=0;
 const toast=message=>{const el=document.getElementById('toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),2800);};
 function progress(){const count=stones.filter(s=>s.collected).length;document.querySelectorAll('#track i').forEach((e,i)=>e.classList.toggle('on',i<count));document.getElementById('quest-title').textContent=count===5?'The island remembers you':`Spirit stones · ${count} / 5`;document.getElementById('quest-copy').textContent=count===5?'All five found. Keep exploring, or start a new run in Settings.':'Follow the golden trail through the island shrine.';}
@@ -173,27 +213,32 @@ const litMaterials=new Set();scene.traverse(o=>{for(const m of [o.material].flat
 let frame=0;const target=new T.Vector3();
 const loop=new KE.Loop({onError:fail,update(dt,t){
  if(!paused){day=(day+dt/480)%1;sky.setTime(day);if(started){const motion=input.movement(),move=follow.movement(motion.x,motion.z);player.vx=KE.damp(player.vx,move.x*5.5,12,dt);player.vz=KE.damp(player.vz,move.z*5.5,12,dt);coyote=player.grounded?.12:Math.max(0,coyote-dt);jumpBuffer=input.consume('Space')?.12:Math.max(0,jumpBuffer-dt);if(coyote&&jumpBuffer){player.vy=8.3;player.grounded=false;coyote=jumpBuffer=0;audio.tone(300,.07);}KE.Physics.step([player],dt,collision,ground);if(Math.hypot(move.x,move.z)>.05){hero.rotation.y=Math.atan2(-move.x,-move.z);walkTime+=dt*11;}
- for(const stone of stones)if(!stone.collected&&Math.hypot(player.x-stone.x,player.z-stone.z)<1.15){stone.collected=true;stone.m.visible=stone.ring.visible=false;lights.set(stone.light,{enabled:false});particle.burst(stone.x,ground(stone.x,stone.z)+1,stone.z,30);audio.tone(580+stone.id*120,.22);progress();toast(stones.every(s=>s.collected)?'All five spirits found. The island is yours.':'A spirit stone found.');}
+ for(const stone of stones)if(!stone.collected&&Math.hypot(player.x-stone.x,player.z-stone.z)<1.15){stone.collected=true;stone.m.visible=stone.ring.visible=false;lights.set(stone.light,{enabled:false});particle.burst(stone.x,ground(stone.x,stone.z)+1,stone.z,30);if(collectFx)collectFx.burst(90,[stone.x,ground(stone.x,stone.z)+1,stone.z]);audio.tone(580+stone.id*120,.22);progress();toast(stones.every(s=>s.collected)?'All five spirits found. The island is yours.':'A spirit stone found.');}
  }}particle.update(dt);for(const stone of stones){stone.m.rotation.y=t*.9;stone.m.position.y=ground(stone.x,stone.z)+1+Math.sin(t*2+stone.id)*.15;}
  },render(alpha,dt,t){
- hero.position.set(player.x,player.y-player.r,player.z);hero.position.y+=Math.sin(walkTime)*.025;const gait=Math.min(1,Math.hypot(player.vx,player.vz)/4);foxLegs.forEach((leg,i)=>leg.rotation.x=Math.sin(walkTime+(i===0||i===3?0:Math.PI))*.55*gait);foxTail.rotation.y=Math.sin(t*1.8)*.1;
+ hero.position.set(player.x,player.y-player.r,player.z);
+ if(foxGait){const air=player.y-player.r-ground(player.x,player.z)>.12;if(air){foxLegs.forEach((leg,i)=>leg.rotation.x=KE.damp(leg.rotation.x,i<2?-.7:.6,14,dt));}else{if(wasAirborne)foxGait.reset();foxGait.update(dt,{x:player.vx,y:0,z:player.vz});}wasAirborne=air;tailSpring.update(dt);}
+ else{hero.position.y+=Math.sin(walkTime)*.025;const gait=Math.min(1,Math.hypot(player.vx,player.vz)/4);foxLegs.forEach((leg,i)=>leg.rotation.x=Math.sin(walkTime+(i===0||i===3?0:Math.PI))*.55*gait);foxTail.rotation.y=Math.sin(t*1.8)*.1;}
+ if(fur)fur.update(dt,{x:player.vx,y:player.vy,z:player.vz});
  if(!paused){const look=input.consumeLook();follow.rotate(look.x,look.y);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.zoom(look.zoom);}follow.update(player,dt,ground);
  wet=KE.damp(wet,raining?1:0,.6,dt);surfaceWeather.update(dt,{raining});
  sky.update(dt,camera);sun.intensity*=1-wet*.6;const night=sky.night;
  csm.update(camera);gi.update(camera);lights.intensity=Math.min(1,night*1.4+wet*.3);lights.update(dt,camera);
  fog.copy(sky.fogColor);scene.fog.color.copy(fog);const f=pipeline.options.fog;f.color.copy(sky.fogColor);f.density=.0065*(1+wet*2.2);
  water.rain=wet;water.update(dt,camera,{pipeline});
- litMaterials.forEach(m=>m.envMapIntensity=1+night*.6);KE.windUniforms.uTime.value=t;KE.windUniforms.uWind.value=1+wet*1.2;lanternGlow.material.opacity=.12+night*.8;
+ litMaterials.forEach(m=>m.envMapIntensity=1+night*.6);if(KE.foliage){KE.foliage.update(dt,{wind:1+wet*1.2,windDir:[.8,.6],interactors:[hero.position]});}else{KE.windUniforms.uTime.value=t;KE.windUniforms.uWind.value=1+wet*1.2;}if(forest)forest.update(camera);lanternGlow.material.opacity=.12+night*.8;
  renderer.toneMappingExposure=pipeline.enabled?1:1+night*1.6;
  contact.position.set(player.x,ground(player.x,player.z)+.018,player.z);contact.material.opacity=clamp(1-(player.y-player.r-ground(player.x,player.z))*.25,0,.75);if(grass)grass.update(player.x,player.z);
- rain.visible=raining&&S.fx;if(rain.visible){for(let i=0;i<rainCount;i++){const d=rainData[i],y=player.y+((d.y-t*d.s)%16+16)%16;rainPos.set([player.x+d.x,y,player.z+d.z,player.x+d.x+.12,y-.6,player.z+d.z],i*6);}rainGeometry.attributes.position.needsUpdate=true;}
+ if(vfx){const ff=night>.35;if(ff!==firefliesOn){firefliesOn=ff;fireflies.forEach(f=>ff?f.play():f.stop());}const rv=raining&&S.fx;if(rv!==vfxRain.playing){rv?vfxRain.play():vfxRain.stop();}vfx.update(dt,camera);}
+ if(physics){heroBody.moveKinematic([player.x,player.y-player.r+.67,player.z]);physics.step(dt);}
+ rain.visible=raining&&S.fx&&!vfx;if(rain.visible){for(let i=0;i<rainCount;i++){const d=rainData[i],y=player.y+((d.y-t*d.s)%16+16)%16;rainPos.set([player.x+d.x,y,player.z+d.z,player.x+d.x+.12,y-.6,player.z+d.z],i*6);}rainGeometry.attributes.position.needsUpdate=true;}
  pipeline.render(scene,camera,dt);
  const fps=KE.FPS.tick(performance.now(),()=>{applyQuality();toast('Quality adjusted for smoother play.');});
  if(++frame%20===0){const st=KE.rendererStats(renderer);document.getElementById('stats').textContent=S.showFps?`${fps} FPS · ${S.preset}${pipeline.enabled?' · Tenko '+pipeline.stats.passes+' passes':''}\n${st.calls} draws · ${(st.triangles/1000).toFixed(0)}k tris`:'';}
  }});loop.start();
 /* Expose a small debug handle for automated checks and your own development tools. */
-window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
- dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
+window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
+ dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();
 </script>
