@@ -14,6 +14,7 @@ The v3 renderer adds an HDR frame pipeline, a physically based sky with volumetr
 8. Quality settings, console variables and costs
 9. Limits
 10. KE.ProbeVolume (dynamic diffuse GI)
+11. KE.SurfaceWeather (wet surfaces, puddles, snow)
 
 ## 1. Frame setup
 
@@ -171,3 +172,33 @@ Patched materials evaluate cosine-convolved SH irradiance at the shaded point (o
 `tag(root, {minRadius:.6, filter})` skips points, lines, translucent-layer meshes, objects marked `userData.keNoGI` (the sky discs are) and meshes smaller than `minRadius`. `bake(camera)` captures every probe synchronously; `progress` reports the captured fraction; `strength` scales the result; `dispose()` restores material hooks. The `gi` setting (`r.GI`) toggles the effect.
 
 Cost per update: twelve small scene renders of the GI layer with visibility on, six without (draw calls equal to its mesh count each), one SH pass and one 64-texel moment pass; shading adds eight extra texture reads per pixel. A 12×3×12 volume refreshed one probe per frame takes about seven seconds at 60 FPS for a full sweep, so lighting changes (time of day, lights switching on) settle gradually. Limits: walls thinner than about one distance texel at `faceSize` can still leak, there is no probe relocation (a buried probe is only switched off), two-sided materials such as foliage cards count as back faces from one side, no specular GI beyond the sky light and SSR, dynamic objects are not captured unless tagged, and grid resolution bounds detail (use GTAO for contact-scale occlusion).
+
+## 11. KE.SurfaceWeather (wet surfaces, puddles, snow)
+
+```js
+const weather = new KE.SurfaceWeather(THREE, { puddleScale: .16, puddleCoverage: .55 });
+weather.setupScene(scene);                 // or weather.setupMaterial(material) per material
+// per frame: ramps wetness/puddles/snow like a real surface
+weather.update(dt, { raining, snowing: false, rain: 1 });
+// or drive it directly (all 0..1)
+weather.set({ wetness: 1, puddles: .6, snow: 0, rain: 1 });
+```
+
+Patches lit `MeshStandardMaterial`/`MeshPhysicalMaterial` with one block that runs after the material's albedo, roughness, metalness and normal are final (before emissive), so it composes with other `onBeforeCompile` hooks such as terrain splatting, `KE.ProbeVolume` and `KE.CascadedShadows`. Transparent materials and materials or objects with `userData.keNoWeather` are skipped.
+
+| option | default | meaning |
+|---|---|---|
+| `wetness`, `puddles`, `snow`, `rain` | 0 | initial levels (0..1) |
+| `puddleScale` | .18 | world frequency of the puddle noise (lower = larger puddles) |
+| `puddleCoverage` | 1 | scales how much flat ground floods at `puddles = 1` (1 ≈ 40 % of perfectly flat ground) |
+| `porosity` | .6 | global albedo darkening strength when wet |
+| `snowColor` | `0xf2f5fa` | snow albedo (sRGB) |
+| `wetRate`, `dryRate` | .08, .012 per s | wetness ramp in rain / drying |
+| `puddleRate`, `drainRate` | .025, .008 per s | puddles fill once wetness > .6 / drain |
+| `snowRate`, `meltRate` | .02, .01 per s | snow accumulation while snowing (not raining) / melt |
+| `ripples` | from `KE.settings.vfx` (≥ .5 on) | force rain ripples on/off; `weather.ripples = null` returns to the setting |
+
+Model: exposure to rain falls off on down-facing surfaces (`smoothstep(-.35,.45,N.y)` of the world vertex normal). Wet surfaces darken albedo by up to 58 % scaled by the per-material `userData.kePorosity` (0 sealed … 1 porous, default 1) and move roughness toward `max(.2, 0.5·roughness)`; metals keep their albedo. Puddles appear where the world normal is within about 15° of vertical and a two-octave value-noise mask exceeds a threshold that falls as `puddles` rises; inside them roughness goes to .03, the normal flattens to the surface normal and, when `rain > 0`, three offset grids of expanding rain-drop rings perturb it. Snow covers faces where `0.85·N.y + 0.3·noise` exceeds a threshold that falls with `snow` (vertical faces stay bare at `snow = 1`), whitens albedo, raises roughness to about .6 with sparse glints, and replaces normal detail with soft low-frequency drifts. Snow suppresses wetness and puddles underneath it.
+
+Cost: one extra varying pair and about 30 ALU ops per pixel on patched materials, plus two noise evaluations when puddles are enabled and nine hash/noise evaluations inside puddles when ripples are on, three fBm evaluations inside snow. Limits: there is no sheltering (surfaces under a roof still get wet unless you set `userData.keNoWeather` or a low `kePorosity`), puddles follow noise rather than terrain concavity, puddles reflect only the environment map (SSR covers translucent-layer materials only), and snow is a material layer with no added geometry or deformation.
+

@@ -132,6 +132,10 @@ const whiskerPos=[];for(const side of [-1,1])for(let i=0;i<3;i++)whiskerPos.push
 csm=new KE.CascadedShadows(T,scene,{sun,maxFar:110,margin:40});csm.setupScene();csm.enabled=S.shadows;pipeline.setShadowSource(csm);
 /* Probe-volume diffuse GI over the island: refreshed a probe per frame, nearest first. */
 const gi=new KE.ProbeVolume(T,renderer,scene,{bounds:new T.Box3(new T.Vector3(10,0,10),new T.Vector3(86,12,86)),spacing:7,heightAt:ground,faceSize:16,probesPerFrame:1});gi.tag(scene);gi.setupScene();
+/* Surface weather: rain wets and darkens the ground, stones and wood, fills puddles on flat ground and ripples them.
+   The fox, foliage cards and glowing stones are left dry. */
+const surfaceWeather=new KE.SurfaceWeather(T,{puddleScale:.16,puddleCoverage:.55});hero.traverse(o=>o.userData.keNoWeather=true);
+scene.traverse(o=>{if(!o.material||o.userData.keNoWeather)return;for(const m of [o.material].flat())if(m&&m.side!==T.DoubleSide&&!(m.alphaTest>0)&&!(m.emissiveIntensity>1))surfaceWeather.setupMaterial(m);});
 
 /* ---------- player, input, gameplay ---------- */
 const player=KE.Physics.body({x:48,z:65,y:ground(48,65)+.35,r:.35,height:1.5,friction:.8});
@@ -174,7 +178,7 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
  },render(alpha,dt,t){
  hero.position.set(player.x,player.y-player.r,player.z);hero.position.y+=Math.sin(walkTime)*.025;const gait=Math.min(1,Math.hypot(player.vx,player.vz)/4);foxLegs.forEach((leg,i)=>leg.rotation.x=Math.sin(walkTime+(i===0||i===3?0:Math.PI))*.55*gait);foxTail.rotation.y=Math.sin(t*1.8)*.1;
  if(!paused){const look=input.consumeLook();follow.rotate(look.x,look.y);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.zoom(look.zoom);}follow.update(player,dt,ground);
- wet=KE.damp(wet,raining?1:0,.6,dt);
+ wet=KE.damp(wet,raining?1:0,.6,dt);surfaceWeather.update(dt,{raining});
  sky.update(dt,camera);sun.intensity*=1-wet*.6;const night=sky.night;
  csm.update(camera);gi.update(camera);lights.intensity=Math.min(1,night*1.4+wet*.3);lights.update(dt,camera);
  fog.copy(sky.fogColor);scene.fog.color.copy(fog);const f=pipeline.options.fog;f.color.copy(sky.fogColor);f.density=.0065*(1+wet*2.2);
@@ -188,8 +192,8 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
  if(++frame%20===0){const st=KE.rendererStats(renderer);document.getElementById('stats').textContent=S.showFps?`${fps} FPS · ${S.preset}${pipeline.enabled?' · Tenko '+pipeline.stats.passes+' passes':''}\n${st.calls} draws · ${(st.triangles/1000).toFixed(0)}k tris`:'';}
  }});loop.start();
 /* Expose a small debug handle for automated checks and your own development tools. */
-window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
- dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
+window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
+ dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();
 </script>

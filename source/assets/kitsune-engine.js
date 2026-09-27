@@ -1577,12 +1577,15 @@ KE.registerModule('lights',{provides:['LightPool']});
    pass projects onto order-1 spherical harmonics and blends into a probe atlas with hysteresis. Lit
    materials that are set up replace their sky-only diffuse image lighting with trilinearly interpolated,
    normal-weighted probe irradiance, and scale specular reflections by the probe/sky ratio so enclosed spaces
-   stop reflecting the open sky. Inspired by probe-based dynamic GI; there is no per-probe visibility
-   (depth) data, so thin walls can leak light, and probes cannot capture objects outside the GI layer. */
+   stop reflecting the open sky. Each probe also stores distance moments (mean, mean²) per octahedral texel
+   from a two-sided distance cube pass; shading applies a Chebyshev visibility test (as in DDGI) so probes behind
+   walls stop leaking light, and probes that see mostly back faces (buried inside geometry) are switched off.
+   Probes cannot capture objects outside the GI layer. */
 (function(){'use strict';
 const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
 KE.LAYERS.GI=KE.LAYERS.GI||2;
 const TEXELS=5;// 4 SH (L0, L1y, L1z, L1x) + position/validity
+const VT=8;// octahedral visibility tile size per probe (texels)
 
 const PROJECT_FS=`uniform samplerCube tCube;uniform vec3 uPosition;uniform float uValid;uniform float uAlpha;uniform float uRow0;
 void main(){int k=int(floor(gl_FragCoord.y-uRow0));if(k>=4){gl_FragColor=vec4(uPosition,uValid);return;}
@@ -1591,15 +1594,35 @@ void main(){int k=int(floor(gl_FragCoord.y-uRow0));if(k>=4){gl_FragColor=vec4(uP
   float Y=k==0?.282095:k==1?.488603*d.y:k==2?.488603*d.z:.488603*d.x;acc+=min(L,vec3(64.))*Y;}
  gl_FragColor=vec4(acc*12.566371/float(N),uAlpha);}`;
 
+const OCT_GLSL=`vec2 keOctEncode(vec3 n){n/=abs(n.x)+abs(n.y)+abs(n.z);vec2 e=n.xz;if(n.y<0.)e=(1.-abs(e.yx))*vec2(e.x>=0.?1.:-1.,e.y>=0.?1.:-1.);return e;}
+vec3 keOctDecode(vec2 e){vec3 n=vec3(e.x,1.-abs(e.x)-abs(e.y),e.y);if(n.y<0.){vec2 t=n.xz;n.xz=(1.-abs(t.yx))*vec2(t.x>=0.?1.:-1.,t.y>=0.?1.:-1.);}return normalize(n);}`;
+/* Distance moments for one probe tile: each texel averages distance and distance² over a small cone.
+   The blue channel holds the probe's back-face fraction over the whole sphere (same value in every texel). */
+const VIS_FS=`uniform samplerCube tDist;uniform vec2 uTile0;uniform float uFar;uniform float uAlpha;
+${OCT_GLSL}
+void main(){vec2 t=gl_FragCoord.xy-uTile0;vec2 e=(t-.5)/${(VT-1).toFixed(1)}*2.-1.;vec3 dir=keOctDecode(e);vec3 up=abs(dir.y)<.99?vec3(0.,1.,0.):vec3(1.,0.,0.);vec3 tx=normalize(cross(up,dir)),ty=cross(dir,tx);
+ float m1=0.,m2=0.;for(int i=0;i<16;i++){float a=float(i)*2.39996323;float r=sqrt((float(i)+.5)/16.)*.3;vec3 d=normalize(dir+(tx*cos(a)+ty*sin(a))*r);float dist=textureCube(tDist,d).r*uFar;m1+=dist;m2+=dist*dist;}
+ float back=0.;for(int i=0;i<48;i++){float y=1.-(float(i)+.5)/48.*2.;float r=sqrt(max(1.-y*y,0.));float a=float(i)*2.39996323;back+=textureCube(tDist,vec3(cos(a)*r,y,sin(a)*r)).g;}
+ gl_FragColor=vec4(m1/16.,m2/16.,back/48.,uAlpha);}`;
+/* Two-sided distance pass: normalised distance to the probe and a back-face flag. */
+const DIST_FS=`uniform vec3 uRef;uniform float uFar;varying vec3 vWorldPosition;
+void main(){gl_FragColor=vec4(length(vWorldPosition-uRef)/uFar,gl_FrontFacing?0.:1.,0.,1.);}`;
+
 /* Irradiance lookup injected into lit materials. */
-const GI_PARS=`uniform sampler2D keProbeAtlas;uniform vec2 keProbeAtlasSize;uniform vec3 keProbeMin;uniform vec3 keProbeStep;uniform vec3 keProbeCount;uniform float keGIStrength;uniform float keGIOn;varying vec3 vKeWorld;
+const GI_PARS=`uniform sampler2D keProbeAtlas;uniform vec2 keProbeAtlasSize;uniform sampler2D keProbeVis;uniform vec2 keProbeVisSize;uniform float keProbeVisOn;uniform vec3 keProbeMin;uniform vec3 keProbeStep;uniform vec3 keProbeCount;uniform float keGIStrength;uniform float keGIOn;varying vec3 vKeWorld;
+${OCT_GLSL}
+vec2 keProbeVisibility(vec3 c,vec3 probePos,vec3 P,vec3 N){if(keProbeVisOn<.5)return vec2(1.);vec3 dv=P+N*.2-probePos;float dist=length(dv);vec2 e=keOctEncode(dv/max(dist,1e-4));
+ vec2 t=(e*.5+.5)*${(VT-1).toFixed(1)}+.5;vec2 uv=(vec2(c.x+c.z*keProbeCount.x,c.y)*${VT.toFixed(1)}+t)/keProbeVisSize;vec3 m=texture2D(keProbeVis,uv).rgb;
+ float alive=1.-smoothstep(.2,.35,m.z);if(m.x<=0.||dist<=m.x)return vec2(1.,alive);
+ float v=max(abs(m.y-m.x*m.x),.01);float d=dist-m.x;float ch=v/(v+d*d);return vec2(max(ch*ch*ch,.05),alive);}
 vec4 keProbeTexel(vec3 c,float k){float col=c.x+c.z*keProbeCount.x;float row=c.y*${TEXELS}.+k;return texture2D(keProbeAtlas,(vec2(col,row)+.5)/keProbeAtlasSize);}
-vec3 keProbeIrradiance(vec3 P,vec3 N,out float valid){vec3 g=clamp((P+N*.35-keProbeMin)/keProbeStep,vec3(0.),keProbeCount-1.001);vec3 b=floor(g),f=g-b;vec3 E=vec3(0.);float ws=0.;valid=0.;
+vec3 keProbeIrradiance(vec3 P,vec3 N,out float valid){vec3 g=clamp((P+N*.35-keProbeMin)/keProbeStep,vec3(0.),keProbeCount-1.001);vec3 b=floor(g),f=g-b;vec3 E=vec3(0.);float ws=0.,alive=0.;valid=0.;
  for(int i=0;i<8;i++){vec3 o=vec3(float(i-(i/2)*2),float((i/2)-(i/4)*2),float(i/4));vec3 c=b+o;vec3 tw=mix(1.-f,f,o);float w=tw.x*tw.y*tw.z;
-  vec4 pv=keProbeTexel(c,4.);if(pv.a<.01||w<1e-5)continue;vec3 dir=normalize(pv.xyz-P+1e-4);float bw=(dot(dir,N)+1.)*.5;w*=bw*bw+.08;w*=pv.a;
+  vec4 pv=keProbeTexel(c,4.);if(pv.a<.01||w<1e-5)continue;valid+=pv.a*w;vec3 dir=normalize(pv.xyz-P+1e-4);float bw=(dot(dir,N)+1.)*.5;w*=bw*bw+.08;vec2 vis=keProbeVisibility(c,pv.xyz,P,N);alive+=pv.a*vis.y*tw.x*tw.y*tw.z;w*=pv.a*vis.x*vis.y;if(w<1e-6)continue;
   vec3 c0=keProbeTexel(c,0.).rgb,c1=keProbeTexel(c,1.).rgb,c2=keProbeTexel(c,2.).rgb,c3=keProbeTexel(c,3.).rgb;
-  vec3 e=3.141593*.282095*c0+2.094395*.488603*(c1*N.y+c2*N.z+c3*N.x);E+=max(e,vec3(0.))*w;ws+=w;valid+=pv.a*tw.x*tw.y*tw.z;}
- return ws>1e-5?E/ws:vec3(0.);}`;
+  vec3 e=3.141593*.282095*c0+2.094395*.488603*(c1*N.y+c2*N.z+c3*N.x);E+=max(e,vec3(0.))*w;ws+=w;}
+ // Buried probes are dropped and the rest renormalised; with none left, fall back to the sky light.
+ valid*=smoothstep(0.,.08,alive);return ws>1e-5?E/ws:vec3(0.);}`;
 function buildMapsChunk(THREE){const src=THREE.ShaderChunk.lights_fragment_maps;
   const irr=/iblIrradiance \+= getLightProbeIndirectIrradiance\([^;]*\);/,rad=/radiance \+= (getLightProbeIndirectRadiance\([^;]*geometry\.normal[^;]*\);)/;
   if(!irr.test(src)||!rad.test(src))throw new Error('KE.ProbeVolume: unexpected lights_fragment_maps chunk (Three.js r128 required)');
@@ -1609,7 +1632,7 @@ function buildMapsChunk(THREE){const src=THREE.ShaderChunk.lights_fragment_maps;
     .replace(rad,'radiance += keSpecOcc * $1');}
 
 KE.ProbeVolume=class{
-  constructor(THREE,renderer,scene,{bounds,spacing=8,counts=null,heightAt=null,lift=.8,faceSize=16,probesPerFrame=2,hysteresis=.8,strength=1,far=80}={}){
+  constructor(THREE,renderer,scene,{bounds,spacing=8,counts=null,heightAt=null,lift=.8,faceSize=16,probesPerFrame=2,hysteresis=.8,strength=1,far=80,visibility=true}={}){
     if(!bounds||!bounds.isBox3)throw new TypeError('KE.ProbeVolume requires {bounds: THREE.Box3}');
     Object.assign(this,{THREE,renderer,scene,heightAt,lift,probesPerFrame,hysteresis,enabled:true});
     const size=bounds.getSize(new THREE.Vector3());this.count=counts?new THREE.Vector3(...counts):new THREE.Vector3(Math.max(2,Math.round(size.x/spacing)+1),Math.max(2,Math.round(size.y/spacing)+1),Math.max(2,Math.round(size.z/spacing)+1));
@@ -1619,13 +1642,22 @@ KE.ProbeVolume=class{
     this.cube=new THREE.WebGLCubeRenderTarget(faceSize,{type:caps.halfRT?THREE.HalfFloatType:THREE.UnsignedByteType,format:THREE.RGBAFormat,generateMipmaps:false,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter});
     this.cubeCamera=new THREE.CubeCamera(.1,far,this.cube);this.cubeCamera.children.forEach(c=>c.layers.set(KE.LAYERS.GI));this.cubeCamera.updateMatrixWorld(true);
     this.projectMaterial=new THREE.ShaderMaterial({vertexShader:KE.FULLSCREEN_VS,fragmentShader:PROJECT_FS,uniforms:{tCube:{value:this.cube.texture},uPosition:{value:new THREE.Vector3()},uValid:{value:1},uAlpha:{value:1},uRow0:{value:0}},depthTest:false,depthWrite:false,transparent:true,blending:THREE.CustomBlending,blendSrc:THREE.SrcAlphaFactor,blendDst:THREE.OneMinusSrcAlphaFactor,blendSrcAlpha:THREE.OneFactor,blendDstAlpha:THREE.ZeroFactor});
-    this.quad=new KE.FullScreenQuad(THREE,this.projectMaterial);
-    this.uniforms={keProbeAtlas:{value:this.atlas.texture},keProbeAtlasSize:{value:new THREE.Vector2(W,H)},keProbeMin:{value:this.min},keProbeStep:{value:this.step},keProbeCount:{value:this.count.clone()},keGIStrength:{value:strength},keGIOn:{value:1}};
+    this.quad=new KE.FullScreenQuad(THREE,this.projectMaterial);this.far=far;
+    // Visibility: packed distance cube (MeshDistanceMaterial override) → per-probe octahedral moment tiles.
+    // Needs a half-float (or float) colour target; without one visibility is switched off.
+    if(visibility&&!caps.halfRT&&!caps.floatRT)visibility=false;
+    this.visibility=visibility;
+    this.distCube=new THREE.WebGLCubeRenderTarget(faceSize,{type:caps.halfRT?THREE.HalfFloatType:THREE.FloatType,format:THREE.RGBAFormat,generateMipmaps:false,minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter});
+    const dvs=THREE.ShaderLib.distanceRGBA.vertexShader;
+    this.distMaterial=new THREE.ShaderMaterial({vertexShader:(/#define DISTANCE/.test(dvs)?'':'#define DISTANCE\n')+dvs,fragmentShader:DIST_FS,uniforms:{uRef:{value:new THREE.Vector3()},uFar:{value:far}},side:THREE.DoubleSide});
+    this.vis=new THREE.WebGLRenderTarget(W*VT,this.count.y*VT,{type:caps.halfRT?THREE.HalfFloatType:THREE.FloatType,format:THREE.RGBAFormat,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,depthBuffer:false,stencilBuffer:false,generateMipmaps:false});
+    this.visMaterial=new THREE.ShaderMaterial({vertexShader:KE.FULLSCREEN_VS,fragmentShader:VIS_FS,uniforms:{tDist:{value:this.distCube.texture},uTile0:{value:new THREE.Vector2()},uFar:{value:far},uAlpha:{value:1}},depthTest:false,depthWrite:false,transparent:true,blending:THREE.CustomBlending,blendSrc:THREE.SrcAlphaFactor,blendDst:THREE.OneMinusSrcAlphaFactor,blendSrcAlpha:THREE.OneFactor,blendDstAlpha:THREE.ZeroFactor});
+    this.uniforms={keProbeAtlas:{value:this.atlas.texture},keProbeAtlasSize:{value:new THREE.Vector2(W,H)},keProbeVis:{value:this.vis.texture},keProbeVisSize:{value:new THREE.Vector2(W*VT,this.count.y*VT)},keProbeVisOn:{value:visibility?1:0},keProbeMin:{value:this.min},keProbeStep:{value:this.step},keProbeCount:{value:this.count.clone()},keGIStrength:{value:strength},keGIOn:{value:1}};
     this.mapsChunk=buildMapsChunk(THREE);this.materials=new Set();this.restore=new Map();this.probes=[];this.capturedCount=0;
     for(let iy=0;iy<this.count.y;iy++)for(let iz=0;iz<this.count.z;iz++)for(let ix=0;ix<this.count.x;ix++){const p=new THREE.Vector3(this.min.x+ix*this.step.x,this.min.y+iy*this.step.y,this.min.z+iz*this.step.z);let valid=1;
       if(heightAt){const g=heightAt(p.x,p.z);if(p.y<g+lift)p.y=g+lift;if(p.y>this.min.y+(iy+.999)*this.step.y&&iy<this.count.y-1)valid=0;}this.probes.push({ix,iy,iz,position:p,valid,col:ix+iz*this.count.x,row:iy*TEXELS});}
     // Clear the atlas (validity 0 → materials fall back to the sky light until probes arrive).
-    const R=renderer,prev=R.getRenderTarget(),cc=R.getClearColor(new THREE.Color()),ca=R.getClearAlpha();R.setRenderTarget(this.atlas);R.setClearColor(0x000000,0);R.clear(true,false,false);R.setClearColor(cc,ca);R.setRenderTarget(prev);
+    const R=renderer,prev=R.getRenderTarget(),cc=R.getClearColor(new THREE.Color()),ca=R.getClearAlpha();R.setClearColor(0x000000,0);for(const t of [this.atlas,this.vis]){R.setRenderTarget(t);R.clear(true,false,false);}R.setClearColor(cc,ca);R.setRenderTarget(prev);
     this._order=[];this._v=new THREE.Vector3();this.onSettings=KE.events.on('settings',s=>{this.uniforms.keGIOn.value=s.gi===false?0:1;this.enabled=s.gi!==false;});this.uniforms.keGIOn.value=KE.settings.gi===false?0:1;this.enabled=KE.settings.gi!==false;
   }
   /* Put objects on the GI capture layer. Default filter: every mesh except points/lines, translucent-layer and tiny objects. */
@@ -1646,6 +1678,10 @@ KE.ProbeVolume=class{
     R.toneMapping=T.NoToneMapping;R.autoClear=true;R.shadowMap.autoUpdate=false;R.shadowMap.needsUpdate=false;let done=0;
     try{while(done<count&&this._order.length){const p=this._order.shift();this.cubeCamera.position.copy(p.position);this.cubeCamera.updateMatrixWorld(true);
         const cams=this.cubeCamera.children;for(let f=0;f<6;f++){R.setRenderTarget(this.cube,f);R.render(this.scene,cams[f]);}
+        if(this.visibility){const bg=this.scene.background,ov=this.scene.overrideMaterial,cc=R.getClearColor(this._c||(this._c=new T.Color())),ca=R.getClearAlpha();this.scene.background=null;this.scene.overrideMaterial=this.distMaterial;this.distMaterial.uniforms.uRef.value.copy(p.position);R.setClearColor(0xff0000,1);
+          try{for(let f=0;f<6;f++){R.setRenderTarget(this.distCube,f);R.render(this.scene,cams[f]);}}finally{this.scene.background=bg;this.scene.overrideMaterial=ov;R.setClearColor(cc,ca);}
+          const vu=this.visMaterial.uniforms;vu.uTile0.value.set(p.col*VT,p.iy*VT);vu.uAlpha.value=p._seen?1-this.hysteresis:1;
+          this.vis.viewport.set(p.col*VT,p.iy*VT,VT,VT);this.vis.scissor.copy(this.vis.viewport);this.vis.scissorTest=true;this.quad.render(R,this.vis,this.visMaterial);this.vis.scissorTest=false;this.vis.viewport.set(0,0,this.vis.width,this.vis.height);this.quad.material=this.projectMaterial;}
         const u=this.projectMaterial.uniforms;u.uPosition.value.copy(p.position);u.uValid.value=1;u.uAlpha.value=p._seen?1-this.hysteresis:1;u.uRow0.value=p.row;
         this.atlas.viewport.set(p.col,p.row,1,TEXELS);this.atlas.scissor.set(p.col,p.row,1,TEXELS);this.atlas.scissorTest=true;this.quad.render(R,this.atlas);this.atlas.scissorTest=false;this.atlas.viewport.set(0,0,this.atlas.width,this.atlas.height);
         if(!p._seen){p._seen=true;this.capturedCount++;}done++;}}
@@ -1655,7 +1691,7 @@ KE.ProbeVolume=class{
   bake(camera){this._order.length=0;let n=0;do{n=this.update(camera,64);}while(n&&this._order.length);return this;}
   get progress(){return this.capturedCount/Math.max(1,this.probes.filter(p=>p.valid).length);}
   set strength(v){this.uniforms.keGIStrength.value=v;}get strength(){return this.uniforms.keGIStrength.value;}
-  dispose(){this.onSettings&&this.onSettings();this.atlas.dispose();this.cube.dispose();this.projectMaterial.dispose();this.quad.dispose();
+  dispose(){this.onSettings&&this.onSettings();this.atlas.dispose();this.cube.dispose();this.projectMaterial.dispose();this.quad.dispose();this.vis.dispose();this.distCube.dispose();this.distMaterial.dispose();this.visMaterial.dispose();
     for(const m of this.materials){const r=this.restore.get(m);m.onBeforeCompile=r.prev;if(r.ownKey)m.customProgramCacheKey=r.ownKey;else delete m.customProgramCacheKey;m.needsUpdate=true;}this.materials.clear();this.restore.clear();}
 };
 KE.registerModule('gi',{provides:['ProbeVolume','LAYERS.GI']});
@@ -1786,4 +1822,101 @@ KE.Water=class{
   dispose(){this.mesh.parent&&this.mesh.parent.remove(this.mesh);this.mesh.geometry.dispose();this.material.dispose();this.normalTex.dispose();if(this.uniforms.tBaked.value)this.uniforms.tBaked.value.dispose();}
 };
 KE.registerModule('water',{provides:['Water','waterWaves']});
+})();
+
+/* ===== module: 26-weather.js ===== */
+/* KE.SurfaceWeather — weather-driven material layering for lit Standard/Physical materials.
+   Rain darkens porous albedo and lowers roughness (after Lagarde, "Water drop 2b – Dynamic rain and its
+   effects"); flat, upward-facing areas collect puddles from a world-space noise mask, with animated
+   rain-drop ripples perturbing the puddle normal; snow covers upward faces with a noisy slope threshold,
+   flattening normal detail and raising roughness. All of it is one block injected after the material's
+   normal is final, so it composes with other onBeforeCompile hooks (terrain splatting, GI, shadows).
+   update(dt, {raining, snowing}) ramps the wetness, puddle and snow levels over time like a real surface
+   that wets, drains and melts. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+
+const VERT_PARS='varying vec3 vKeWxPos;varying vec3 vKeWxN;';
+const VERT_MAIN=`{vec4 keWp=vec4(transformed,1.);vec3 keWn=objectNormal;
+#ifdef USE_INSTANCING
+keWp=instanceMatrix*keWp;keWn=mat3(instanceMatrix)*keWn;
+#endif
+vKeWxPos=(modelMatrix*keWp).xyz;vKeWxN=normalize(mat3(modelMatrix)*keWn);}`;
+
+const FRAG_PARS=`varying vec3 vKeWxPos;varying vec3 vKeWxN;
+uniform float keWxWet;uniform float keWxPuddles;uniform float keWxSnow;uniform float keWxRain;uniform float keWxTime;uniform float keWxPuddleScale;uniform float keWxRipples;uniform float keWxPorosity;uniform float keWxCoverage;uniform vec3 keWxSnowColor;
+float keWxHash(vec2 p){vec3 p3=fract(vec3(p.xyx)*.1031);p3+=dot(p3,p3.yzx+33.33);return fract((p3.x+p3.y)*p3.z);}
+float keWxNoise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(keWxHash(i),keWxHash(i+vec2(1,0)),f.x),mix(keWxHash(i+vec2(0,1)),keWxHash(i+vec2(1,1)),f.x),f.y);}
+float keWxFbm(vec2 p){return keWxNoise(p)*.5+keWxNoise(p*2.03+17.1)*.3+keWxNoise(p*4.11+3.7)*.2;}
+/* Rain-drop ripples: each cell of two offset grids spawns one expanding ring per cycle; returns an xz slope. */
+vec2 keWxRipple(vec2 p,float t){vec2 g=vec2(0.);
+ for(int l=0;l<3;l++){float fl=float(l);vec2 q=p*(1.+fl*.31)+fl*vec2(.37,.71);vec2 cell=floor(q),f=fract(q)-.5;float h=keWxHash(cell+fl*13.1);
+  vec2 c=(vec2(keWxHash(cell+3.3),keWxHash(cell+7.7))-.5)*.5;float ph=fract(t*(.7+h*.5)+h);float r=ph*.42;vec2 d=f-c;float dist=length(d);
+  float x=(dist-r)*28.;float ring=x*exp(-x*x)*(1.-ph)*(1.-ph);g+=d/max(dist,1e-3)*ring;}
+ return g*.55;}`;
+
+/* Injected before emissive: diffuseColor, roughnessFactor, metalnessFactor and the view-space normal are final. */
+const FRAG_MAIN=`{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWxN,0.)).xyz);
+ float keExposed=smoothstep(-.35,.45,keUp);
+ float keWet=keWxWet*keExposed*keWxPorosityScale;
+ /* puddles: flat ground, low-frequency noise mask whose threshold drops as the puddle level rises */
+ float keFlat=smoothstep(.86,.97,keUp);float kePn=keWxFbm(vKeWxPos.xz*keWxPuddleScale);
+ float kePl=keWxPuddles*keWxCoverage*.45;float kePud=keFlat*smoothstep(1.-kePl,1.06-kePl,kePn)*step(.001,keWxPuddles);
+ /* snow: upward faces with a noisy slope threshold; snow sits on top of puddles and wet ground */
+ float keSn=keWxNoise(vKeWxPos.xz*1.7)*.6+keWxNoise(vKeWxPos.xz*7.3)*.4;
+ float keTh=mix(1.25,.36,keWxSnow);float keSnow=smoothstep(keTh,keTh+.18,keUp*.85+keSn*.3)*step(.001,keWxSnow);
+ kePud*=1.-keSnow;keWet*=1.-keSnow;
+ float keFm=metalnessFactor;
+ diffuseColor.rgb*=mix(1.,mix(.42,1.,1.-keWxPorosity),keWet*(1.-keFm));
+ roughnessFactor=mix(roughnessFactor,max(.2,roughnessFactor*.5),keWet);
+ if(kePud>.001){diffuseColor.rgb*=mix(1.,.62,kePud);roughnessFactor=mix(roughnessFactor,.03,kePud);metalnessFactor=mix(metalnessFactor,0.,kePud);
+  vec3 keFlatN=keNv;if(keWxRipples>.5&&keWxRain>.01){vec2 s=keWxRipple(vKeWxPos.xz*2.4,keWxTime)*keWxRain;keFlatN=normalize((viewMatrix*vec4(normalize(vec3(-s.x,1.,-s.y)),0.)).xyz);}
+  normal=normalize(mix(normal,keFlatN,kePud));}
+ if(keSnow>.001){float keSp=keWxHash(floor(vKeWxPos.xz*40.)+floor(vKeWxPos.y*40.));
+  diffuseColor.rgb=mix(diffuseColor.rgb,keWxSnowColor*(.94+.06*keSn),keSnow);roughnessFactor=mix(roughnessFactor,mix(.62,.35,step(.985,keSp)),keSnow);metalnessFactor=mix(metalnessFactor,0.,keSnow);
+  /* soft drifts: low-frequency slope from a finite-difference noise gradient */
+  vec2 keQ=vKeWxPos.xz*.9;float keN0=keWxFbm(keQ);vec2 keDg=vec2(keWxFbm(keQ+vec2(.07,0.))-keN0,keWxFbm(keQ+vec2(0.,.07))-keN0)*6.;
+  vec3 keSnowN=normalize((viewMatrix*vec4(normalize(vKeWxN+vec3(-keDg.x,0.,-keDg.y)*.35),0.)).xyz);
+  normal=normalize(mix(normal,keSnowN,keSnow*.8));}
+}`;
+
+KE.SurfaceWeather=class{
+  constructor(THREE,{wetness=0,puddles=0,snow=0,rain=0,puddleScale=.18,puddleCoverage=1,porosity=.6,snowColor=0xf2f5fa,wetRate=.08,dryRate=.012,puddleRate=.025,drainRate=.008,snowRate=.02,meltRate=.01,ripples=null}={}){
+    this.THREE=THREE;Object.assign(this,{wetRate,dryRate,puddleRate,drainRate,snowRate,meltRate});
+    this.uniforms={keWxWet:{value:clamp(wetness,0,1)},keWxPuddles:{value:clamp(puddles,0,1)},keWxSnow:{value:clamp(snow,0,1)},keWxRain:{value:clamp(rain,0,1)},keWxTime:{value:0},
+      keWxPuddleScale:{value:puddleScale},keWxRipples:{value:1},keWxPorosity:{value:clamp(porosity,0,1)},keWxCoverage:{value:clamp(puddleCoverage,0,2)},keWxSnowColor:{value:new THREE.Color(snowColor).convertSRGBToLinear()}};
+    this._ripplesOverride=ripples;this.materials=new Set();this.restore=new Map();
+    const apply=s=>{this.uniforms.keWxRipples.value=this._ripplesOverride!==null?(this._ripplesOverride?1:0):((s&&s.vfx!==undefined?s.vfx:1)>=.5?1:0);};
+    this.offSettings=KE.events&&KE.events.on?KE.events.on('settings',apply):null;apply(KE.settings);
+  }
+  /* Patch one lit material. Per-material porosity: material.userData.kePorosity (0 = sealed, e.g. glazed or metal; 1 = very porous). */
+  setupMaterial(m){
+    if(!m||this.materials.has(m)||!m.isMeshStandardMaterial||m.userData.keNoWeather||m.transparent)return m;
+    const prev=m.onBeforeCompile,ownKey=Object.prototype.hasOwnProperty.call(m,'customProgramCacheKey')?m.customProgramCacheKey:null,prevKey=m.customProgramCacheKey.bind(m),U=this.uniforms;
+    const porosity=Number.isFinite(m.userData.kePorosity)?clamp(m.userData.kePorosity,0,1):1;
+    this.restore.set(m,{prev,ownKey});
+    m.onBeforeCompile=(sh,r)=>{if(prev)prev.call(m,sh,r);Object.assign(sh.uniforms,U);
+      if(!/#include <defaultnormal_vertex>/.test(sh.vertexShader)||!/#include <project_vertex>/.test(sh.vertexShader)||!/#include <emissivemap_fragment>/.test(sh.fragmentShader))throw new Error('KE.SurfaceWeather: unexpected Standard material shader (Three.js r128 required)');
+      sh.vertexShader=VERT_PARS+'\n'+sh.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\n'+VERT_MAIN);
+      sh.fragmentShader=FRAG_PARS+'\n#define keWxPorosityScale '+porosity.toFixed(3)+'\n'+sh.fragmentShader.replace('#include <emissivemap_fragment>',FRAG_MAIN+'\n#include <emissivemap_fragment>');};
+    m.customProgramCacheKey=()=>prevKey()+':ke-wx'+porosity.toFixed(3);m.needsUpdate=true;this.materials.add(m);return m;}
+  setupScene(root){root.traverse(o=>{if(o.material&&!o.userData.keNoWeather)for(const m of [o.material].flat())this.setupMaterial(m);});return this;}
+  /* Direct control, all 0..1. */
+  set({wetness,puddles,snow,rain}={}){const U=this.uniforms;if(wetness!==undefined)U.keWxWet.value=clamp(+wetness||0,0,1);if(puddles!==undefined)U.keWxPuddles.value=clamp(+puddles||0,0,1);
+    if(snow!==undefined)U.keWxSnow.value=clamp(+snow||0,0,1);if(rain!==undefined)U.keWxRain.value=clamp(+rain||0,0,1);return this;}
+  get wetness(){return this.uniforms.keWxWet.value;}get puddles(){return this.uniforms.keWxPuddles.value;}get snow(){return this.uniforms.keWxSnow.value;}get rain(){return this.uniforms.keWxRain.value;}
+  set ripples(v){this._ripplesOverride=v===null?null:!!v;this.uniforms.keWxRipples.value=v===null?((KE.settings&&KE.settings.vfx)>=.5?1:0):(v?1:0);}
+  /* Advance the simulation: wetness rises quickly in rain and dries slowly; puddles fill after the ground is wet and drain slower still;
+     snow accumulates while snowing (and it is not raining) and melts otherwise. rain (0..1) is the rain intensity for ripples. */
+  update(dt=0,{raining=null,snowing=null,rain=null}={}){dt=Number.isFinite(dt)?clamp(dt,0,.5):0;const U=this.uniforms;U.keWxTime.value+=dt;
+    if(raining!==null){const r=raining?(rain===null?1:clamp(rain,0,1)):0;U.keWxRain.value=KE.damp?KE.damp(U.keWxRain.value,r,4,dt):r;
+      U.keWxWet.value=clamp(U.keWxWet.value+(raining?this.wetRate*Math.max(.25,r):-this.dryRate)*dt,0,1);
+      U.keWxPuddles.value=clamp(U.keWxPuddles.value+(raining&&U.keWxWet.value>.6?this.puddleRate*Math.max(.25,r):-this.drainRate)*dt,0,1);}
+    else if(rain!==null)U.keWxRain.value=clamp(rain,0,1);
+    if(snowing!==null)U.keWxSnow.value=clamp(U.keWxSnow.value+(snowing&&!raining?this.snowRate:-this.meltRate)*dt,0,1);
+    return this;}
+  dispose(){if(this.offSettings)this.offSettings();for(const m of this.materials){const r=this.restore.get(m);m.onBeforeCompile=r.prev;if(r.ownKey)m.customProgramCacheKey=r.ownKey;else delete m.customProgramCacheKey;m.needsUpdate=true;}this.materials.clear();this.restore.clear();}
+};
+KE.registerModule('weather',{provides:['SurfaceWeather']});
 })();
