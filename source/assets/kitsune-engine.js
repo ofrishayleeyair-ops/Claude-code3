@@ -1224,7 +1224,7 @@ KE.Pipeline=class{
       fu.uLocalOn.value=localOn?1:0;if(localOn){fu.tLocal.value=this.localLum[0].texture;fu.tLocalBlur.value=this.localLum[2].texture;fu.uLocalTexel.value.set(1/this.localLum[0].width,1/this.localLum[0].height);fu.uLocal.value.set(le.highlightContrast,le.shadowContrast,le.detail,le.blurredBlend);}else{fu.tLocal.value=fu.tLocalBlur.value=this._black;}
       if(o.fxaa){this.pass(fm,this.ldr);this.m.fxaa.uniforms.tSrc.value=this.ldr.texture;this.m.fxaa.uniforms.uTexel.value.copy(dtexel);this.pass(this.m.fxaa,prevTarget);}else this.pass(fm,prevTarget);
     }finally{
-      camera.layers.mask=prevMask;scene.background=prevBg;scene.fog=prevFog;R.toneMapping=prevTone;R.autoClear=prevAutoClear;R.setRenderTarget(prevTarget);R.info.autoReset=prevInfo;
+      camera.layers.mask=prevMask;scene.background=prevBg;scene.fog=prevFog;R.toneMapping=prevTone;R.autoClear=prevAutoClear;R.setRenderTarget(prevTarget);R.info.autoReset=prevInfo;R.info.render.frame++;/* a following direct render must not share this frame id, or r128 skips its buffer uploads */
       if(jitter)camera.clearViewOffset();
     }
     this.prevViewProj.copy(this.viewProj);this.stats.ms=performance.now()-t0;
@@ -1720,6 +1720,831 @@ KE.ProbeVolume=class{
     for(const m of this.materials){const r=this.restore.get(m);m.onBeforeCompile=r.prev;if(r.ownKey)m.customProgramCacheKey=r.ownKey;else delete m.customProgramCacheKey;m.needsUpdate=true;}this.materials.clear();this.restore.clear();}
 };
 KE.registerModule('gi',{provides:['ProbeVolume','LAYERS.GI']});
+})();
+
+/* ===== module: 20-materials.js ===== */
+/* KE.MaterialGraph — node-based materials compiled to GLSL, in the spirit of a material editor.
+   A graph of typed nodes ({nodes:[{id,type,…,in:{…}}], params:{…}, outputs:{…}}) is type-checked and compiled
+   into GLSL. Lit models ('standard', 'physical') inject the generated code into MeshStandardMaterial /
+   MeshPhysicalMaterial through onBeforeCompile, so Three's lights, shadows, fog, image-based lighting,
+   instancing and skinning keep working and later hooks (KE.CascadedShadows, KE.ProbeVolume) still compose.
+   The 'unlit' model builds a ShaderMaterial from Three's shader chunks.
+   Compilation: depth-first evaluation from the used outputs (so dead nodes cost nothing), one uniquely named
+   temporary per node, helper functions deduplicated by name with dependency ordering, scalar broadcasting and
+   explicit type errors. worldPositionOffset is compiled separately into the vertex stage. Params become
+   uniforms, so the program cache key depends on graph structure only; material instances share one program
+   and edit their own values without recompiling. Also: a fluent builder (KE.shaderGraph) and a library of
+   ready materials with procedurally generated textures (KE.materialLibrary). */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+
+/* ---------- types, literals, errors ---------- */
+const DIM={float:1,vec2:2,vec3:3,vec4:4};
+const VEC=['','float','vec2','vec3','vec4'];
+class GraphError extends Error{
+  constructor(message,node=null,code='graph'){super(node?`[${node}] ${message}`:message);this.name='GraphError';this.node=node;this.code=code;this.detail=message;}
+}
+const IDENT=/^[A-Za-z_][A-Za-z0-9_]*$/;
+const fmt=v=>{v=+v;if(!Number.isFinite(v))throw new GraphError('non-finite number in graph: '+v,null,'value');let s=String(v);if(!/[.eE]/.test(s))s+='.0';return v<0?'('+s+')':s;};
+const srgbToLinear=c=>c<=.04045?c/12.92:Math.pow((c+.055)/1.055,2.4);
+function hexToLinear(s){let h=String(s).replace('#','');if(h.length===3)h=h.split('').map(c=>c+c).join('');if(!/^[0-9a-fA-F]{6}$/.test(h))throw new GraphError('bad colour literal '+s,null,'value');
+  const n=parseInt(h,16);return [(n>>16)&255,(n>>8)&255,n&255].map(c=>srgbToLinear(c/255));}
+const vecLit=a=>({expr:`vec${a.length}(${a.map(x=>fmt(x)).join(', ')})`,type:'vec'+a.length});
+/* Literal values accepted anywhere an input is expected. Hex strings are sRGB and converted to linear;
+   arrays, numbers and THREE.Color/Vector objects are used as given (linear). */
+function literal(v){
+  if(typeof v==='number')return {expr:fmt(v),type:'float'};
+  if(typeof v==='boolean')return {expr:v?'1.0':'0.0',type:'float'};
+  if(typeof v==='string'&&v[0]==='#')return vecLit(hexToLinear(v));
+  if(Array.isArray(v)&&v.length>=1&&v.length<=4&&v.every(x=>typeof x==='number'))return v.length===1?literal(v[0]):vecLit(v);
+  if(v&&typeof v==='object'){if(v.isColor)return vecLit([v.r,v.g,v.b]);if(v.isVector4)return vecLit([v.x,v.y,v.z,v.w]);if(v.isVector3)return vecLit([v.x,v.y,v.z]);if(v.isVector2)return vecLit([v.x,v.y]);}
+  return null;
+}
+const isRef=v=>(typeof v==='string'&&v[0]!=='#'&&v[0]!=='@')||(v&&typeof v==='object'&&!Array.isArray(v)&&typeof v.node==='string');
+function parseRef(v){if(typeof v==='string'){const i=v.indexOf('.');return i<0?{id:v,port:null}:{id:v.slice(0,i),port:v.slice(i+1)};}return {id:v.node,port:v.out||v.port||null};}
+function cast(expr,from,to,node,what){
+  if(from===to)return expr;
+  if(from==='sampler2D'||to==='sampler2D')throw new GraphError(`${what} expects ${to}, got ${from}`,node,'type');
+  if(from==='float'&&DIM[to])return `${to}(${expr})`;
+  if(from==='vec4'&&to==='vec3')return `(${expr}).xyz`;
+  if(from==='vec3'&&to==='vec4')return `vec4(${expr}, 1.0)`;
+  throw new GraphError(`${what} expects ${to}, got ${from}`,node,'type');
+}
+function unify(types,names,node){let n=1;
+  for(const k of names){const t=types[k];if(t==null)continue;if(!DIM[t])throw new GraphError(`input '${k}' must be a scalar or vector, got ${t}`,node.id,'type');const d=DIM[t];if(d===1)continue;
+    if(n===1)n=d;else if(n!==d)throw new GraphError(`cannot combine ${VEC[n]} and ${t} (input '${k}')`,node.id,'type');}
+  return VEC[n];}
+function hashString(s){let h1=0x811c9dc5,h2=0x01000193^s.length;for(let i=0;i<s.length;i++){const c=s.charCodeAt(i);h1=Math.imul(h1^c,16777619);h2=Math.imul(h2^c,2246822519)+(h2>>>13)|0;}
+  return (h1>>>0).toString(16).padStart(8,'0')+(h2>>>0).toString(16).padStart(8,'0');}
+
+/* ---------- GLSL helper library (deduplicated per stage, dependencies first) ---------- */
+const HELPERS={};
+const helper=(name,deps,code,stage='any')=>{HELPERS[name]={name,deps,code,stage};};
+helper('kmgHash12',[],`float kmgHash12(vec2 p){vec3 p3=fract(vec3(p.xyx)*.1031);p3+=dot(p3,p3.yzx+33.33);return fract((p3.x+p3.y)*p3.z);}`);
+helper('kmgHash22',[],`vec2 kmgHash22(vec2 p){vec3 p3=fract(vec3(p.xyx)*vec3(.1031,.1030,.0973));p3+=dot(p3,p3.yzx+33.33);return fract((p3.xx+p3.yz)*p3.zy);}`);
+helper('kmgHash13',[],`float kmgHash13(vec3 p3){p3=fract(p3*.1031);p3+=dot(p3,p3.zyx+31.32);return fract((p3.x+p3.y)*p3.z);}`);
+helper('kmgHash33',[],`vec3 kmgHash33(vec3 p3){p3=fract(p3*vec3(.1031,.1030,.0973));p3+=dot(p3,p3.yxz+33.33);return fract((p3.xxy+p3.yxx)*p3.zyx);}`);
+helper('kmgValue2',['kmgHash12'],`float kmgValue2(vec2 x){vec2 i=floor(x),f=fract(x);f=f*f*(3.-2.*f);return mix(mix(kmgHash12(i),kmgHash12(i+vec2(1.,0.)),f.x),mix(kmgHash12(i+vec2(0.,1.)),kmgHash12(i+vec2(1.,1.)),f.x),f.y);}`);
+helper('kmgValue3',['kmgHash13'],`float kmgValue3(vec3 x){vec3 i=floor(x),f=fract(x);f=f*f*(3.-2.*f);
+return mix(mix(mix(kmgHash13(i),kmgHash13(i+vec3(1.,0.,0.)),f.x),mix(kmgHash13(i+vec3(0.,1.,0.)),kmgHash13(i+vec3(1.,1.,0.)),f.x),f.y),mix(mix(kmgHash13(i+vec3(0.,0.,1.)),kmgHash13(i+vec3(1.,0.,1.)),f.x),mix(kmgHash13(i+vec3(0.,1.,1.)),kmgHash13(i+vec3(1.,1.,1.)),f.x),f.y),f.z);}`);
+helper('kmgGrad2',['kmgHash22'],`vec2 kmgGrad2(vec2 p){vec2 h=kmgHash22(p)*2.-1.;return h*inversesqrt(max(dot(h,h),1e-4));}`);
+helper('kmgGrad3',['kmgHash33'],`vec3 kmgGrad3(vec3 p){vec3 h=kmgHash33(p)*2.-1.;return h*inversesqrt(max(dot(h,h),1e-4));}`);
+/* Gradient (Perlin) noise with quintic fade, remapped to [0,1]. */
+helper('kmgPerlin2',['kmgGrad2'],`float kmgPerlin2(vec2 p){vec2 i=floor(p),f=fract(p),u=f*f*f*(f*(f*6.-15.)+10.);
+float a=dot(kmgGrad2(i),f),b=dot(kmgGrad2(i+vec2(1.,0.)),f-vec2(1.,0.)),c=dot(kmgGrad2(i+vec2(0.,1.)),f-vec2(0.,1.)),d=dot(kmgGrad2(i+vec2(1.,1.)),f-vec2(1.,1.));
+return clamp(mix(mix(a,b,u.x),mix(c,d,u.x),u.y)*.7071+.5,0.,1.);}`);
+helper('kmgPerlin3',['kmgGrad3'],`float kmgPerlin3(vec3 p){vec3 i=floor(p),f=fract(p),u=f*f*f*(f*(f*6.-15.)+10.);
+float n000=dot(kmgGrad3(i),f),n100=dot(kmgGrad3(i+vec3(1.,0.,0.)),f-vec3(1.,0.,0.)),n010=dot(kmgGrad3(i+vec3(0.,1.,0.)),f-vec3(0.,1.,0.)),n110=dot(kmgGrad3(i+vec3(1.,1.,0.)),f-vec3(1.,1.,0.));
+float n001=dot(kmgGrad3(i+vec3(0.,0.,1.)),f-vec3(0.,0.,1.)),n101=dot(kmgGrad3(i+vec3(1.,0.,1.)),f-vec3(1.,0.,1.)),n011=dot(kmgGrad3(i+vec3(0.,1.,1.)),f-vec3(0.,1.,1.)),n111=dot(kmgGrad3(i+vec3(1.,1.,1.)),f-vec3(1.,1.,1.));
+return clamp(mix(mix(mix(n000,n100,u.x),mix(n010,n110,u.x),u.y),mix(mix(n001,n101,u.x),mix(n011,n111,u.x),u.y),u.z)*.75+.5,0.,1.);}`);
+/* Simplex noise on skewed triangular/tetrahedral lattices with hashed unit gradients. */
+helper('kmgSimplex2',['kmgGrad2'],`float kmgSimplex2(vec2 p){const float K1=.366025404,K2=.211324865;vec2 i=floor(p+(p.x+p.y)*K1);vec2 a=p-i+(i.x+i.y)*K2;float m=step(a.y,a.x);vec2 o=vec2(m,1.-m);vec2 b=a-o+K2;vec2 c=a-1.+2.*K2;
+vec3 h=max(.5-vec3(dot(a,a),dot(b,b),dot(c,c)),0.);vec3 n=h*h*h*h*vec3(dot(a,kmgGrad2(i)),dot(b,kmgGrad2(i+o)),dot(c,kmgGrad2(i+1.)));return clamp(.5+.5*dot(n,vec3(70.)),0.,1.);}`);
+helper('kmgSimplex3',['kmgGrad3'],`float kmgSimplex3(vec3 p){const float F3=.33333333,G3=.16666667;vec3 s=floor(p+dot(p,vec3(F3)));vec3 x=p-s+dot(s,vec3(G3));vec3 e=step(vec3(0.),x-x.yzx);vec3 i1=e*(1.-e.zxy);vec3 i2=1.-e.zxy*(1.-e);
+vec3 x1=x-i1+G3,x2=x-i2+2.*G3,x3=x-1.+3.*G3;vec4 w=max(.6-vec4(dot(x,x),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.);
+vec4 d=vec4(dot(x,kmgGrad3(s)),dot(x1,kmgGrad3(s+i1)),dot(x2,kmgGrad3(s+i2)),dot(x3,kmgGrad3(s+1.)));w*=w;w*=w;return clamp(.5+.5*dot(d*w,vec4(32.)),0.,1.);}`);
+/* Cellular noise: returns (F1, F2, cell id[, angle of the sample around its feature point in 2D]). */
+helper('kmgVoronoi2',['kmgHash12','kmgHash22'],`vec4 kmgVoronoi2(vec2 p){vec2 n=floor(p),f=fract(p),rn=vec2(1.,0.);float f1=8.,f2=8.,id=0.;
+for(int j=-1;j<=1;j++)for(int i=-1;i<=1;i++){vec2 g=vec2(float(i),float(j));vec2 r=g+kmgHash22(n+g)-f;float d=dot(r,r);if(d<f1){f2=f1;f1=d;rn=r;id=kmgHash12(n+g+vec2(17.3,9.1));}else if(d<f2){f2=d;}}
+return vec4(sqrt(f1),sqrt(f2),id,atan(-rn.y,-rn.x+1e-9));}`);
+helper('kmgVoronoi3',['kmgHash13','kmgHash33'],`vec3 kmgVoronoi3(vec3 p){vec3 n=floor(p),f=fract(p);float f1=8.,f2=8.,id=0.;
+for(int k=-1;k<=1;k++)for(int j=-1;j<=1;j++)for(int i=-1;i<=1;i++){vec3 g=vec3(float(i),float(j),float(k));vec3 r=g+kmgHash33(n+g)-f;float d=dot(r,r);if(d<f1){f2=f1;f1=d;id=kmgHash13(n+g+vec3(17.3,9.1,4.7));}else if(d<f2){f2=d;}}
+return vec3(sqrt(f1),sqrt(f2),id);}`);
+helper('kmgSRGB',[],`vec4 kmgSRGB(vec4 c){return vec4(mix(c.rgb/12.92,pow((max(c.rgb,vec3(0.))+.055)/1.055,vec3(2.4)),step(vec3(.04045),c.rgb)),c.a);}`);
+helper('kmgTriW',[],`vec3 kmgTriW(vec3 n,float k){vec3 w=pow(abs(n)+1e-5,vec3(k));return w/(w.x+w.y+w.z);}`);
+helper('kmgTriplanar',['kmgTriW'],`vec4 kmgTriplanar(sampler2D t,vec3 p,vec3 n,float k){vec3 w=kmgTriW(n,k);return texture2D(t,p.zy)*w.x+texture2D(t,p.xz)*w.y+texture2D(t,p.xy)*w.z;}`);
+/* Triplanar normal mapping with the whiteout blend: each projection's tangent normal is swizzled into world space. */
+helper('kmgTriplanarNormal',['kmgTriW'],`vec3 kmgTriplanarNormal(sampler2D t,vec3 p,vec3 n,float k,float s){vec3 w=kmgTriW(n,k);
+vec3 tx=texture2D(t,p.zy).xyz*2.-1.,ty=texture2D(t,p.xz).xyz*2.-1.,tz=texture2D(t,p.xy).xyz*2.-1.;tx.xy*=s;ty.xy*=s;tz.xy*=s;
+tx=vec3(tx.xy+n.zy,abs(tx.z)*n.x);ty=vec3(ty.xy+n.xz,abs(ty.z)*n.y);tz=vec3(tz.xy+n.xy,abs(tz.z)*n.z);return normalize(tx.zyx*w.x+ty.xzy*w.y+tz.xyz*w.z);}`);
+/* Orthonormal tangent frame from screen-space derivatives of world position and UV (no precomputed tangents). */
+helper('kmgTangentFrame',[],`mat3 kmgTangentFrame(vec3 N,vec3 p,vec2 uv){vec3 dp1=dFdx(p),dp2=dFdy(p);vec2 duv1=dFdx(uv),duv2=dFdy(uv);vec3 dp2perp=cross(dp2,N),dp1perp=cross(N,dp1);
+vec3 T=dp2perp*duv1.x+dp1perp*duv2.x,B=dp2perp*duv1.y+dp1perp*duv2.y;T-=N*dot(N,T);float tl=dot(T,T);
+if(tl<1e-16)T=abs(N.y)<.999?normalize(cross(vec3(0.,1.,0.),N)):vec3(1.,0.,0.);else T*=inversesqrt(tl);vec3 Bo=cross(N,T);if(dot(Bo,B)<0.)Bo=-Bo;return mat3(T,Bo,N);}`,'fragment');
+helper('kmgToTangent',[],`vec3 kmgToTangent(mat3 m,vec3 v){return vec3(dot(m[0],v),dot(m[1],v),dot(m[2],v));}`);
+/* Height-to-normal with derivatives (surface gradient): h in world units. */
+helper('kmgBumpWorld',[],`vec3 kmgBumpWorld(vec3 N,vec3 p,float h,float s){vec3 dpx=dFdx(p),dpy=dFdy(p);float hx=dFdx(h),hy=dFdy(h);vec3 r1=cross(dpy,N),r2=cross(N,dpx);float det=dot(dpx,r1);
+vec3 g=(det<0.?-1.:1.)*(hx*r1+hy*r2);return normalize(max(abs(det),1e-12)*N-s*g);}`,'fragment');
+helper('kmgUnpackNormal',[],`vec3 kmgUnpackNormal(vec4 t,float s,float flipY){vec3 n=t.xyz*2.-1.;n.y*=flipY;n.xy*=s;return normalize(n);}`);
+helper('kmgHueShift',[],`vec3 kmgHueShift(vec3 c,float t){float a=t*6.2831853;vec3 k=vec3(.57735027);float cs=cos(a);return c*cs+cross(k,c)*sin(a)+k*dot(k,c)*(1.-cs);}`);
+helper('kmgRotate2',[],`vec2 kmgRotate2(vec2 v,float a){float c=cos(a),s=sin(a);return vec2(c*v.x-s*v.y,s*v.x+c*v.y);}`);
+helper('kmgRotateAboutAxis',[],`vec3 kmgRotateAboutAxis(vec3 axis,float angle,vec3 pivot,vec3 pos){vec3 a=normalize(axis);vec3 d=pos-pivot;float c=cos(angle),s=sin(angle);return d*c+cross(a,d)*s+a*dot(a,d)*(1.-c)-d;}`);
+helper('kmgIGN',[],`float kmgIGN(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))));}`);
+helper('kmgHeightAlpha',[],`float kmgHeightAlpha(float h,float t,float c){float a=clamp(h-1.+t*2.,0.,1.);return clamp(mix(-c,1.+c,a),0.,1.);}`);
+helper('kmgInverse3',[],`mat3 kmgInverse3(mat3 m){vec3 a=m[0],b=m[1],c=m[2];vec3 r0=cross(b,c),r1=cross(c,a),r2=cross(a,b);float d=dot(a,r0);
+return mat3(r0.x,r1.x,r2.x,r0.y,r1.y,r2.y,r0.z,r1.z,r2.z)/(abs(d)<1e-20?1e-20:d);}`,'vertex');
+/* Parallax occlusion mapping: fixed-count linear search (no early exit, so implicit texture derivatives stay valid
+   and it runs on WebGL1), first crossing recorded arithmetically, then linear refinement between the two layers. */
+const pomHelper=steps=>({name:'kmgPOM'+steps,deps:[],stage:'fragment',code:`vec2 kmgPOM${steps}(sampler2D t,vec2 uv,vec3 v,float scale,vec4 ch){const float N=${fmt(steps)};vec2 duv=v.xy/max(v.z,.2)*scale/N;
+float layer=0.,lastD=1.-dot(texture2D(t,uv),ch),found=0.;vec2 cuv=uv,hit=uv;
+for(int i=0;i<${steps};i++){vec2 nuv=cuv-duv;float nl=layer+1./N;float nd=1.-dot(texture2D(t,nuv),ch);float h=(1.-found)*step(nd,nl);
+float after=nd-nl,before=lastD-layer;float w=clamp(after/(after-before-1e-5),0.,1.);hit=mix(hit,mix(nuv,cuv,w),h);found=max(found,h);cuv=nuv;layer=nl;lastD=nd;}
+return mix(cuv,hit,found);}`});
+const fbmHelper=(base,dim,oct,mode)=>{const name=`kmgFbm_${mode}_${base}${dim}_${oct}`,T=dim===2?'vec2':'vec3',fn={value:'kmgValue',perlin:'kmgPerlin',simplex:'kmgSimplex'}[base]+dim;
+  const sample=mode==='ridged'?'(1.-abs(n*2.-1.))*(1.-abs(n*2.-1.))':mode==='turbulence'?'abs(n*2.-1.)':'n';
+  const adv=dim===2?'p=mat2(.8,.6,-.6,.8)*p*lac+vec2(1.7,9.2);':'p=p*lac+vec3(1.7,9.2,3.1);';
+  return {name,deps:[fn],stage:'any',code:`float ${name}(${T} p,float lac,float gain){float a=1.,s=0.,w=0.;for(int i=0;i<${oct};i++){float n=${fn}(p);s+=a*${sample};w+=a;${adv}a*=gain;}return s/w;}`};};
+
+/* ---------- node registry ---------- */
+const NODES={};
+function registerNode(type,spec){
+  if(!IDENT.test(type))throw new Error('KE.MaterialGraph.registerNode: invalid type name '+type);
+  if(typeof spec.glsl!=='function'&&!spec.virtual)throw new Error('KE.MaterialGraph.registerNode: '+type+' needs glsl(ctx, inputs, node, types, outType)');
+  const d={category:'custom',inputs:[],stage:'any',...spec,nodeType:type};
+  if(d.type!==undefined&&typeof d.type!=='function')throw new Error('KE.MaterialGraph.registerNode: '+type+'.type must be a function (use out for a fixed type)');
+  d.inputs=typeof d.inputs==='function'?d.inputs:d.inputs.map(i=>Array.isArray(i)?{name:i[0],type:i[1],default:i[2]}:i);
+  NODES[type]=d;if(KE.MaterialGraph)KE.MaterialGraph._builderDirty=true;return d;}
+const def=registerNode;
+const texProps=['texture','param'];
+/* Texture inputs resolve from a connected texture param, the node's `param` name, or a `texture` object
+   (the latter becomes a hidden param during normalisation). */
+function texInput(c,n,a){if(a.tex)return a.tex;if(typeof n.param==='string')return c.paramExpr(n.param,n.id,'sampler2D');throw new GraphError(`${n.type} needs a texture (connect a texture Param to 'tex', or set 'texture'/'param')`,n.id,'input');}
+const decode=(c,n,expr,space='srgb')=>{if(space==='srgb'){c.helper('kmgSRGB');return `kmgSRGB(${expr})`;}return expr;};
+
+// Constants and parameters
+def('Constant',{category:'constant',inputs:[],type:(t,n)=>{const l=literal(n.value===undefined?0:n.value);if(!l)throw new GraphError('Constant.value must be a number, array or colour',n.id,'value');return l.type;},glsl:(c,a,n)=>literal(n.value===undefined?0:n.value).expr});
+for(const [T,k] of [['Float',1],['Vec2',2],['Vec3',3],['Vec4',4]])def(T,{category:'constant',inputs:[],out:VEC[k],glsl:(c,a,n)=>{const v=n.value===undefined?0:n.value;const arr=typeof v==='number'?new Array(k).fill(v):v;if(!Array.isArray(arr)||arr.length!==k)throw new GraphError(`${T}.value needs ${k} numbers`,n.id,'value');return k===1?fmt(arr[0]):vecLit(arr).expr;}});
+def('Color',{category:'constant',inputs:[],out:'vec3',glsl:(c,a,n)=>{const l=literal(n.value===undefined?'#ffffff':n.value);if(!l||l.type!=='vec3')throw new GraphError('Color.value must be "#rrggbb", [r,g,b] or THREE.Color',n.id,'value');return l.expr;}});
+def('Param',{category:'constant',inputs:[],type:(t,n,c)=>c.paramType(n.name,n.id),glsl:(c,a,n)=>c.paramExpr(n.name,n.id)});
+def('Time',{category:'input',inputs:[['scale','float',1]],out:'float',glsl:(c,a)=>a.scale==='1.0'?c.builtin('time').expr:`(${c.builtin('time').expr} * ${a.scale})`});
+// Geometry and view inputs
+def('UV',{category:'input',inputs:[['tiling','vec2',[1,1]],['offset','vec2',[0,0]]],out:'vec2',glsl:(c,a,n)=>{const uv=c.builtin(n.channel===1?'uv2':'uv').expr;return (a.tiling==='vec2(1.0, 1.0)'&&a.offset==='vec2(0.0, 0.0)')?uv:`(${uv} * ${a.tiling} + ${a.offset})`;}});
+def('WorldPosition',{category:'input',out:'vec3',glsl:c=>c.builtin('worldPos').expr});
+def('WorldNormal',{category:'input',out:'vec3',glsl:c=>c.builtin('worldNormal').expr});
+def('ViewDirection',{category:'input',out:'vec3',glsl:c=>c.builtin('viewDir').expr});
+def('CameraPosition',{category:'input',out:'vec3',glsl:()=>'cameraPosition'});
+def('ObjectPosition',{category:'input',out:'vec3',glsl:c=>c.builtin('objectPos').expr});
+def('VertexColor',{category:'input',out:'vec3',glsl:c=>c.builtin('vertexColor').expr});
+def('ScreenUV',{category:'input',stage:'fragment',out:'vec2',glsl:c=>c.builtin('screenUV').expr});
+def('PixelDepth',{category:'input',out:'float',glsl:c=>c.builtin('pixelDepth').expr});
+def('SceneDepth',{category:'input',stage:'fragment',inputs:[['uv','vec2','@screenUV']],out:'float',glsl:(c,a)=>{const h=c.global('kmgHasScene','float'),d=c.global('kmgSceneDepth','sampler2D'),nf=c.global('kmgNearFar','vec2');return `(${h} > .5 ? texture2D(${d}, ${a.uv}).r : ${nf}.y)`;}});
+def('SceneColor',{category:'input',stage:'fragment',inputs:[['uv','vec2','@screenUV'],['fallback','vec3',[0,0,0]]],out:'vec3',glsl:(c,a)=>{const h=c.global('kmgHasScene','float'),s=c.global('kmgSceneColor','sampler2D');return `(${h} > .5 ? texture2D(${s}, ${a.uv}).rgb : ${a.fallback})`;}});
+def('DepthFade',{category:'input',stage:'fragment',inputs:[['fadeDistance','float',1]],out:'float',glsl:(c,a)=>{const h=c.global('kmgHasScene','float'),d=c.global('kmgSceneDepth','sampler2D');
+  return `(${h} > .5 ? clamp((texture2D(${d}, ${c.builtin('screenUV').expr}).r - ${c.builtin('pixelDepth').expr}) / max(${a.fadeDistance}, 1e-4), 0.0, 1.0) : 1.0)`;}});
+def('SunDirection',{category:'input',out:'vec3',glsl:c=>`normalize(${c.global('kmgSunDir','vec3')})`});
+def('SunColor',{category:'input',out:'vec3',glsl:c=>c.global('kmgSunColor','vec3')});
+def('Fresnel',{category:'shading',inputs:[['exponent','float',5],['baseReflectFraction','float',.04],['normal','vec3','@worldNormal']],out:'float',
+  glsl:(c,a)=>`(${a.baseReflectFraction} + (1.0 - ${a.baseReflectFraction}) * pow(1.0 - clamp(dot(normalize(${a.normal}), ${c.builtin('viewDir').expr}), 0.0, 1.0), ${a.exponent}))`});
+// Textures
+def('Texture2D',{category:'texture',props:texProps,inputs:[['tex','sampler2D',null],['uv','vec2','@uv']],out:'vec4',glsl:(c,a,n)=>decode(c,n,`texture2D(${texInput(c,n,a)}, ${a.uv})`,n.space||'srgb')});
+def('TriplanarSample',{category:'texture',props:texProps,inputs:[['tex','sampler2D',null],['position','vec3','@worldPos'],['normal','vec3','@worldNormal'],['scale','float',1],['sharpness','float',4]],out:'vec4',
+  glsl:(c,a,n)=>{c.helper('kmgTriplanar');return decode(c,n,`kmgTriplanar(${texInput(c,n,a)}, ${a.position} * ${a.scale}, normalize(${a.normal}), ${a.sharpness})`,n.space||'srgb');}});
+def('TriplanarNormal',{category:'texture',props:texProps,inputs:[['tex','sampler2D',null],['position','vec3','@worldPos'],['normal','vec3','@worldNormal'],['scale','float',1],['sharpness','float',4],['strength','float',1]],out:'vec3',
+  glsl:(c,a,n)=>{c.helper('kmgTriplanarNormal');return `kmgTriplanarNormal(${texInput(c,n,a)}, ${a.position} * ${a.scale}, normalize(${a.normal}), ${a.sharpness}, ${a.strength})`;}});
+def('NormalMap',{category:'texture',props:texProps,inputs:[['tex','sampler2D',null],['uv','vec2','@uv'],['strength','float',1]],out:'vec3',
+  glsl:(c,a,n)=>{c.helper('kmgUnpackNormal');return `kmgUnpackNormal(texture2D(${texInput(c,n,a)}, ${a.uv}), ${a.strength}, ${n.flipY?'-1.0':'1.0'})`;}});
+def('ParallaxOcclusion',{category:'texture',stage:'fragment',props:texProps,inputs:[['tex','sampler2D',null],['uv','vec2','@uv'],['heightScale','float',.05]],out:'vec2',
+  glsl:(c,a,n)=>{const steps=Math.max(4,Math.min(64,Math.round(n.steps||16))),ch={r:'vec4(1.,0.,0.,0.)',g:'vec4(0.,1.,0.,0.)',b:'vec4(0.,0.,1.,0.)',a:'vec4(0.,0.,0.,1.)'}[n.channel||'r'];
+    if(!ch)throw new GraphError("ParallaxOcclusion.channel must be 'r','g','b' or 'a'",n.id,'value');const h=pomHelper(steps);c.helper(h.name,h.code,h.deps,h.stage);c.helper('kmgToTangent');
+    return `kmgPOM${steps}(${texInput(c,n,a)}, ${a.uv}, kmgToTangent(${c.builtin('tbn').expr}, ${c.builtin('viewDir').expr}), ${a.heightScale}, ${ch})`;}});
+// Noise
+const NOISE_KINDS=['value','perlin','simplex','voronoi','fbm','ridged','turbulence'];
+def('Noise',{category:'procedural',inputs:[['p','any','@uv'],['scale','float',1]],
+  type:(t,n)=>{if(!NOISE_KINDS.includes(n.kind||'perlin'))throw new GraphError(`Noise.kind must be one of ${NOISE_KINDS.join(', ')}`,n.id,'value');if(t.p==='vec4')throw new GraphError('Noise.p must be float, vec2 or vec3',n.id,'type');return 'float';},
+  raw:(t,n)=>(n.kind==='voronoi'?(t.p==='vec3'?'vec3':'vec4'):'float'),
+  glsl:(c,a,n,t)=>{const kind=n.kind||'perlin',dim=t.p==='vec3'?3:2,p=t.p==='float'?`vec2(${a.p}, 0.0)`:a.p,arg=a.scale==='1.0'?p:`${p} * ${a.scale}`;
+    if(kind==='voronoi'){c.helper('kmgVoronoi'+dim);return `kmgVoronoi${dim}(${arg})`;}
+    if(kind==='value'||kind==='perlin'||kind==='simplex'){const f={value:'kmgValue',perlin:'kmgPerlin',simplex:'kmgSimplex'}[kind]+dim;c.helper(f);return `${f}(${arg})`;}
+    const oct=Math.max(1,Math.min(8,Math.round(n.octaves||5))),base=['value','perlin','simplex'].includes(n.base)?n.base:'perlin',h=fbmHelper(base,dim,oct,kind);c.helper(h.name,h.code,h.deps,h.stage);
+    return `${h.name}(${arg}, ${fmt(n.lacunarity||2)}, ${fmt(n.gain===undefined?.5:n.gain)})`;},
+  main:(v,n)=>n.kind==='voronoi'?{expr:v+'.x',type:'float'}:{expr:v,type:'float'},
+  ports:(v,n,t)=>n.kind==='voronoi'?{f1:{expr:v+'.x',type:'float'},f2:{expr:v+'.y',type:'float'},edge:{expr:`(${v}.y - ${v}.x)`,type:'float'},cell:{expr:v+'.z',type:'float'},signed:{expr:`(${v}.x * 2.0 - 1.0)`,type:'float'},...(t.p==='vec3'?{}:{angle:{expr:v+'.w',type:'float'}})}:{signed:{expr:`(${v} * 2.0 - 1.0)`,type:'float'}}});
+// Math
+const U2=['a','b'];
+for(const [T,op] of [['Add','+'],['Subtract','-'],['Multiply','*'],['Divide','/']])def(T,{category:'math',inputs:[['a','any',op==='*'||op==='/'?1:0],['b','any',op==='*'||op==='/'?1:0]],unify:U2,glsl:(c,a)=>`(${a.a} ${op} ${a.b})`});
+for(const [T,f,d0,d1,names] of [['Min','min',0,0,U2],['Max','max',0,0,U2],['Power','pow',1,1,['base','exp']],['Modulo','mod',0,1,U2],['Atan2','atan',0,1,['y','x']],['Step','step',.5,0,['edge','x']]])
+  def(T,{category:'math',inputs:[[names[0],'any',d0],[names[1],'any',d1]],unify:names,glsl:(c,a)=>`${f}(${a[names[0]]}, ${a[names[1]]})`});
+for(const [T,f] of [['Abs','abs'],['Floor','floor'],['Ceil','ceil'],['Frac','fract'],['Sqrt','sqrt'],['Sin','sin'],['Cos','cos'],['Tan','tan'],['Exp','exp'],['Log','log'],['Sign','sign'],['Normalize','normalize']])
+  def(T,{category:'math',inputs:[['x','any',0]],unify:['x'],glsl:(c,a)=>`${f}(${a.x})`});
+def('Saturate',{category:'math',inputs:[['x','any',0]],unify:['x'],glsl:(c,a)=>`clamp(${a.x}, 0.0, 1.0)`});
+def('OneMinus',{category:'math',inputs:[['x','any',0]],unify:['x'],glsl:(c,a)=>`(1.0 - ${a.x})`});
+def('Negate',{category:'math',inputs:[['x','any',0]],unify:['x'],glsl:(c,a)=>`(-${a.x})`});
+def('Length',{category:'math',inputs:[['x','any',0]],out:'float',glsl:(c,a)=>`length(${a.x})`});
+def('Clamp',{category:'math',inputs:[['x','any',0],['min','any',0],['max','any',1]],unify:['x','min','max'],glsl:(c,a)=>`clamp(${a.x}, ${a.min}, ${a.max})`});
+def('Lerp',{category:'math',inputs:[['a','any',0],['b','any',1],['alpha','any',.5]],unify:['a','b','alpha'],glsl:(c,a)=>`mix(${a.a}, ${a.b}, ${a.alpha})`});
+def('Smoothstep',{category:'math',inputs:[['edge0','any',0],['edge1','any',1],['x','any',.5]],unify:['edge0','edge1','x'],glsl:(c,a)=>`smoothstep(${a.edge0}, ${a.edge1}, ${a.x})`});
+def('Remap',{category:'math',inputs:[['x','any',0],['inMin','any',0],['inMax','any',1],['outMin','any',0],['outMax','any',1]],unify:['x','inMin','inMax','outMin','outMax'],
+  glsl:(c,a,n)=>{const t=`(${a.x} - ${a.inMin}) / (${a.inMax} - ${a.inMin})`;return `mix(${a.outMin}, ${a.outMax}, ${n.clamp?`clamp(${t}, 0.0, 1.0)`:t})`;}});
+def('Dot',{category:'math',inputs:[['a','any',0],['b','any',0]],type:(t,n)=>{unify(t,U2,n);return 'float';},unify:U2,unifyType:t=>VEC[Math.max(DIM[t.a],DIM[t.b])],glsl:(c,a)=>`dot(${a.a}, ${a.b})`});
+def('Distance',{category:'math',inputs:[['a','any',0],['b','any',0]],type:(t,n)=>{unify(t,U2,n);return 'float';},unify:U2,unifyType:t=>VEC[Math.max(DIM[t.a],DIM[t.b])],glsl:(c,a)=>`distance(${a.a}, ${a.b})`});
+def('Cross',{category:'math',inputs:[['a','vec3',[1,0,0]],['b','vec3',[0,1,0]]],out:'vec3',glsl:(c,a)=>`cross(${a.a}, ${a.b})`});
+def('Reflect',{category:'math',inputs:[['incident','vec3',[0,0,-1]],['normal','vec3','@worldNormal']],out:'vec3',glsl:(c,a)=>`reflect(${a.incident}, ${a.normal})`});
+def('Append',{category:'math',inputs:[['a','any',0],['b','any',0]],type:(t,n)=>{const d=DIM[t.a]+DIM[t.b];if(!(d<=4))throw new GraphError(`Append result would have ${d} components`,n.id,'type');return VEC[d];},glsl:(c,a,n,t,o)=>`${o}(${a.a}, ${a.b})`});
+def('Split',{category:'math',inputs:[['x','any',0]],unify:['x'],glsl:(c,a)=>a.x});
+const SWZ=/^([xyzw]{1,4}|[rgba]{1,4})$/;
+def('ComponentMask',{category:'math',inputs:[['x','any',0]],type:(t,n)=>{const m=String(n.mask||'x');if(!SWZ.test(m))throw new GraphError(`bad mask '${m}'`,n.id,'value');const d=DIM[t.x];
+    for(const ch of m)if('xyzwrgba'.indexOf(ch)%4>=d)throw new GraphError(`mask '${m}' reads past ${t.x}`,n.id,'type');return VEC[m.length];},
+  glsl:(c,a,n,t,o)=>t.x==='float'?(o==='float'?a.x:`${o}(${a.x})`):`${a.x}.${n.mask||'x'}`});
+def('If',{category:'math',inputs:[['a','float',0],['b','float',0],['aGreater','any',1],['equal','any',.5],['aLess','any',0],['threshold','float',1e-5]],unify:['aGreater','equal','aLess'],
+  glsl:(c,a)=>`(${a.a} > ${a.b} + ${a.threshold} ? ${a.aGreater} : (${a.a} < ${a.b} - ${a.threshold} ? ${a.aLess} : ${a.equal}))`});
+const CMP={'>':(a,b)=>`(1.0 - step(${a}, ${b}))`,'>=':(a,b)=>`step(${b}, ${a})`,'<':(a,b)=>`(1.0 - step(${b}, ${a}))`,'<=':(a,b)=>`step(${a}, ${b})`,'==':(a,b)=>`(1.0 - step(1e-5, abs(${a} - ${b})))`,'!=':(a,b)=>`step(1e-5, abs(${a} - ${b}))`};
+def('Compare',{category:'math',inputs:[['a','any',0],['b','any',0]],unify:U2,type:(t,n)=>{if(!CMP[n.op||'>'])throw new GraphError(`Compare.op must be one of ${Object.keys(CMP).join(' ')}`,n.id,'value');return unify(t,U2,n);},glsl:(c,a,n)=>CMP[n.op||'>'](a.a,a.b)});
+def('CheapContrast',{category:'math',inputs:[['x','any',.5],['contrast','float',.5]],unify:['x'],glsl:(c,a)=>`clamp(mix(-${a.contrast}, 1.0 + ${a.contrast}, ${a.x}), 0.0, 1.0)`});
+// UV and vector utilities
+def('Panner',{category:'utility',inputs:[['uv','any','@uv'],['time','float','@time'],['speed','any',[.1,0]]],unify:['uv','speed'],glsl:(c,a)=>`(${a.uv} + ${a.speed} * ${a.time})`});
+def('Rotator',{category:'utility',inputs:[['uv','vec2','@uv'],['center','vec2',[.5,.5]],['time','float','@time'],['speed','float',.25],['angle','float',0]],out:'vec2',
+  glsl:(c,a)=>{c.helper('kmgRotate2');return `(kmgRotate2(${a.uv} - ${a.center}, ${a.time} * ${a.speed} + ${a.angle}) + ${a.center})`;}});
+def('RotateAboutAxis',{category:'utility',inputs:[['axis','vec3',[0,1,0]],['angle','float',0],['pivot','vec3','@objectPos'],['position','vec3','@worldPos']],out:'vec3',
+  glsl:(c,a)=>{c.helper('kmgRotateAboutAxis');return `kmgRotateAboutAxis(${a.axis}, ${a.angle}, ${a.pivot}, ${a.position})`;}});
+def('TangentToWorld',{category:'utility',stage:'fragment',inputs:[['v','vec3',[0,0,1]]],out:'vec3',glsl:(c,a)=>`(${c.builtin('tbn').expr} * ${a.v})`});
+def('WorldToTangent',{category:'utility',stage:'fragment',inputs:[['v','vec3','@worldNormal']],out:'vec3',glsl:(c,a)=>{c.helper('kmgToTangent');return `kmgToTangent(${c.builtin('tbn').expr}, ${a.v})`;}});
+def('BlendNormals',{category:'utility',inputs:[['a','vec3',[0,0,1]],['b','vec3',[0,0,1]]],out:'vec3',glsl:(c,a)=>`normalize(vec3(${a.a}.xy + ${a.b}.xy, ${a.a}.z * ${a.b}.z))`});
+// Colour and blending
+def('HeightLerp',{category:'blend',inputs:[['a','any',0],['b','any',1],['height','float',.5],['transition','float',.5],['contrast','float',.5]],unify:U2,
+  glsl:(c,a)=>{c.helper('kmgHeightAlpha');return `mix(${a.a}, ${a.b}, kmgHeightAlpha(${a.height}, ${a.transition}, ${a.contrast}))`;}});
+def('Posterize',{category:'color',inputs:[['x','any',0],['steps','float',4]],unify:['x'],glsl:(c,a)=>`(floor(${a.x} * ${a.steps}) / ${a.steps})`});
+def('Desaturation',{category:'color',inputs:[['color','vec3',[1,1,1]],['fraction','float',1],['luminance','vec3',[.2126,.7152,.0722]]],out:'vec3',glsl:(c,a)=>`mix(${a.color}, vec3(dot(${a.color}, ${a.luminance})), ${a.fraction})`});
+def('HueShift',{category:'color',inputs:[['color','vec3',[1,0,0]],['shift','float',0]],out:'vec3',glsl:(c,a)=>{c.helper('kmgHueShift');return `kmgHueShift(${a.color}, ${a.shift})`;}});
+def('Bump',{category:'shading',stage:'fragment',inputs:[['height','float',0],['strength','float',1]],out:'vec3',
+  glsl:(c,a,n)=>{c.helper('kmgBumpWorld');const w=`kmgBumpWorld(${c.builtin('worldNormal').expr}, ${c.builtin('worldPos').expr}, ${a.height}, ${a.strength})`;if(n.space==='world')return w;c.helper('kmgToTangent');return `kmgToTangent(${c.builtin('tbn').expr}, ${w})`;}});
+def('WorldAlignedBlend',{category:'blend',inputs:[['sharpness','float',4],['bias','float',0],['normal','vec3','@worldNormal'],['direction','vec3',[0,1,0]]],out:'float',
+  glsl:(c,a)=>`clamp(dot(normalize(${a.normal}), normalize(${a.direction})) * ${a.sharpness} + ${a.bias}, 0.0, 1.0)`});
+def('Dither',{category:'shading',stage:'fragment',inputs:[],out:'float',glsl:c=>{c.helper('kmgIGN');return `kmgIGN(gl_FragCoord.xy + vec2(47.0, 17.0) * mod(${c.global('kmgFrame','float')}, 64.0))`;}});
+def('DitherOpacity',{category:'shading',stage:'fragment',inputs:[['opacity','float',1]],out:'float',glsl:(c,a)=>{c.helper('kmgIGN');return `step(kmgIGN(gl_FragCoord.xy + vec2(47.0, 17.0) * mod(${c.global('kmgFrame','float')}, 64.0)), ${a.opacity})`;}});
+def('AlphaClip',{category:'shading',inputs:[['value','float',1],['threshold','float',.5]],out:'float',glsl:(c,a)=>`step(${a.threshold}, ${a.value})`});
+/* CustomGLSL: a single expression over declared inputs. Identifiers are checked against the inputs and a
+   whitelist of GLSL built-ins; statements, assignments, preprocessor directives and blocks are rejected. */
+const GLSL_BUILTINS=new Set('sin cos tan asin acos atan pow exp log exp2 log2 sqrt inversesqrt abs sign floor ceil fract mod min max clamp mix step smoothstep length distance dot cross normalize reflect refract faceforward radians degrees float vec2 vec3 vec4 mat2 mat3 mat4 bool true false PI'.split(' '));
+const GLSL_RESERVED=new Set('attribute const uniform varying break continue do for while if else in out inout float int void bool true false lowp mediump highp precision invariant discard return mat2 mat3 mat4 vec2 vec3 vec4 ivec2 ivec3 ivec4 bvec2 bvec3 bvec4 sampler2D samplerCube struct asm class union enum typedef template this packed goto switch default inline noinline volatile public static extern external interface long short double half fixed unsigned input output sizeof cast namespace using main texture'.split(' '));
+function checkCustom(n){const code=String(n.code||'');if(!code.trim())throw new GraphError('CustomGLSL.code is empty',n.id,'custom');if(code.length>4000)throw new GraphError('CustomGLSL.code is too long',n.id,'custom');
+  if(/[#;{}\\"'`$@]/.test(code))throw new GraphError('CustomGLSL.code must be a single expression (no # ; { } quotes)',n.id,'custom');
+  if(/(^|[^=!<>])=(?!=)|\+\+|--|[+\-*/%]=/.test(code.replace(/[=!<>]=/g,'  ')))throw new GraphError('CustomGLSL.code may not assign',n.id,'custom');
+  const ins=Object.keys(n.inputs||{});for(const k of ins){if(!IDENT.test(k)||GLSL_RESERVED.has(k)||GLSL_BUILTINS.has(k)||/^(gl_|kmg|ke)/.test(k))throw new GraphError(`CustomGLSL input name '${k}' is not allowed`,n.id,'custom');if(!DIM[n.inputs[k]])throw new GraphError(`CustomGLSL input '${k}' type must be float/vec2/vec3/vec4`,n.id,'custom');}
+  const stripped=code.replace(/(^|[^A-Za-z0-9_.])(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?/g,'$1 0 ');
+  const re=/(\.?)\s*([A-Za-z_][A-Za-z0-9_]*)/g;let m;while((m=re.exec(stripped))){const id=m[2];if(m[1]){if(!/^([xyzw]{1,4}|[rgba]{1,4}|[stpq]{1,4})$/.test(id))throw new GraphError(`CustomGLSL: bad swizzle '.${id}'`,n.id,'custom');continue;}
+    if(/^\d/.test(id))continue;if(!ins.includes(id)&&!GLSL_BUILTINS.has(id))throw new GraphError(`CustomGLSL: identifier '${id}' is not an input or allowed built-in`,n.id,'custom');}
+  if(!DIM[n.out||'float'])throw new GraphError('CustomGLSL.out must be float, vec2, vec3 or vec4',n.id,'custom');return ins;}
+def('CustomGLSL',{category:'custom',inputs:n=>Object.keys(n.inputs||{}).map(k=>({name:k,type:n.inputs[k],default:0})),type:(t,n)=>{checkCustom(n);return n.out||'float';},
+  glsl:(c,a,n,t,o)=>{const ins=checkCustom(n),name='kmgCustom'+c.c.uid();c.helper(name,`${o} ${name}(${ins.map(k=>n.inputs[k]+' '+k).join(', ')}){return ${n.code.replace(/\s+/g,' ')};}`,[],c.stage);return `${name}(${ins.map(k=>a[k]).join(', ')})`;}});
+def('Output',{category:'output',virtual:true,inputs:[],out:'float',glsl:()=>'0.0'});
+NODES.MaterialOutput=NODES.Output;
+
+/* ---------- material outputs ---------- */
+const OUTPUTS={baseColor:{type:'vec3'},metallic:{type:'float'},roughness:{type:'float'},normal:{type:'vec3'},emissive:{type:'vec3'},opacity:{type:'float'},alphaClip:{type:'float'},ao:{type:'float'},
+  worldPositionOffset:{type:'vec3',stage:'vertex'},subsurface:{type:'vec3'},clearcoat:{type:'float',physical:true},clearcoatRoughness:{type:'float',physical:true},sheen:{type:'vec3',physical:true},refraction:{type:'float'}};
+const OUT_ALIAS={color:'baseColor',albedo:'baseColor',metalness:'metallic',emissiveColor:'emissive',opacityMask:'alphaClip',wpo:'worldPositionOffset',ambientOcclusion:'ao'};
+const UNLIT_OUTS=['baseColor','emissive','opacity','alphaClip','refraction'];
+
+/* ---------- graph normalisation ---------- */
+const PARAM_TYPES={float:'float',scalar:'float',color:'vec3',vec2:'vec2',vec3:'vec3',vec4:'vec4',texture:'sampler2D'};
+function normalizeParam(name,p){if(!IDENT.test(name))throw new GraphError(`param name '${name}' must be an identifier`,null,'param');
+  if(p===null||typeof p!=='object'||p.isTexture||p.isColor||Array.isArray(p))p={value:p};
+  let type=p.type;if(!type){const v=p.value;type=typeof v==='number'?'float':(typeof v==='string'||(v&&v.isColor))?'color':v&&v.isTexture?'texture':Array.isArray(v)?'vec'+v.length:'float';}
+  type=type==='scalar'?'float':type;if(!PARAM_TYPES[type])throw new GraphError(`param '${name}' has unknown type '${type}'`,null,'param');
+  const dflt={float:0,color:'#ffffff',vec2:[0,0],vec3:[0,0,0],vec4:[0,0,0,0],texture:null}[type];
+  return {...p,name,type,glslType:PARAM_TYPES[type],value:p.value===undefined?dflt:p.value};}
+function normalizeGraph(src){
+  if(!src||typeof src!=='object')throw new GraphError('graph must be an object',null,'graph');
+  if(src.__kmgNormalized)return src;
+  const nodes=new Map(),params={};let auto=0;
+  for(const [k,v] of Object.entries(src.params||{}))params[k]=normalizeParam(k,v);
+  const normVal=v=>(v&&typeof v==='object'&&!Array.isArray(v)&&typeof v.type==='string'&&!v.isTexture&&!v.isColor&&!v.isVector2&&!v.isVector3&&!v.isVector4)?addNode(v):v;
+  function addNode(n){if(!n||typeof n!=='object'||typeof n.type!=='string')throw new GraphError('every node needs a string type',n&&n.id,'graph');
+    const id=n.id!=null?String(n.id):'_n'+(auto++);if(!/^[A-Za-z0-9_-]+$/.test(id))throw new GraphError(`node id '${id}' may only contain letters, digits, _ and -`,id,'graph');
+    if(nodes.has(id))throw new GraphError(`duplicate node id '${id}'`,id,'graph');const node={...n,id,in:{}};nodes.set(id,node);
+    for(const [k,v] of Object.entries(n.in||{}))node.in[k]=normVal(v);
+    const d=NODES[n.type];if(d&&!d.virtual){const ins=typeof d.inputs==='function'?d.inputs(n):d.inputs;for(const i of ins)if(node.in[i.name]===undefined&&n[i.name]!==undefined&&i.name!=='type'&&i.name!=='id')node.in[i.name]=normVal(n[i.name]);}
+    if(n.texture&&n.texture.isTexture){const pn='tex_'+id.replace(/-/g,'_');params[pn]={name:pn,type:'texture',glslType:'sampler2D',value:n.texture,hidden:true};node.param=pn;delete node.texture;}
+    if(n.type==='Param'&&n.name&&!params[n.name]&&n.paramType)params[n.name]=normalizeParam(n.name,{type:n.paramType,value:n.value});
+    return id;}
+  for(const n of src.nodes||[])addNode(n);
+  const outputs={},take=(k,v)=>{const name=OUT_ALIAS[k]||k;if(!OUTPUTS[name])throw new GraphError(`unknown material output '${k}'`,null,'output');if(v!==undefined&&v!==null)outputs[name]=normVal(v);};
+  for(const [k,v] of Object.entries(src.outputs||src.output||{}))take(k,v);
+  for(const n of nodes.values())if(n.type==='Output'||n.type==='MaterialOutput')for(const [k,v] of Object.entries(n.in))if(outputs[OUT_ALIAS[k]||k]===undefined)take(k,v);
+  return {__kmgNormalized:true,nodes,params,outputs,source:src};
+}
+/* Cycle detection over the whole graph (not only reachable nodes) with a DFS colouring. */
+function findCycle(g){const state=new Map(),stack=[];
+  const refsOf=n=>Object.values(n.in).filter(isRef).map(v=>parseRef(v).id);
+  const visit=id=>{const s=state.get(id);if(s===2)return null;if(s===1)return stack.slice(stack.indexOf(id)).concat(id);const n=g.nodes.get(id);if(!n)return null;state.set(id,1);stack.push(id);
+    for(const r of refsOf(n)){const c=visit(r);if(c)return c;}stack.pop();state.set(id,2);return null;};
+  for(const id of g.nodes.keys()){const c=visit(id);if(c)return c;}return null;}
+
+/* ---------- code generation ---------- */
+class Compiler{
+  constructor(g,opts){this.g=g;this.opts=opts;this.uniforms=new Map();this.varyings=new Set();this.counter=0;this.warnings=[];}
+  uid(){return this.counter++;}
+  paramGlsl(name){const keys=Object.keys(this.g.params).sort();return `kmgP${keys.indexOf(name)}_${name}`;}
+}
+class Ctx{
+  constructor(c,stage){this.c=c;this.stage=stage;this.lines=[];this.done=new Map();this.visiting=[];this.helpers=new Map();this.pre=new Set();this.uniforms=new Map();this.attrs=new Set();}
+  emit(line){this.lines.push(line);}
+  tmp(type,expr){if(IDENT.test(expr)||/^\(?-?[\d.]+(e[-+]?\d+)?\)?$/.test(expr))return expr;const n=`kmg${this.stage[0]}${this.c.uid()}`;this.emit(`${type} ${n} = ${expr};`);return n;}
+  helper(name,code,deps=[],stage){if(this.helpers.has(name))return name;let h=HELPERS[name];if(!h){if(!code)throw new Error('KE.MaterialGraph: unknown helper '+name);h={name,code,deps,stage:stage||'any'};}
+    if(h.stage!=='any'&&h.stage!==this.stage)throw new GraphError(`helper ${name} is ${h.stage}-only`,null,'stage');for(const d of h.deps)this.helper(d);this.helpers.set(name,h.code);return name;}
+  uniform(name,type,source){this.uniforms.set(name,type);this.c.uniforms.set(name,{type,source});return name;}
+  global(name,type){return this.uniform(name,type,{global:name});}
+  paramType(name,node){const p=this.c.g.params[name];if(!p)throw new GraphError(`unknown param '${name}'`,node,'param');return p.glslType;}
+  paramExpr(name,node,want){const t=this.paramType(name,node);if(want&&t!==want)throw new GraphError(`param '${name}' is ${t}, expected ${want}`,node,'type');return this.uniform(this.c.paramGlsl(name),t,{param:name});}
+  varying(name){this.c.varyings.add(name);}
+  once(key,type,expr){if(!this.pre.has(key)){this.pre.add(key);this.emit(`${type} ${key} = ${expr};`);}return key;}
+  /* Built-in inputs per stage. Fragment values come from varyings written by the injected vertex code. */
+  builtin(name){const F=this.stage==='fragment';
+    switch(name){
+      case 'uv':if(F){this.varying('uv');return {expr:'vKmgUv',type:'vec2'};}return {expr:'uv',type:'vec2'};
+      case 'uv2':if(F){this.varying('uv2');return {expr:'vKmgUv2',type:'vec2'};}this.attrs.add('uv2');return {expr:'uv2',type:'vec2'};
+      case 'worldPos':if(F){this.varying('worldPos');return {expr:'vKmgWorldPos',type:'vec3'};}return {expr:'kmgWP',type:'vec3'};
+      case 'worldNormal':if(F){this.varying('worldNormal');if(!this.pre.has('kmgN')){this.pre.add('kmgN');this.emit('vec3 kmgN = normalize(vKmgWorldNormal);\n#ifdef DOUBLE_SIDED\nkmgN *= gl_FrontFacing ? 1.0 : -1.0;\n#endif');}return {expr:'kmgN',type:'vec3'};}return {expr:'kmgWN',type:'vec3'};
+      case 'viewDir':{const p=this.builtin('worldPos').expr;return {expr:this.once(F?'kmgV':'kmgVV','vec3',`isOrthographic ? normalize(vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2])) : normalize(cameraPosition - ${p})`),type:'vec3'};}
+      case 'time':return {expr:this.global('kmgTime','float'),type:'float'};
+      case 'objectPos':if(F){this.varying('objectPos');return {expr:'vKmgObjPos',type:'vec3'};}return {expr:'kmgModel[3].xyz',type:'vec3'};
+      case 'vertexColor':if(F){this.varying('color');return {expr:'vKmgColor',type:'vec3'};}this.attrs.add('color');return {expr:'kmgVC',type:'vec3'};
+      case 'screenUV':if(!F)throw new GraphError('screen UV is fragment-only',null,'stage');this.varying('clip');return {expr:this.once('kmgScreenUV','vec2','vKmgClip.xy / vKmgClip.w * 0.5 + 0.5'),type:'vec2'};
+      case 'pixelDepth':{const p=this.builtin('worldPos').expr;return {expr:this.once(F?'kmgPixelDepth':'kmgPixelDepthV','float',`-(viewMatrix * vec4(${p}, 1.0)).z`),type:'float'};}
+      case 'tbn':{if(!F)throw new GraphError('tangent frame is fragment-only',null,'stage');const n=this.builtin('worldNormal').expr,p=this.builtin('worldPos').expr,uv=this.builtin('uv').expr;this.helper('kmgTangentFrame');
+        return {expr:this.once('kmgTBN','mat3',`kmgTangentFrame(${n}, ${p}, ${uv})`),type:'mat3'};}
+    }
+    throw new GraphError(`unknown built-in '@${name}'`,null,'input');}
+  value(v,node,what){
+    if(v===undefined||v===null)return null;
+    if(typeof v==='string'&&v[0]==='@')return this.builtin(v.slice(1));
+    const l=literal(v);if(l)return l;
+    if(isRef(v))return this.ref(v,node);
+    if(v&&v.isTexture)throw new GraphError(`${what}: put textures in a texture param or the node's 'texture' property`,node,'input');
+    throw new GraphError(`${what}: invalid value ${JSON.stringify(v)}`,node,'input');}
+  ref(v,from){const {id,port}=parseRef(v);const n=this.c.g.nodes.get(id);if(!n)throw new GraphError(`unknown node '${id}'`,from,'ref');return this.port(this.node(n),port,id);}
+  port(r,port,id){if(!port)return r.main;if(r.ports&&r.ports[port])return r.ports[port];
+    if(SWZ.test(port)){const t=r.main.type;if(t==='sampler2D')throw new GraphError('cannot swizzle a texture',id,'type');const d=DIM[t];
+      for(const ch of port)if('xyzwrgba'.indexOf(ch)%4>=d)throw new GraphError(`swizzle '.${port}' reads past ${t}`,id,'type');
+      if(t==='float')return port.length===1?r.main:{expr:`${VEC[port.length]}(${r.main.expr})`,type:VEC[port.length]};
+      return {expr:`${r.main.expr}.${port}`,type:VEC[port.length]};}
+    throw new GraphError(`node has no output '${port}'`,id,'ref');}
+  node(n){
+    if(this.done.has(n.id))return this.done.get(n.id);
+    if(this.visiting.includes(n.id))throw new GraphError('cycle: '+this.visiting.slice(this.visiting.indexOf(n.id)).concat(n.id).join(' -> '),n.id,'cycle');
+    const d=NODES[n.type];if(!d)throw new GraphError(`unknown node type '${n.type}'`,n.id,'type');
+    if(d.virtual)throw new GraphError(`${n.type} nodes cannot be connected as inputs`,n.id,'ref');
+    if(d.stage==='fragment'&&this.stage==='vertex')throw new GraphError(`${n.type} is fragment-only and cannot feed worldPositionOffset`,n.id,'stage');
+    this.visiting.push(n.id);
+    try{
+      const a={},t={},ins=typeof d.inputs==='function'?d.inputs(n):d.inputs;
+      for(const i of ins){let r=this.value(n.in[i.name],n.id,`input '${i.name}'`);if(!r&&i.default!=null)r=this.value(i.default,n.id,`default of '${i.name}'`);
+        if(!r){if(i.type==='sampler2D'){a[i.name]=null;t[i.name]=null;continue;}throw new GraphError(`missing input '${i.name}'`,n.id,'input');}
+        if(i.type==='sampler2D'&&r.type!=='sampler2D')throw new GraphError(`input '${i.name}' expects a texture, got ${r.type}`,n.id,'type');
+        if(i.type!=='any'&&i.type!=='sampler2D'&&r.type!==i.type)r={expr:cast(r.expr,r.type,i.type,n.id,`input '${i.name}'`),type:i.type};
+        a[i.name]=r.expr;t[i.name]=r.type;}
+      const out=d.type?d.type(t,n,this):d.out?d.out:unify(t,d.unify||ins.map(i=>i.name),n);
+      if(d.unify){const ut=d.unifyType?d.unifyType(t):out;for(const k of d.unify)if(a[k]!=null&&t[k]!==ut)a[k]=cast(a[k],t[k],ut,n.id,`input '${k}'`);}
+      const raw=d.raw?d.raw(t,n):out,expr=d.glsl(this,a,n,t,out);
+      const v=raw==='sampler2D'?expr:this.tmp(raw,expr);
+      const r={main:d.main?d.main(v,n,t):{expr:v,type:out},ports:d.ports?d.ports(v,n,t):null};
+      this.done.set(n.id,r);return r;
+    }finally{this.visiting.pop();}
+  }
+  helperCode(){return [...this.helpers.values()].join('\n');}
+  uniformDecl(){return [...this.uniforms].map(([n,t])=>`uniform ${t} ${n};`).join('\n');}
+}
+const VARYINGS={uv:'vec2 vKmgUv',uv2:'vec2 vKmgUv2',worldPos:'vec3 vKmgWorldPos',worldNormal:'vec3 vKmgWorldNormal',objectPos:'vec3 vKmgObjPos',color:'vec3 vKmgColor',clip:'vec4 vKmgClip'};
+const VARY_SET={uv:'vKmgUv = uv;',uv2:'vKmgUv2 = uv2;',worldPos:'vKmgWorldPos = kmgWP;',worldNormal:'vKmgWorldNormal = kmgWN;',objectPos:'vKmgObjPos = kmgModel[3].xyz;',color:'vKmgColor = kmgVC;'};
+
+/* Compile a graph for one material model. mode 'depth' evaluates only alphaClip (+ WPO) for shadow passes. */
+function compileGraph(src,opts={},mode='full'){
+  const g=normalizeGraph(src),model=opts.model||'standard';
+  if(!['standard','physical','unlit'].includes(model))throw new GraphError(`unknown model '${model}'`,null,'model');
+  const cyc=findCycle(g);if(cyc)throw new GraphError('cycle: '+cyc.join(' -> '),cyc[0],'cycle');
+  const c=new Compiler(g,opts),F=new Ctx(c,'fragment'),V=new Ctx(c,'vertex'),outs={};
+  const names=Object.keys(OUTPUTS).filter(k=>OUTPUTS[k].stage!=='vertex'&&g.outputs[k]!==undefined);
+  for(const k of names){
+    if(OUTPUTS[k].physical&&model!=='physical')throw new GraphError(`output '${k}' requires model 'physical'`,null,'output');
+    if(model==='unlit'&&!UNLIT_OUTS.includes(k)){c.warnings.push(`output '${k}' is ignored by the unlit model`);continue;}
+    if(mode==='depth'&&k!=='alphaClip')continue;
+    const r=F.value(g.outputs[k],null,`output '${k}'`),want=OUTPUTS[k].type;
+    let expr=r.expr;if(r.type!==want){if(r.type==='sampler2D'||(DIM[r.type]>1&&want==='float')||(r.type==='vec2'))throw new GraphError(`output '${k}' expects ${want}, got ${r.type}`,null,'type');expr=cast(expr,r.type,want,null,`output '${k}'`);}
+    F.emit(`${want} kmgO_${k} = ${expr};`);outs[k]=`kmgO_${k}`;}
+  if(mode!=='depth'){
+    if(outs.normal&&(opts.normalSpace||'tangent')==='tangent')F.builtin('tbn');
+    if(outs.refraction){F.builtin('screenUV');F.builtin('pixelDepth');if(model==='unlit')F.builtin('worldNormal');F.global('kmgHasScene','float');F.global('kmgSceneColor','sampler2D');F.global('kmgSceneDepth','sampler2D');}
+  }
+  let wpo=null;if(g.outputs.worldPositionOffset!==undefined){const r=V.value(g.outputs.worldPositionOffset,null,"output 'worldPositionOffset'");wpo=cast(r.expr,r.type,'vec3',null,"output 'worldPositionOffset'");V.helper('kmgInverse3');}
+  const vary=[...c.varyings];if(vary.includes('color'))V.attrs.add('color');if(vary.includes('uv2'))V.attrs.add('uv2');
+  // vertex code
+  const vDecl=[V.uniformDecl(),vary.map(v=>`varying ${VARYINGS[v]};`).join('\n'),
+    V.attrs.has('color')?'#if !defined( USE_COLOR ) && !defined( USE_COLOR_ALPHA )\nattribute vec3 color;\n#endif':'',
+    V.attrs.has('uv2')?'#if !defined( USE_LIGHTMAP ) && !defined( USE_AOMAP )\nattribute vec2 uv2;\n#endif':'',V.helperCode()].filter(Boolean).join('\n');
+  const normalExpr=mode==='depth'?'normalize(mat3(kmgModel) * normal)':'normalize((vec4(transformedNormal, 0.0) * viewMatrix).xyz)';
+  const vMain=['#ifdef USE_INSTANCING','mat4 kmgModel = modelMatrix * instanceMatrix;','#else','mat4 kmgModel = modelMatrix;','#endif',
+    'vec3 kmgWP = (kmgModel * vec4(transformed, 1.0)).xyz;',`vec3 kmgWN = ${normalExpr};`,
+    V.attrs.has('color')?'#ifdef USE_COLOR_ALPHA\nvec3 kmgVC = color.rgb;\n#else\nvec3 kmgVC = color;\n#endif\n#ifdef USE_INSTANCING_COLOR\nkmgVC *= instanceColor;\n#endif':'',
+    ...V.lines,wpo?`vec3 kmgWPO = ${wpo};\ntransformed += kmgInverse3(mat3(kmgModel)) * kmgWPO;\nkmgWP += kmgWPO;`:'',
+    ...vary.filter(v=>VARY_SET[v]).map(v=>VARY_SET[v])].filter(Boolean).join('\n');
+  const vPost=vary.includes('clip')?'vKmgClip = gl_Position;':'';
+  // fragment code
+  const fDecl=[F.uniformDecl(),vary.map(v=>`varying ${VARYINGS[v]};`).join('\n'),outs.subsurface?'vec3 kmgSSSColor = vec3(0.0);':'',F.helperCode()].filter(Boolean).join('\n');
+  const fBody=F.lines.join('\n')+(outs.subsurface?'\nkmgSSSColor = kmgO_subsurface;':'');
+  const toon=model!=='unlit'&&opts.toon?{steps:Math.max(1,Math.round(opts.toon.steps||3)),smooth:opts.toon.smoothness===undefined?.06:opts.toon.smoothness}:null;
+  const sss=outs.subsurface?{wrap:.5,distortion:.25,power:4,scale:1,...(opts.subsurface||{})}:null;
+  const res={model,mode,outputs:outs,wpo:!!wpo,vDecl,vMain,vPost,fDecl,fBody,toon,sss,normalSpace:opts.normalSpace||'tangent',clip:opts.alphaClipThreshold===undefined?.5:opts.alphaClipThreshold,
+    uniforms:c.uniforms,warnings:c.warnings,graph:g,varyings:vary};
+  res.key=hashString([model,mode,res.normalSpace,res.clip,JSON.stringify(toon),JSON.stringify(sss),vDecl,vMain,vPost,fDecl,fBody,Object.keys(outs).join()].join('|'));
+  return res;
+}
+
+/* ---------- shader patching ---------- */
+const need=(src,anchor,label)=>{if(src.indexOf(anchor)<0)throw new Error(`KE.MaterialGraph: shader patch target '${anchor}' not found (${label})`);};
+const after=(src,anchor,code,label='')=>{need(src,anchor,label);return src.replace(anchor,()=>anchor+'\n'+code);};
+const before=(src,anchor,code,label='')=>{need(src,anchor,label);return src.replace(anchor,()=>code+'\n'+anchor);};
+function patchVertex(vs,cp){
+  vs=after(vs,'#include <common>',cp.vDecl,'vertex declarations');
+  need(vs,'#include <project_vertex>','vertex main');
+  return vs.replace('#include <project_vertex>',()=>cp.vMain+'\n#include <project_vertex>'+(cp.vPost?'\n'+cp.vPost:''));
+}
+/* Toon ramp and subsurface/translucency go into RE_Direct_Physical, so every punctual light (directional,
+   point, spot; shadowed colour included) gets them, whichever lights_fragment_begin variant runs. */
+function patchedLightsChunk(THREE,cp){
+  const src=THREE.ShaderChunk.lights_physical_pars_fragment,m=/void\s+RE_Direct_Physical\s*\(/.exec(src);
+  if(!m)throw new Error('KE.MaterialGraph: RE_Direct_Physical not found in lights_physical_pars_fragment');
+  let head=src.slice(0,m.index),body=src.slice(m.index),fns='';
+  const reNL=/float\s+dotNL\s*=\s*saturate\(\s*dot\(\s*geometry\.normal\s*,\s*directLight\.direction\s*\)\s*\)\s*;/;
+  const reDiff=/reflectedLight\.directDiffuse\s*\+=[^;]*BRDF_Diffuse_Lambert\(\s*material\.diffuseColor\s*\)\s*;/;
+  if(cp.toon){if(!reNL.test(body))throw new Error('KE.MaterialGraph: toon patch target (dotNL) not found');const s=fmt(cp.toon.steps),w=fmt(Math.max(cp.toon.smooth,1e-3));
+    fns+=`float kmgToonRamp(float x){float b=floor(x*${s}+.5);float f=x*${s}+.5-b;return clamp((b-1.+smoothstep(.5-${w},.5+${w},f))/${s}+.5/${s},0.,1.);}\n`;
+    body=body.replace(reNL,x=>x+'\ndotNL = kmgToonRamp(dotNL);');}
+  if(cp.sss){if(!reDiff.test(body))throw new Error('KE.MaterialGraph: subsurface patch target (directDiffuse) not found');const S=cp.sss;
+    fns+=`vec3 kmgSubsurface(const in IncidentLight L,const in GeometricContext g){float nl=dot(g.normal,L.direction);float wrap=max((nl+${fmt(S.wrap)})/(1.+${fmt(S.wrap)}),0.)-max(nl,0.);
+vec3 h=normalize(L.direction+g.normal*${fmt(S.distortion)});float back=pow(clamp(dot(g.viewDir,-h),0.,1.),${fmt(S.power)})*${fmt(S.scale)};vec3 r=L.color*kmgSSSColor*(max(wrap,0.)+back);
+#ifdef PHYSICALLY_CORRECT_LIGHTS
+r*=RECIPROCAL_PI;
+#endif
+return r;}\n`;
+    body=body.replace(reDiff,x=>x+'\nreflectedLight.directDiffuse += kmgSubsurface(directLight, geometry);');}
+  return head+fns+body;
+}
+const REFRACT_TARGET=/gl_FragColor\s*=\s*vec4\(\s*outgoingLight\s*,\s*diffuseColor\.a\s*\)\s*;/;
+function patchFragment(THREE,fs,cp){
+  const o=cp.outputs;
+  fs=after(fs,'#include <common>',cp.fDecl,'fragment declarations');
+  fs=before(fs,'#include <map_fragment>',cp.fBody,'graph body');
+  let post='';if(o.baseColor)post+=`diffuseColor.rgb = ${o.baseColor};\n`;if(o.opacity)post+=`diffuseColor.a = ${o.opacity};\n`;if(o.alphaClip)post+=`if (${o.alphaClip} < ${fmt(cp.clip)}) discard;\n`;
+  if(post)fs=after(fs,'#include <color_fragment>',post,'base colour');
+  if(o.metallic)fs=after(fs,'#include <metalnessmap_fragment>',`metalnessFactor = ${o.metallic};`,'metallic');
+  if(o.roughness)fs=after(fs,'#include <roughnessmap_fragment>',`roughnessFactor = ${o.roughness};`,'roughness');
+  if(o.normal)fs=after(fs,'#include <normal_fragment_maps>',cp.normalSpace==='world'?`normal = normalize((viewMatrix * vec4(${o.normal}, 0.0)).xyz);`:`normal = normalize((viewMatrix * vec4(kmgTBN * ${o.normal}, 0.0)).xyz);`,'normal');
+  if(o.emissive)fs=after(fs,'#include <emissivemap_fragment>',`totalEmissiveRadiance = ${o.emissive};`,'emissive');
+  if(o.clearcoat||o.clearcoatRoughness||o.sheen)fs=after(fs,'#include <lights_physical_fragment>',
+    (o.clearcoat?`#ifdef CLEARCOAT\nmaterial.clearcoat = clamp(${o.clearcoat}, 0.0, 1.0);\n#endif\n`:'')+(o.clearcoatRoughness?`#ifdef CLEARCOAT\nmaterial.clearcoatRoughness = min(max(${o.clearcoatRoughness}, 0.0525) + geometryRoughness, 1.0);\n#endif\n`:'')+(o.sheen?`#ifdef USE_SHEEN\nmaterial.sheenColor = ${o.sheen};\n#endif\n`:''),'physical');
+  if(o.ao)fs=after(fs,'#include <aomap_fragment>',`reflectedLight.indirectDiffuse *= ${o.ao};\n#if defined( USE_ENVMAP ) && defined( STANDARD )\nreflectedLight.indirectSpecular *= computeSpecularOcclusion(saturate(dot(geometry.normal, geometry.viewDir)), ${o.ao}, material.specularRoughness);\n#endif`,'ao');
+  if(o.refraction){if(!REFRACT_TARGET.test(fs))throw new Error('KE.MaterialGraph: refraction patch target (gl_FragColor = vec4( outgoingLight, diffuseColor.a )) not found');
+    fs=fs.replace(REFRACT_TARGET,x=>x+`\n{float kmgA = diffuseColor.a;vec3 kmgSpec = reflectedLight.directSpecular + reflectedLight.indirectSpecular;
+if (kmgHasScene > 0.5) {vec2 kmgRUV = kmgScreenUV - normal.xy * ${o.refraction} * 0.05;if (texture2D(kmgSceneDepth, kmgRUV).r < kmgPixelDepth) kmgRUV = kmgScreenUV;
+gl_FragColor = vec4((outgoingLight - kmgSpec) * kmgA + kmgSpec + texture2D(kmgSceneColor, kmgRUV).rgb * diffuseColor.rgb * (1.0 - kmgA), 1.0);}
+else {float kmgA2 = clamp(kmgA + dot(kmgSpec, vec3(0.2126, 0.7152, 0.0722)), 1e-4, 1.0);gl_FragColor = vec4(((outgoingLight - kmgSpec) * kmgA + kmgSpec) / kmgA2, kmgA2);}}`);}
+  if(cp.sss||cp.toon){need(fs,'#include <lights_physical_pars_fragment>','lighting');fs=fs.replace('#include <lights_physical_pars_fragment>',()=>patchedLightsChunk(THREE,cp));}
+  return fs;
+}
+function patchDepthFragment(fs,cp){
+  fs=after(fs,'#include <common>',cp.fDecl,'depth declarations');
+  fs=before(fs,'#include <map_fragment>',cp.fBody+(cp.outputs.alphaClip?`\nif (${cp.outputs.alphaClip} < ${fmt(cp.clip)}) discard;`:''),'depth body');
+  return fs;
+}
+function unlitShaders(cp){
+  const o=cp.outputs,vs=`#include <common>
+#include <fog_pars_vertex>
+#include <morphtarget_pars_vertex>
+#include <skinning_pars_vertex>
+#include <logdepthbuf_pars_vertex>
+#include <clipping_planes_pars_vertex>
+void main() {
+#include <beginnormal_vertex>
+#include <morphnormal_vertex>
+#include <skinbase_vertex>
+#include <skinnormal_vertex>
+#include <defaultnormal_vertex>
+#include <begin_vertex>
+#include <morphtarget_vertex>
+#include <skinning_vertex>
+#include <project_vertex>
+#include <logdepthbuf_vertex>
+#include <clipping_planes_vertex>
+#include <fog_vertex>
+}`;
+  const refr=o.refraction?`if (kmgHasScene > 0.5) {vec3 kmgVN = normalize((viewMatrix * vec4(kmgN, 0.0)).xyz);vec2 kmgRUV = kmgScreenUV - kmgVN.xy * ${o.refraction} * 0.05;if (texture2D(kmgSceneDepth, kmgRUV).r < kmgPixelDepth) kmgRUV = kmgScreenUV;
+gl_FragColor = vec4(kmgColor * kmgAlpha + texture2D(kmgSceneColor, kmgRUV).rgb * ${o.baseColor||'vec3(1.0)'} * (1.0 - kmgAlpha), 1.0);}`:'';
+  const fs=`#include <common>
+#include <fog_pars_fragment>
+#include <logdepthbuf_pars_fragment>
+#include <clipping_planes_pars_fragment>
+${cp.fDecl}
+void main() {
+#include <clipping_planes_fragment>
+#include <logdepthbuf_fragment>
+${cp.fBody}
+vec3 kmgColor = ${o.emissive||o.baseColor||'vec3(1.0)'};
+float kmgAlpha = ${o.opacity||'1.0'};
+${o.alphaClip?`if (${o.alphaClip} < ${fmt(cp.clip)}) discard;`:''}
+gl_FragColor = vec4(kmgColor, kmgAlpha);
+${refr}
+#include <tonemapping_fragment>
+#include <encodings_fragment>
+#include <fog_fragment>
+#include <premultiplied_alpha_fragment>
+}`;
+  return {vertexShader:patchVertex(vs,cp),fragmentShader:fs};
+}
+
+/* ---------- params, uniforms and material state ---------- */
+const STATE=new WeakMap(),SHARED=new Map();
+const clock={t:0,manual:false,start:typeof performance!=='undefined'?performance.now():Date.now()};
+const timeUniform={get value(){return clock.manual?clock.t:((typeof performance!=='undefined'?performance.now():Date.now())-clock.start)/1000;}};
+function sharedTextures(THREE){let s=SHARED.get(THREE);if(s)return s;const mk=rgba=>{const t=new THREE.DataTexture(new Uint8Array(rgba),1,1,THREE.RGBAFormat);t.needsUpdate=true;return t;};
+  s={white:mk([255,255,255,255]),black:mk([0,0,0,255]),normal:mk([128,128,255,255]),gray:mk([128,128,128,255])};SHARED.set(THREE,s);return s;}
+function globalUniform(THREE,name){const S=KE.sceneUniforms(THREE);
+  const map={kmgTime:timeUniform,kmgHasScene:S.keHasScene,kmgSceneDepth:S.keSceneDepth,kmgSceneColor:S.keSceneColor,kmgNearFar:S.keNearFar,kmgFrame:S.keFrame,kmgSunDir:S.keSunDirection,kmgSunColor:S.keSunColor};
+  if(!map[name])throw new Error('KE.MaterialGraph: unknown global uniform '+name);return map[name];}
+/* A param's uniform. Instance uniforms read through to the parent until overridden, so parent edits propagate. */
+class ParamUniform{constructor(parent,value){this.parent=parent||null;this.own=!parent;this.v=value;}
+  get value(){return this.own?this.v:this.parent.value;}set value(x){this.v=x;this.own=true;}
+  reset(){if(this.parent){this.own=false;this.v=undefined;}}}
+function toParamValue(THREE,p,v,cur){
+  switch(p.type){
+    case 'float':{const n=+v;if(!Number.isFinite(n))throw new TypeError(`param '${p.name}' expects a number`);return n;}
+    case 'color':{const c=cur&&cur.isColor?cur:new THREE.Color();if(v&&v.isColor)return c.copy(v);if(typeof v==='string'||typeof v==='number'){c.set(v);return c.convertSRGBToLinear();}
+      if(Array.isArray(v)&&v.length>=3)return c.setRGB(v[0],v[1],v[2]);throw new TypeError(`param '${p.name}' expects a colour`);}
+    case 'vec2':case 'vec3':case 'vec4':{const n=+p.type[3],C={2:THREE.Vector2,3:THREE.Vector3,4:THREE.Vector4}[n],o=cur&&cur instanceof C?cur:new C();
+      if(Array.isArray(v)&&v.length===n)return o.fromArray(v);if(v&&typeof v.x==='number')return o.copy(v);if(typeof v==='number')return o.setScalar(v);throw new TypeError(`param '${p.name}' expects ${p.type}`);}
+    case 'texture':if(v==null)return sharedTextures(THREE)[p.fallback||'white']||sharedTextures(THREE).white;if(v.isTexture)return v;throw new TypeError(`param '${p.name}' expects a THREE.Texture`);
+  }
+  throw new TypeError('unknown param type '+p.type);
+}
+function paramUniforms(THREE,cp,parentState){const pu={};
+  for(const [name,p] of Object.entries(cp.graph.params))pu[name]=parentState?new ParamUniform(parentState.pu[name]):new ParamUniform(null,toParamValue(THREE,p,p.value,null));return pu;}
+function uniformMap(THREE,cp,pu){const map={};for(const [glsl,u] of cp.uniforms)map[glsl]=u.source.param?pu[u.source.param]:globalUniform(THREE,u.source.global);return map;}
+const SIDES=THREE=>({front:THREE.FrontSide,back:THREE.BackSide,double:THREE.DoubleSide});
+const BLENDS=THREE=>({normal:THREE.NormalBlending,additive:THREE.AdditiveBlending,multiply:THREE.MultiplyBlending,subtractive:THREE.SubtractiveBlending,none:THREE.NoBlending});
+function makeMaterial(THREE,cp,opts){
+  let m;
+  if(cp.model==='unlit'){const sh=unlitShaders(cp);m=new THREE.ShaderMaterial({vertexShader:sh.vertexShader,fragmentShader:sh.fragmentShader,uniforms:{},fog:opts.fog!==false,lights:false});m.extensions.derivatives=true;}
+  else{m=cp.model==='physical'?new THREE.MeshPhysicalMaterial():new THREE.MeshStandardMaterial();if(cp.outputs.sheen)m.sheen=new THREE.Color(0,0,0);}
+  const o=cp.outputs,transparent=opts.transparent!==undefined?!!opts.transparent:!!(o.opacity||o.refraction);
+  m.name=opts.name||'ke-material-graph';m.transparent=transparent;
+  if(opts.side!==undefined)m.side=typeof opts.side==='string'?SIDES(THREE)[opts.side]:opts.side;
+  if(opts.blending!==undefined)m.blending=typeof opts.blending==='string'?BLENDS(THREE)[opts.blending]:opts.blending;
+  m.depthWrite=opts.depthWrite!==undefined?!!opts.depthWrite:!transparent;
+  if(opts.depthTest!==undefined)m.depthTest=!!opts.depthTest;
+  if(opts.flatShading)m.flatShading=true;
+  if(opts.material)for(const [k,v] of Object.entries(opts.material)){if(m[k]&&m[k].isColor)m[k].set(v);else m[k]=v;}
+  return m;
+}
+function install(THREE,m,st){
+  STATE.set(m,st);const cp=st.shared.cp;
+  if(cp.model==='unlit'){m.uniforms=Object.assign(THREE.UniformsUtils.clone(THREE.UniformsLib.fog),uniformMap(THREE,cp,st.pu));}
+  else{const prev=st.prevHook||null,prevKey=st.prevKey||null;
+    m.onBeforeCompile=function(shader,renderer){if(prev)prev.call(this,shader,renderer);Object.assign(shader.uniforms,uniformMap(THREE,cp,st.pu));
+      shader.vertexShader=patchVertex(shader.vertexShader,cp);shader.fragmentShader=patchFragment(THREE,shader.fragmentShader,cp);MG.stats.patches++;};
+    m.customProgramCacheKey=()=>(prevKey?prevKey()+'|':'')+'kmg-'+cp.key;
+    m.defaultAttributeValues={color:[1,1,1],uv:[0,0],uv2:[0,0]};}
+  const params={};
+  for(const name of Object.keys(cp.graph.params))Object.defineProperty(params,name,{enumerable:!cp.graph.params[name].hidden,get:()=>st.pu[name].value,set:v=>setParam(m,name,v)});
+  Object.preventExtensions(params);
+  Object.defineProperties(m,{params:{value:params,configurable:true},graph:{value:cp.graph.source,configurable:true},
+    glsl:{value:{vertex:cp.vDecl+'\n/* main */\n'+cp.vMain,fragment:cp.fDecl+'\n/* main */\n'+cp.fBody,key:cp.key,outputs:Object.keys(cp.outputs).concat(cp.wpo?['worldPositionOffset']:[])},configurable:true},
+    paramInfo:{value:Object.values(cp.graph.params).filter(p=>!p.hidden).map(p=>({name:p.name,type:p.type,min:p.min,max:p.max,label:p.label||p.name,group:p.group||null,default:p.value})),configurable:true},
+    setParam:{value:(n,v)=>{setParam(m,n,v);return m;},configurable:true},getParam:{value:n=>{if(!st.pu[n])throw new Error(`unknown param '${n}'`);return st.pu[n].value;},configurable:true},
+    resetParam:{value:n=>{if(!st.pu[n])throw new Error(`unknown param '${n}'`);st.pu[n].reset();return m;},configurable:true},
+    isMaterialGraph:{value:true,configurable:true},
+    /* clone() returns an instance with every parameter copied: independent values, same program. */
+    clone:{value:function(){const c=MG.instance(m);for(const n of Object.keys(st.pu)){const v=st.pu[n].value;setParam(c,n,v&&v.isTexture?v:v&&v.clone?v.clone():v);}return c;},configurable:true,writable:true}});
+  if(!st.disposeHooked){st.disposeHooked=true;m.addEventListener('dispose',()=>{if(st.shadow){st.shadow.depth.dispose();st.shadow.distance.dispose();st.shadow=null;}});}
+  return m;
+}
+function setParam(m,name,v){const st=STATE.get(m);if(!st)throw new Error('not a material graph material');const p=st.shared.cp.graph.params[name];if(!p)throw new Error(`unknown param '${name}'`);
+  const u=st.pu[name];u.value=toParamValue(st.THREE,p,v,u.own?u.v:null);}
+/* Depth/distance materials carrying the same WPO and alpha clip, for shadow maps (see bind()). */
+function shadowMaterials(m){const st=STATE.get(m);if(!st)return null;const sh=st.shared,THREE=st.THREE;if(!sh.cp.wpo&&!sh.cp.outputs.alphaClip)return null;if(st.shadow)return st.shadow;
+  if(!sh.depthCp)sh.depthCp=compileGraph(sh.cp.graph,sh.opts,'depth');const dcp=sh.depthCp;
+  const setup=mat=>{mat.onBeforeCompile=shader=>{Object.assign(shader.uniforms,uniformMap(THREE,dcp,st.pu));shader.vertexShader=patchVertex(shader.vertexShader,dcp);shader.fragmentShader=patchDepthFragment(shader.fragmentShader,dcp);};
+    mat.customProgramCacheKey=()=>'kmg-depth-'+dcp.key;mat.extensions={derivatives:true};mat.defaultAttributeValues={color:[1,1,1],uv:[0,0],uv2:[0,0]};return mat;};
+  st.shadow={depth:setup(new THREE.MeshDepthMaterial({depthPacking:THREE.RGBADepthPacking})),distance:setup(new THREE.MeshDistanceMaterial())};return st.shadow;}
+
+/* ---------- public API ---------- */
+const MG={
+  GraphError,nodeTypes:NODES,outputs:OUTPUTS,helpers:HELPERS,stats:{compiles:0,patches:0},time:timeUniform,
+  registerNode,
+  registerHelper(name,code,deps=[],stage='any'){if(!/^kmg/.test(name))throw new Error('helper names must start with kmg');helper(name,deps,code,stage);},
+  /* Compile a graph into a material. */
+  compile(THREE,graph,opts={}){const cp=compileGraph(graph,opts);MG.stats.compiles++;const m=makeMaterial(THREE,cp,opts);
+    install(THREE,m,{THREE,shared:{cp,opts},pu:paramUniforms(THREE,cp,null),parent:null,shadow:null});
+    if(cp.warnings.length&&opts.warn)console.warn('KE.MaterialGraph: '+cp.warnings.join('; '));return m;},
+  /* Apply a graph to an existing Standard/Physical material, chaining any onBeforeCompile hook it already has. */
+  apply(THREE,material,graph,opts={}){if(!material||!material.isMeshStandardMaterial)throw new Error('KE.MaterialGraph.apply needs a MeshStandardMaterial or MeshPhysicalMaterial');
+    const o={...opts,model:material.isMeshPhysicalMaterial?'physical':'standard'},cp=compileGraph(graph,o);MG.stats.compiles++;
+    const own=Object.prototype.hasOwnProperty.call(material,'onBeforeCompile')?material.onBeforeCompile:null,ownKey=Object.prototype.hasOwnProperty.call(material,'customProgramCacheKey')?material.customProgramCacheKey.bind(material):null;
+    if(cp.outputs.sheen&&!material.sheen)material.sheen=new THREE.Color(0,0,0);
+    install(THREE,material,{THREE,shared:{cp,opts:o},pu:paramUniforms(THREE,cp,null),parent:null,shadow:null,prevHook:own,prevKey:ownKey});material.needsUpdate=true;return material;},
+  /* A material instance: same program (same cache key), its own parameter values; unset values follow the parent. */
+  instance(mat,overrides={},opts={}){const ps=STATE.get(mat);if(!ps)throw new Error('KE.MaterialGraph.instance: not a material graph material');const THREE=ps.THREE,cp=ps.shared.cp;
+    let m;if(cp.model==='unlit'){m=makeMaterial(THREE,cp,ps.shared.opts);THREE.Material.prototype.copy.call(m,mat);m.fog=mat.fog;m.extensions.derivatives=true;}else{m=new mat.constructor().copy(mat);if(mat.sheen)m.sheen=mat.sheen.clone();}
+    install(THREE,m,{THREE,shared:ps.shared,pu:paramUniforms(THREE,cp,ps),parent:mat,shadow:null,prevHook:ps.prevHook,prevKey:ps.prevKey});
+    m.name=opts.name||mat.name+'-instance';for(const [k,v] of Object.entries(overrides))setParam(m,k,v);return m;},
+  isGraphMaterial:m=>STATE.has(m),
+  parentOf:m=>{const s=STATE.get(m);return s?s.parent:null;},
+  /* Assign the material to a mesh plus matching shadow depth/distance materials when it has WPO or alpha clip,
+     and move meshes whose material reads scene colour/depth to KE.LAYERS.TRANSLUCENT. */
+  bind(mesh,material=mesh.material,{translucentLayer=true}={}){if(material)mesh.material=material;const st=STATE.get(mesh.material);if(!st)return mesh;
+    const sh=shadowMaterials(mesh.material);if(sh){for(const d of [sh.depth,sh.distance]){d.skinning=!!mesh.material.skinning;d.morphTargets=!!mesh.material.morphTargets;}mesh.customDepthMaterial=sh.depth;mesh.customDistanceMaterial=sh.distance;}
+    if(translucentLayer&&MG.readsScene(mesh.material))mesh.layers.set(KE.LAYERS.TRANSLUCENT);return mesh;},
+  shadowMaterials,
+  readsScene(m){const st=STATE.get(m);if(!st)return false;const u=st.shared.cp.uniforms;return u.has('kmgSceneColor')||u.has('kmgSceneDepth');},
+  /* Type-check without creating a material. Reports every error it can find (per output), plus inferred node types. */
+  validate(graph,opts={}){const errors=[],warnings=[],types={},seen=new Set();
+    const push=(e,list=errors)=>{if(!(e instanceof GraphError)){list.push({node:null,code:'internal',message:String(e&&e.message||e)});return;}const k=e.message;if(seen.has(k))return;seen.add(k);list.push({node:e.node,code:e.code,message:e.detail});};
+    let g;try{g=normalizeGraph(graph);}catch(e){push(e);return {ok:false,errors,warnings,types};}
+    for(const n of g.nodes.values()){if(!NODES[n.type])push(new GraphError(`unknown node type '${n.type}'`,n.id,'type'));
+      for(const [k,v] of Object.entries(n.in))if(isRef(v)&&!g.nodes.has(parseRef(v).id))push(new GraphError(`input '${k}' references unknown node '${parseRef(v).id}'`,n.id,'ref'));
+      if(n.type==='Param'&&!g.params[n.name])push(new GraphError(`unknown param '${n.name}'`,n.id,'param'));}
+    const cyc=findCycle(g);if(cyc)push(new GraphError('cycle: '+cyc.join(' -> '),cyc[0],'cycle'));
+    if(!cyc){const model=opts.model||'standard';
+      for(const k of Object.keys(g.outputs)){try{compileGraph({__kmgNormalized:true,nodes:g.nodes,params:g.params,outputs:{[k]:g.outputs[k]},source:g.source},{...opts,model});}catch(e){push(e);}}
+      const c=new Compiler(g,opts),F=new Ctx(c,'fragment');
+      for(const n of g.nodes.values()){if(!NODES[n.type]||NODES[n.type].virtual)continue;try{types[n.id]=F.ref(n.id,null).type;}catch(e){push(e,warnings);}}}
+    return {ok:errors.length===0,errors,warnings,types};},
+  /* Generated GLSL chunks for inspection (no material is created). */
+  generate(graph,opts={}){const cp=compileGraph(graph,opts);return {vertexDeclarations:cp.vDecl,vertexMain:cp.vMain,fragmentDeclarations:cp.fDecl,fragmentMain:cp.fBody,key:cp.key,outputs:Object.keys(cp.outputs),worldPositionOffset:cp.wpo,warnings:cp.warnings};},
+  cacheKey(graph,opts={}){return compileGraph(graph,opts).key;},
+  /* Shader time: wall clock by default; setTime/update switch to a manual clock (pause, time scale, tests). */
+  setTime(t){clock.manual=true;clock.t=+t||0;},update(dt){clock.manual=true;clock.t+=+dt||0;},useWallClock(){clock.manual=false;},
+  textures:THREE=>sharedTextures(THREE),
+  disposeShared(THREE){const s=SHARED.get(THREE);if(s){for(const t of Object.values(s))t.dispose();SHARED.delete(THREE);}}
+};
+KE.MaterialGraph=MG;
+
+/* ---------- fluent builder: KE.shaderGraph(THREE, g => ({baseColor: …}), options) ---------- */
+class Handle{constructor(b,ref){this._b=b;this._ref=ref;}
+  toString(){return this._ref;}
+  out(port){if(this._ref.includes('.'))throw new Error('out() on a swizzled handle');return new Handle(this._b,this._ref+'.'+port);}
+  _swz(s){return this._ref.includes('.')?this._b.node('ComponentMask',{x:this},{mask:s}):new Handle(this._b,this._ref+'.'+s);}
+  mask(s){return this._swz(s);}
+}
+const HANDLE_METHODS={add:['Add','a','b'],sub:['Subtract','a','b'],mul:['Multiply','a','b'],div:['Divide','a','b'],pow:['Power','base','exp'],min:['Min','a','b'],max:['Max','a','b'],mod:['Modulo','a','b'],
+  dot:['Dot','a','b'],cross:['Cross','a','b'],distance:['Distance','a','b'],append:['Append','a','b'],step:['Step','x','edge'],lerp:['Lerp','a','b','alpha'],mix:['Lerp','a','b','alpha'],
+  clamp:['Clamp','x','min','max'],smoothstep:['Smoothstep','x','edge0','edge1'],remap:['Remap','x','inMin','inMax','outMin','outMax'],posterize:['Posterize','x','steps'],
+  saturate:['Saturate','x'],oneMinus:['OneMinus','x'],abs:['Abs','x'],floor:['Floor','x'],ceil:['Ceil','x'],fract:['Frac','x'],sqrt:['Sqrt','x'],sin:['Sin','x'],cos:['Cos','x'],tan:['Tan','x'],
+  exp:['Exp','x'],log:['Log','x'],sign:['Sign','x'],normalize:['Normalize','x'],length:['Length','x'],negate:['Negate','x'],desaturate:['Desaturation','color','fraction'],hueShift:['HueShift','color','shift'],contrast:['CheapContrast','x','contrast']};
+for(const [name,[type,self,...rest]] of Object.entries(HANDLE_METHODS))Handle.prototype[name]=function(...args){const inp={[self]:this};rest.forEach((k,i)=>{if(args[i]!==undefined)inp[k]=args[i];});return this._b.node(type,inp);};
+(function swizzles(){const make=(set,len,pre='')=>{if(pre.length===len){if(!(pre in Handle.prototype))Object.defineProperty(Handle.prototype,pre,{get(){return this._swz(pre);}});return;}for(const c of set)make(set,len,pre+c);};
+  for(const set of ['xyzw','rgba'])for(let l=1;l<=4;l++)make(set,l);})();
+const unwrap=v=>v instanceof Handle?v._ref:v;
+/* realm-agnostic plain-object test (objects may come from another frame or vm context) */
+const isPlain=v=>{if(!v||typeof v!=='object'||v instanceof Handle||Array.isArray(v)||v.isTexture||v.isColor||v.isVector2||v.isVector3||v.isVector4)return false;const p=Object.getPrototypeOf(v);return p===null||Object.getPrototypeOf(p)===null;};
+class GraphBuilder{
+  constructor(){this.nodes=[];this.params={};this.n=0;this.paramNodes={};}
+  node(type,inputs={},props={}){const id='n'+(this.n++),node={id,type,...props,in:{}};for(const [k,v] of Object.entries(inputs))if(v!==undefined)node.in[k]=unwrap(v);this.nodes.push(node);return new Handle(this,id);}
+  param(name,type='float',value,opts={}){if(!this.params[name])this.params[name]={type,value,...opts};return this.paramNodes[name]||(this.paramNodes[name]=this.node('Param',{},{name}));}
+  color(v){return this.node('Color',{},{value:v});}
+  float(v){return this.node('Constant',{},{value:v});}
+  vec(...c){if(c.every(x=>typeof x==='number'))return this.node('Constant',{},{value:c});let h=c[0];for(let i=1;i<c.length;i++)h=this.node('Append',{a:h,b:c[i]});return h;}
+  vec2(...c){return this.vec(...c);}vec3(...c){return this.vec(...c);}vec4(...c){return this.vec(...c);}
+  /* custom(code, outType, {name:[type, value]}) */
+  custom(code,out='float',inputs={}){const types={},ins={};for(const [k,[t,v]] of Object.entries(inputs)){types[k]=t;ins[k]=v;}return this.node('CustomGLSL',ins,{code,out,inputs:types});}
+  build(outputs){const o={};for(const [k,v] of Object.entries(outputs||{}))if(v!==undefined&&v!==null)o[k]=unwrap(v);return {nodes:this.nodes,params:this.params,outputs:o};}
+}
+const BUILDER_ALIAS={worldPos:'WorldPosition',worldNormal:'WorldNormal',viewDir:'ViewDirection',cameraPos:'CameraPosition',objectPos:'ObjectPosition',vertexColor:'VertexColor',screenUV:'ScreenUV',
+  uv:'UV',time:'Time',texture:'Texture2D',triplanar:'TriplanarSample',pom:'ParallaxOcclusion',lerp:'Lerp',mix:'Lerp',add:'Add',sub:'Subtract',mul:'Multiply',div:'Divide',pow:'Power',fract:'Frac'};
+function refreshBuilder(){const lc=t=>/^[A-Z0-9]+$/.test(t)?t.toLowerCase():t[0].toLowerCase()+t.slice(1);
+  const bind=(name,type)=>{GraphBuilder.prototype[name]=function(...args){const d=NODES[type];if(!d)throw new Error('unknown node type '+type);
+    let props={};if(args.length&&isPlain(args[args.length-1]))props={...args.pop()};const ins=typeof d.inputs==='function'?[]:d.inputs,inputs={},nodeProps={};
+    ins.forEach((i,k)=>{const a=args[k];if(a===undefined)return;if(i.type==='sampler2D'&&a&&a.isTexture)nodeProps.texture=a;else inputs[i.name]=a;});
+    for(const [k,v] of Object.entries(props)){if(ins.some(i=>i.name===k)&&!(v&&v.isTexture))inputs[k]=v;else nodeProps[k]=v;}
+    return this.node(type,inputs,nodeProps);};};
+  for(const type of Object.keys(NODES))if(!NODES[type].virtual&&!['param','color','float','vec2','vec3','vec4','node','build','custom'].includes(lc(type)))bind(lc(type),type);
+  for(const [a,t] of Object.entries(BUILDER_ALIAS))if(NODES[t])bind(a,t);MG._builderDirty=false;}
+KE.shaderGraph=(THREE,fn,opts={})=>KE.MaterialGraph.compile(THREE,KE.shaderGraph.build(fn),opts);
+KE.shaderGraph.build=fn=>{if(MG._builderDirty!==false)refreshBuilder();const g=new GraphBuilder();return g.build(fn(g));};
+KE.shaderGraph.Builder=GraphBuilder;
+
+/* ---------- procedural texture sets (tileable, generated once per library) ---------- */
+/* Periodic value noise and Worley noise on an integer lattice wrapped by the period P, so every texture tiles.
+   Each set packs albedo (sRGB bytes), a tangent-space normal map and ORM-H (R=occlusion, G=roughness, B=height). */
+function textureSets(THREE,S){
+  const hash=(i,j,s)=>{let h=(Math.imul(i|0,374761393)+Math.imul(j|0,668265263)+Math.imul(s|0,1274126177))|0;h=Math.imul(h^(h>>>13),1274126177);h^=h>>>16;return (h>>>0)/4294967296;};
+  const wrap=(i,P)=>((i%P)+P)%P;
+  const vnoise=(x,y,P,s)=>{const xi=Math.floor(x),yi=Math.floor(y),fx=x-xi,fy=y-yi,u=fx*fx*(3-2*fx),v=fy*fy*(3-2*fy),x0=wrap(xi,P),x1=wrap(xi+1,P),y0=wrap(yi,P),y1=wrap(yi+1,P);
+    const a=hash(x0,y0,s),b=hash(x1,y0,s),c=hash(x0,y1,s),d=hash(x1,y1,s);return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;};
+  const fbm=(x,y,P,oct,s)=>{let a=1,t=0,n=0;for(let o=0;o<oct;o++){t+=a*vnoise(x,y,P,s+o*31);n+=a;x*=2;y*=2;P*=2;a*=.5;}return t/n;};
+  const worley=(x,y,P,s,jit=1)=>{const xi=Math.floor(x),yi=Math.floor(y);let f1=9,f2=9,id=0;
+    for(let j=-1;j<=1;j++)for(let i=-1;i<=1;i++){const cx=xi+i,cy=yi+j,wx=wrap(cx,P),wy=wrap(cy,P),px=cx+.5+(hash(wx,wy,s)-.5)*jit,py=cy+.5+(hash(wx,wy,s+7)-.5)*jit,d=Math.hypot(px-x,py-y);
+      if(d<f1){f2=f1;f1=d;id=hash(wx,wy,s+13);}else if(d<f2)f2=d;}return [f1,f2,id];};
+  const ss=(a,b,x)=>{const t=Math.min(1,Math.max(0,(x-a)/(b-a)));return t*t*(3-2*t);},mix=(a,b,t)=>a+(b-a)*t,cl=x=>Math.max(0,Math.min(255,Math.round(x)));
+  const toSRGB=c=>c<=.0031308?c*12.92:1.055*Math.pow(c,1/2.4)-.055;
+  const tex=(data,srgb)=>{const t=new THREE.DataTexture(data,S,S,THREE.RGBAFormat);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.magFilter=THREE.LinearFilter;t.minFilter=THREE.LinearMipmapLinearFilter;
+    t.generateMipmaps=true;t.anisotropy=4;t.encoding=srgb?THREE.sRGBEncoding:THREE.LinearEncoding;t.needsUpdate=true;return t;};
+  function build(heightFn,shadeFn,normalStrength){
+    const H=new Float32Array(S*S),aux=new Array(S*S);let lo=1e9,hi=-1e9;
+    for(let y=0;y<S;y++)for(let x=0;x<S;x++){const r=heightFn(x/S,y/S);H[y*S+x]=r.h;aux[y*S+x]=r;lo=Math.min(lo,r.h);hi=Math.max(hi,r.h);}
+    const alb=new Uint8Array(S*S*4),nrm=new Uint8Array(S*S*4),orm=new Uint8Array(S*S*4),h=i=>(H[i]-lo)/(hi-lo||1),k=normalStrength*S/256;
+    for(let y=0;y<S;y++)for(let x=0;x<S;x++){const i=y*S+x,o=i*4,hx=h(y*S+(x+1)%S)-h(y*S+(x+S-1)%S),hy=h(((y+1)%S)*S+x)-h(((y+S-1)%S)*S+x);
+      let nx=-hx*k,ny=-hy*k,nz=1;const l=Math.hypot(nx,ny,nz);nx/=l;ny/=l;nz/=l;nrm[o]=cl((nx*.5+.5)*255);nrm[o+1]=cl((ny*.5+.5)*255);nrm[o+2]=cl((nz*.5+.5)*255);nrm[o+3]=255;
+      const s=shadeFn(aux[i],h(i),x/S,y/S);for(let c=0;c<3;c++)alb[o+c]=cl(toSRGB(Math.max(0,s.color[c]))*255);alb[o+3]=255;
+      orm[o]=cl(s.ao*255);orm[o+1]=cl(s.roughness*255);orm[o+2]=cl(h(i)*255);orm[o+3]=255;}
+    return {albedo:tex(alb,true),normal:tex(nrm,false),orm:tex(orm,false)};}
+  // Layered rock: warped fBm, bedding strata and fine cracks.
+  const rock=build((u,v)=>{const wx=fbm(u*4,v*4,4,3,11)-.5,wy=fbm(u*4+5.2,v*4+1.3,4,3,12)-.5,n=fbm(u*4+wx*1.3,v*4+wy*1.3,4,6,1),[f1,f2]=worley(u*6+wx,v*6+wy,6,5),crack=1-ss(0,.07,f2-f1);
+      const strata=Math.sin((v*6+n*1.6)*Math.PI*2)*.5+.5,fine=fbm(u*16,v*16,16,3,3),tint=fbm(u*3,v*3,3,4,7);
+      return {h:n*.8+strata*.14+fine*.12-crack*.22,crack,tint,fine};},
+    (r,h)=>{const base=[mix(.045,.17,h),mix(.042,.155,h),mix(.038,.135,h)],w=(r.tint-.5)*.5,dark=1-r.crack*.6;
+      return {color:[base[0]*(1+w)*dark*(.9+r.fine*.2),base[1]*dark*(.9+r.fine*.2),base[2]*(1-w)*dark*(.9+r.fine*.2)],ao:Math.min(1,.42+.62*ss(.05,.65,h))*(1-r.crack*.35),roughness:.66+.26*(1-h)};},5);
+  // Cobblestones: jittered Worley cells as rounded stones, sand and grit in the joints.
+  const cobble=build((u,v)=>{const wx=fbm(u*8,v*8,8,3,21)-.5,wy=fbm(u*8+3.1,v*8+7.7,8,3,22)-.5,[f1,f2,id]=worley(u*4+wx*.25,v*4+wy*.25,4,9,.85),e=f2-f1,stone=ss(.03,.3,e),grit=fbm(u*32,v*32,32,3,4);
+      return {h:Math.sqrt(stone)*(.8+id*.2)+grit*.05+fbm(u*8,v*8,8,4,5)*.1*stone,stone,id,grit};},
+    (r,h)=>{const pal=[[.16,.15,.13],[.11,.105,.1],[.19,.16,.12],[.13,.125,.135],[.21,.19,.16]],p=pal[Math.floor(r.id*5)%5],g=.8+r.grit*.4,mortar=[.085*g,.075*g,.055*g];
+      const c=[0,1,2].map(i=>mix(mortar[i],p[i]*g*(.85+.3*h),r.stone));return {color:c,ao:mix(.5,1,Math.pow(r.stone,.6)),roughness:mix(.95,.58+r.grit*.2,r.stone)};},7);
+  return {rock,cobble,dispose(){for(const set of [rock,cobble])for(const t of Object.values(set))t.dispose();}};
+}
+
+/* ---------- material library ---------- */
+const LIBS=new Map(),POM_STEPS={low:8,medium:12,high:16,ultra:24,cinematic:32};
+KE.materialLibrary=(THREE,{size}={})=>{
+  if(LIBS.has(THREE))return LIBS.get(THREE);
+  let sets=null;const S=size||Math.max(128,Math.min(512,KE.settings.tex||256)),T=()=>sets||(sets=textureSets(THREE,S));
+  const rockLayers=g=>{const t=T().rock,p=g.worldPos(),n=g.worldNormal(),s=g.param('scale','float',.55,{min:.05,max:4}),k=g.param('sharpness','float',6,{min:1,max:16});
+    return {p,n,alb:g.triplanarSample(g.param('albedoMap','texture',t.albedo),p,n,s,k,{space:'srgb'}).rgb.mul(g.param('tint','color','#ffffff')),
+      orm:g.triplanarSample(g.param('ormMap','texture',t.orm),p,n,s,k,{space:'linear'}),nrm:g.triplanarNormal(g.param('normalMap','texture',t.normal,{fallback:'normal'}),p,n,s,k,g.param('normalStrength','float',1,{min:0,max:3}))};};
+  const defs={
+    pbrTriplanar:[g=>{const r=rockLayers(g);return {baseColor:r.alb,roughness:r.orm.g.mul(g.param('roughness','float',1,{min:0,max:2})).saturate(),metallic:g.param('metallic','float',0,{min:0,max:1}),ao:r.orm.r,normal:r.nrm};},{normalSpace:'world'}],
+    parallaxStone:[g=>{const t=T().cobble,hm=g.param('heightMap','texture',t.orm),uv=g.uv().mul(g.param('tiling','float',1,{min:.25,max:8}));
+      const puv=g.parallaxOcclusion(hm,uv,g.param('heightScale','float',.06,{min:0,max:.2}),{steps:POM_STEPS[KE.settings.preset]||16,channel:'b'}),orm=g.texture2D(hm,puv,{space:'linear'});
+      return {baseColor:g.texture2D(g.param('albedoMap','texture',t.albedo),puv).rgb.mul(g.param('tint','color','#ffffff')),roughness:orm.g,ao:orm.r,
+        normal:g.normalMap(g.param('normalMap','texture',t.normal,{fallback:'normal'}),puv,g.param('normalStrength','float',1.2,{min:0,max:3}))};}],
+    mossyRock:[g=>{const r=rockLayers(g),amount=g.param('mossAmount','float',.55,{min:0,max:1});
+      const up=g.worldAlignedBlend(3,amount.mul(2.4).sub(2.2)),cover=up.mul(g.noise(r.p,{kind:'fbm',scale:1.3,octaves:4}).mul(1.7)).saturate();
+      const mask=g.heightLerp(0,1,r.orm.b.oneMinus(),cover,.7),tone=g.noise(r.p,{kind:'fbm',scale:5,octaves:3}).smoothstep(.3,.7),fuzz=g.noise(r.p,{kind:'value',scale:45}).mul(.35).add(.78);
+      const moss=g.lerp(g.param('mossColor','color','#1f3510'),g.param('mossTipColor','color','#4f6e1c'),tone).mul(fuzz);
+      const mossN=g.bump(g.noise(r.p,{kind:'value',scale:60}).mul(.004),1,{space:'world'});
+      return {baseColor:g.lerp(r.alb,moss,mask),roughness:g.lerp(r.orm.g,.95,mask),ao:g.lerp(r.orm.r,g.lerp(.75,1,tone),mask),normal:g.lerp(r.nrm,mossN,mask.mul(.85)).normalize(),subsurface:moss.mul(mask.mul(.12))};},{normalSpace:'world',subsurface:{wrap:.6,scale:.3}}],
+    snowCovered:[g=>{const r=rockLayers(g),cov=g.param('coverage','float',.5,{min:0,max:1}),d=g.dot(r.n,[0,1,0]).add(g.noise(r.p,{kind:'fbm',scale:2.2,octaves:4}).sub(.5).mul(.6));
+      const m0=d.sub(cov.mul(-2).add(1)).mul(4).add(.5).saturate(),mask=g.heightLerp(0,1,r.orm.b.oneMinus(),m0,.8);
+      const sparkle=g.noise(r.p.mul(26).add(g.viewDir().mul(1.2)),{kind:'value'}).smoothstep(.9,.975).mul(mask);
+      const snowN=g.bump(g.noise(r.p,{kind:'fbm',scale:9,octaves:3}).mul(.012),1,{space:'world'});
+      return {baseColor:g.lerp(r.alb,g.param('snowColor','color','#dde5ef'),mask),roughness:g.lerp(r.orm.g,.62,mask),ao:g.lerp(r.orm.r,1,mask),normal:g.lerp(r.nrm,snowN,mask.mul(.9)).normalize(),
+        subsurface:g.color('#7fa6e0').mul(mask.mul(.3)),emissive:g.color('#ffffff').mul(sparkle.mul(2.5))};},{normalSpace:'world',subsurface:{wrap:.7,distortion:.3,power:3,scale:.5}}],
+    carPaint:[g=>{const lp=g.worldPos().sub(g.objectPos()),v=g.noise(lp,{kind:'voronoi',scale:g.param('flakeScale','float',95,{min:10,max:300})}),cell=v.out('cell');
+      const fr=g.fresnel({exponent:2.5,baseReflectFraction:0}),sparkle=cell.smoothstep(.72,.97);
+      const flake=g.custom('normalize(vec3((fract(vec2(c * 91.7, c * 47.3)) - 0.5) * s, 1.0))','vec3',{c:['float',cell],s:['float',g.param('flakeStrength','float',.5,{min:0,max:2})]});
+      return {baseColor:g.lerp(g.param('paintColor','color','#9a0b1a'),g.param('flipColor','color','#24020a'),fr).mul(sparkle.mul(.4).add(.85)),metallic:g.param('metallic','float',.6,{min:0,max:1}),
+        roughness:g.param('roughness','float',.34,{min:0,max:1}),normal:flake,clearcoat:g.param('clearcoat','float',1,{min:0,max:1}),clearcoatRoughness:g.param('clearcoatRoughness','float',.03,{min:0,max:1})};},{model:'physical'}],
+    glass:[g=>{const fr=g.fresnel({exponent:5,baseReflectFraction:.04});
+      return {baseColor:g.param('tint','color','#e3f4f0'),metallic:0,roughness:g.param('roughness','float',.03,{min:0,max:1}),opacity:g.lerp(g.param('opacity','float',.12,{min:0,max:1}),1,fr.mul(.6)),refraction:g.param('refraction','float',.6,{min:0,max:2})};},
+      {model:'physical',transparent:true,material:{envMapIntensity:1.3}}],
+    hologram:[g=>{const p=g.worldPos(),y=p.y,t=g.time(),col=g.param('color','color','#27d3ff'),fr=g.fresnel({exponent:2.2,baseReflectFraction:0});
+      const bands=y.mul(g.param('scanDensity','float',9,{min:1,max:40})).sub(t.mul(1.2)).fract().smoothstep(.8,1),fine=y.mul(140).sin().mul(.5).add(.5),flick=g.noise(t.mul(9),{kind:'value'}).mul(.3).add(.8);
+      const glitch=g.noise(g.vec2(y.mul(10).floor(),t.mul(7).floor()),{kind:'value'}).step(.9);
+      return {emissive:col.mul(g.param('intensity','float',2.2,{min:0,max:10})).mul(fr.mul(1.6).add(.12).add(bands.mul(.7)).add(fine.mul(.1))).mul(flick),
+        opacity:fr.add(.2).add(bands.mul(.35)).add(fine.mul(.08)).saturate(),worldPositionOffset:g.vec3(glitch.mul(t.mul(53).sin()).mul(.04),0,0)};},
+      {model:'unlit',transparent:true,blending:'additive',depthWrite:false,side:'double'}],
+    dissolve:[g=>{const n=g.noise(g.worldPos().sub(g.objectPos()),{kind:'fbm',scale:3.5,octaves:4}),d=n.sub(g.param('amount','float',.45,{min:0,max:1}));
+      const edge=d.smoothstep(0,g.param('edgeWidth','float',.06,{min:.001,max:.3})).oneMinus().pow(2);
+      const w=g.param('edgeWidth','float',.06,{min:.001,max:.3}),char=d.smoothstep(0,w.mul(2.5));
+      return {baseColor:g.param('baseColor','color','#8d949c').mul(char.mul(.8).add(.2)),metallic:.85,roughness:g.noise(g.worldPos(),{kind:'fbm',scale:9,octaves:3}).mul(.2).add(.25),alphaClip:d.add(.5),
+        emissive:g.param('edgeColor','color','#ff6a14').mul(edge.mul(g.param('edgeIntensity','float',12,{min:0,max:40})))};}],
+    forceField:[g=>{const p=g.worldPos(),col=g.param('color','color','#3a9dff'),fr=g.fresnel({exponent:2.5,baseReflectFraction:0});
+      const v=g.noise(p.sub(g.objectPos()),{kind:'voronoi',scale:g.param('cellScale','float',7,{min:1,max:30})}),lines=v.out('edge').smoothstep(0,.07).oneMinus();
+      const pulse=g.time().mul(2).sub(p.y.mul(5)).sin().mul(.5).add(.5),inter=g.depthFade(g.param('intersection','float',.35,{min:.01,max:3})).oneMinus();
+      return {emissive:col.mul(g.param('intensity','float',1.8,{min:0,max:10})).mul(fr.mul(1.4).add(lines.mul(pulse.mul(.6).add(.2))).add(inter.mul(3)).add(.03)),
+        opacity:fr.mul(.9).add(lines.mul(.35)).add(inter).add(.04).saturate()};},{model:'unlit',transparent:true,blending:'additive',depthWrite:false,side:'double'}],
+    lava:[g=>{const lp=g.worldPos().sub(g.objectPos()),t=g.time(),drift=g.vec3(0,t.mul(-.08),t.mul(.03));
+      const flow=g.noise(lp.mul(2.2).add(drift),{kind:'fbm',octaves:5}),v=g.noise(lp.add(flow.mul(.18)).add(drift.mul(.3)),{kind:'voronoi',scale:g.param('cellScale','float',5.5,{min:1,max:20})});
+      const crack=v.out('edge').add(flow.sub(.5).mul(.08)).smoothstep(.01,.09).oneMinus(),pool=flow.smoothstep(.6,.78),heat=crack.max(pool).mul(flow.mul(.5).add(.75)).saturate();
+      const crust=g.lerp('#0d0a09','#2e241f',g.noise(lp,{kind:'fbm',scale:9,octaves:3})).mul(v.out('cell').mul(.5).add(.75));
+      const hot=g.lerp(g.lerp('#7a0a00','#ff3a00',heat.smoothstep(0,.55)),'#ffd05a',heat.smoothstep(.75,1));
+      return {baseColor:g.lerp(crust,'#140400',heat),roughness:g.lerp(.9,.5,heat),metallic:0,normal:g.bump(crack.max(pool).oneMinus().mul(.03),1),
+        emissive:hot.mul(heat.mul(heat).mul(g.param('glow','float',5,{min:0,max:40}))),
+        worldPositionOffset:g.worldNormal().mul(g.noise(g.worldPos().mul(1.4).add(drift),{kind:'perlin'}).sub(.5).mul(g.param('bubble','float',.04,{min:0,max:.3})))};}],
+    waterPuddle:[g=>{const p=g.worldPos(),xz=p.xz,gn=g.noise(p,{kind:'fbm',scale:3,octaves:5}),grit=g.noise(p,{kind:'value',scale:60}).mul(.4).add(.8);
+      const ground=g.lerp('#3b342d','#8a7d6e',gn).mul(grit),pz=g.noise(xz,{kind:'fbm',scale:2.2,octaves:4}).add(g.param('wetness','float',.5,{min:0,max:1}).mul(.5).sub(.25));
+      const flat=g.worldAlignedBlend(10,-8.2),puddle=pz.smoothstep(.5,.54).mul(flat),wet=pz.smoothstep(.3,.5).max(puddle);
+      const rv=g.noise(xz,{kind:'voronoi',scale:g.param('rippleScale','float',5,{min:1,max:20})}),phase=g.time().mul(.7).add(rv.out('cell')).fract();
+      const ring=rv.sub(phase.mul(.8)).mul(45).sin().mul(phase.oneMinus()).mul(rv.smoothstep(.15,.8).oneMinus());
+      return {baseColor:g.lerp(ground,ground.mul(.42),wet).mul(puddle.mul(-.25).add(1)),roughness:g.lerp(g.lerp(.9,.42,wet),.03,puddle),metallic:0,
+        normal:g.bump(gn.mul(.02).mul(puddle.oneMinus()).add(ring.mul(.0025).mul(puddle)),1)};}],
+    toon:[g=>{const fr=g.fresnel({exponent:3,baseReflectFraction:0}),ink=fr.smoothstep(.8,.84),rim=fr.smoothstep(.5,.56).mul(ink.oneMinus());
+      return {baseColor:g.param('color','color','#ff8a3d').mul(ink.mul(-.85).add(1)),roughness:.55,metallic:0,emissive:g.param('rimColor','color','#fff0cc').mul(rim.mul(.5))};},
+      {toon:{steps:3,smoothness:.02},material:{envMapIntensity:.35}}],
+    foliageSSS:[g=>{const uv=g.uv().mul(g.param('leafTiling','vec2',[12,6])),v1=g.noise(uv,{kind:'voronoi'}),v2=g.noise(uv.add([.5,.37]),{kind:'voronoi'}),p=g.worldPos(),t=g.time();
+      /* elliptical leaf per cell: distance to the feature point stretched across a random per-cell axis */
+      const shape=v=>g.custom('f * sqrt(pow(cos(a - c * 6.2831853), 2.0) + pow(sin(a - c * 6.2831853) * 2.1, 2.0))','float',{f:['float',v],a:['float',v.out('angle')],c:['float',v.out('cell')]});
+      const s1=shape(v1),s2=shape(v2),l1=s1.smoothstep(.4,.47).oneMinus(),l2=s2.smoothstep(.4,.47).oneMinus(),top=l1.step(.5);
+      const A=g.param('colorA','color','#1c4212'),B=g.param('colorB','color','#5f8f28'),c1=g.lerp(A,B,v1.out('cell')).mul(s1.mul(-1.2).add(1.2)),c2=g.lerp(A,B,v2.out('cell')).mul(s2.mul(-1.2).add(1.05));
+      const hgt=p.y.sub(g.objectPos().y).add(.6).saturate(),sway=t.mul(2.1).add(p.x.mul(.9)).add(p.z.mul(.7)).sin().mul(.5).add(g.noise(p.mul(.8).add(t.mul(.3)),{kind:'perlin'}).sub(.5));
+      return {baseColor:g.lerp(c2,c1,top),roughness:.55,metallic:0,alphaClip:l1.max(l2),normal:g.bump(g.lerp(s2,s1,top).mul(.015),1),
+        subsurface:g.param('translucency','color','#8cc238').mul(.6),worldPositionOffset:g.vec3(sway.mul(hgt).mul(.05),0,sway.mul(hgt).mul(.035)).mul(g.param('wind','float',1,{min:0,max:4}))};},
+      {side:'double',subsurface:{wrap:.5,distortion:.35,power:3,scale:1.1}}],
+    stylizedGrass:[g=>{const y=g.uv().y,root=g.param('rootColor','color','#1f4a1c'),tip=g.param('tipColor','color','#8fc03c'),p=g.worldPos(),t=g.time();
+      const vari=g.noise(p.xz.mul(.35),{kind:'fbm',octaves:3}),col=g.lerp(root,tip,y.pow(1.3)).mul(vari.mul(.35).add(.82));
+      const gust=g.noise(p.xz.mul(.15).sub(g.vec2(t.mul(.25),t.mul(.1))),{kind:'perlin'}),sway=t.mul(2.3).add(p.x.mul(.6)).add(p.z.mul(.4)).sin().mul(.35).add(gust.sub(.5).mul(1.8));
+      const amt=y.mul(y).mul(g.param('wind','float',.22,{min:0,max:1}));
+      return {baseColor:col,roughness:.65,metallic:0,ao:g.lerp(.45,1,y),subsurface:tip.mul(y.mul(.3)),normal:g.lerp(g.worldNormal(),[0,1,0],.65).normalize(),
+        worldPositionOffset:g.vec3(sway.mul(amt),amt.mul(sway.abs()).mul(-.15),sway.mul(amt).mul(.4))};},{side:'double',normalSpace:'world',subsurface:{wrap:.6,distortion:.2,power:3,scale:.8}}]
+  };
+  const lib={names:Object.keys(defs),size:S,
+    get textures(){return T();},
+    graph(name){const d=defs[name];if(!d)throw new Error('unknown library material '+name);return KE.shaderGraph.build(d[0]);},
+    create(name,params={},opts={}){const d=defs[name];if(!d)throw new Error(`unknown library material '${name}' (have ${Object.keys(defs).join(', ')})`);
+      const m=KE.shaderGraph(THREE,d[0],{name:'ke-'+name,...(d[1]||{}),...opts});for(const [k,v] of Object.entries(params))m.setParam(k,v);return m;},
+    dispose(){if(sets){sets.dispose();sets=null;}LIBS.delete(THREE);}};
+  for(const name of lib.names)lib[name]=(params,opts)=>lib.create(name,params,opts);
+  LIBS.set(THREE,lib);return lib;
+};
+
+KE.registerModule('materials',{provides:['MaterialGraph','shaderGraph','materialLibrary']});
 })();
 
 /* ===== module: 22-water.js ===== */
@@ -2808,10 +3633,10 @@ KE.FoliageSpawner=class{
       const dists=(type.lodDistances&&type.lodDistances.length?type.lodDistances:[Math.min(view,(o.maxDistance||view))*.9*lodScale]).map(d=>d*(type.lodDistances?lodScale:1));
       const levelParts=[parts];for(const l of type.lods||[])levelParts.push(typeParts(l.geometry,l.material));
       /* Optional hand-off to a shared instanced-LOD system (KE.InstancedLOD, when a later module provides
-         one and opts.instancedLOD !== false). Contract: new KE.InstancedLOD(THREE, scene, {name, matrices,
+         one, sets KE.InstancedLOD.foliageContract = 1, and opts.instancedLOD !== false). Contract: new KE.InstancedLOD(THREE, scene, {name, matrices,
          colors, count, levels:[{distance, parts:[{geometry, material, customDepthMaterial}]}], castShadow})
          returning an object with update(camera) and dispose(). Any failure falls back to the built-in path. */
-      if(o.instancedLOD!==false&&typeof KE.InstancedLOD==='function'&&n>0){
+      if(o.instancedLOD!==false&&typeof KE.InstancedLOD==='function'&&KE.InstancedLOD.foliageContract===1&&n>0){
         try{const lod=new KE.InstancedLOD(THREE,scene,{name:type.name||'type'+ti,matrices:mats,colors:cols,count:n,castShadow:type.castShadow!==false,
             levels:dists.map((distance,li)=>({distance,parts:levelParts[Math.min(li,levelParts.length-1)].map(p=>({geometry:p.geometry,material:p.material,customDepthMaterial:p.material&&p.material.userData&&p.material.userData.keFoliage?KE.foliageDepthMaterial(p.material):null}))}))});
           if(lod&&typeof lod.update==='function'){this.groups.push({name:type.name||'type'+ti,count:n,height:hgt,matrices:mats,colors:cols,start,cnt,levels:[{distance:dists[dists.length-1],meshes:[]}],meshes:[],external:lod});this.count+=n;return;}}
@@ -3794,6 +4619,911 @@ KE.meshStats=root=>{const s={objects:0,meshes:0,instancedMeshes:0,instances:0,dr
 
 KE.cvars&&KE.cvars.register('r.Geometry.PixelError',{value:1,type:'number',min:.25,max:16,help:'Default pixel error for new VirtualGeometry objects'});
 KE.registerModule('geometry',{provides:['geometryReady','simplify','buildLODs','screenError','LODMesh','InstancedLOD','Impostor','VirtualGeometry','proceduralRock','meshStats']});
+})();
+
+/* ===== module: 32-world.js ===== */
+/* kitsune enginev3 · 32-world — open worlds.
+   KE.Heightfield: seeded landscape generation (domain-warped, derivative-damped fbm + ridged multifractal),
+   particle hydraulic erosion (Hans Beyer droplets), thermal erosion, image import, biome splat weights.
+   KE.GPUTerrain: CDLOD terrain (Strugar 2010): CPU quadtree selection with min/max height boxes, vertex
+   geomorphing between levels, every selected patch drawn by ONE instanced draw call that displaces a shared
+   grid from a height texture. CPU heightAt/normalAt/raycast/sculpt agree with what the GPU draws.
+   KE.WorldPartition: cell streaming with nearest-first time-sliced loads, hysteresis unloads, cancellation and
+   HLOD proxies. KE.scatterCell: deterministic per-cell instanced scatter that follows a heightfield. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const smooth=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t);};
+const isThree=v=>!!(v&&typeof v==='object'&&typeof v.REVISION==='string'&&v.Vector3);
+const hashInts=(a,b,c)=>{let h=Math.imul((a|0)^0x9e3779b9,0x85ebca6b)^Math.imul((b|0)+0x632be5ab,0xc2b2ae35)^Math.imul((c|0)+0x27d4eb2f,0x165667b1);h^=h>>>15;h=Math.imul(h,0x2c1b3c6d);h^=h>>>12;h=Math.imul(h,0x297a2d39);h^=h>>>15;return h>>>0;};
+
+/* ---------- seeded gradient noise with analytic derivatives ----------
+   Classic 2D Perlin gradient noise with a quintic fade. Returns about [-1,1]; the gradient of the last
+   evaluation is left in ND[0..1] (used by the derivative-damped "eroded" fbm). One shared, monomorphic
+   function reads per-seed tables, which keeps the hot loop inlinable (a 1024^2 bake is ~30M evaluations). */
+function makeNoise(seed){
+  const rnd=KE.random((seed>>>0)||1),p=new Uint8Array(256),perm=new Uint16Array(512),gx=new Float64Array(256),gy=new Float64Array(256);
+  for(let i=0;i<256;i++)p[i]=i;
+  for(let i=255;i>0;i--){const j=Math.floor(rnd()*(i+1)),t=p[i];p[i]=p[j];p[j]=t;}
+  for(let i=0;i<512;i++)perm[i]=p[i&255];
+  for(let i=0;i<256;i++){const a=rnd()*Math.PI*2;gx[i]=Math.cos(a)*1.4142;gy[i]=Math.sin(a)*1.4142;}
+  return {perm,gx,gy};
+}
+const ND=new Float64Array(2);
+function noise2(N,x,y){
+  const perm=N.perm,G=N.gx,H=N.gy,fx=Math.floor(x),fy=Math.floor(y),u=x-fx,v=y-fy,X=fx&255,Y=fy&255,A=perm[X]+Y,B=perm[X+1]+Y;
+  const a=perm[A],c=perm[A+1],b=perm[B],d=perm[B+1];
+  const gax=G[a],gay=H[a],gbx=G[b],gby=H[b],gcx=G[c],gcy=H[c],gdx=G[d],gdy=H[d];
+  const va=gax*u+gay*v,vb=gbx*(u-1)+gby*v,vc=gcx*u+gcy*(v-1),vd=gdx*(u-1)+gdy*(v-1);
+  const su=u*u*u*(u*(u*6-15)+10),sv=v*v*v*(v*(v*6-15)+10),dsu=30*u*u*(u*(u-2)+1),dsv=30*v*v*(v*(v-2)+1);
+  const k1=vb-va,k2=vc-va,k3=va-vb-vc+vd;
+  ND[0]=gax+(gbx-gax)*su+(gcx-gax)*sv+(gax-gbx-gcx+gdx)*su*sv+dsu*(k1+k3*sv);
+  ND[1]=gay+(gby-gay)*su+(gcy-gay)*sv+(gay-gby-gcy+gdy)*su*sv+dsv*(k2+k3*su);
+  return va+k1*su+k2*sv+k3*su*sv;
+}
+/* Octaves are rotated ~37 degrees and doubled (matrix [1.6 -1.2; 1.2 1.6]) so lattice axes never line up. */
+function fbm(N,x,y,octaves){let s=0,a=1,n=0;for(let o=0;o<octaves;o++){s+=a*noise2(N,x,y);n+=a;a*=.5;const nx=1.6*x-1.2*y+17.3,ny=1.2*x+1.6*y-9.1;x=nx;y=ny;}return s/n;}
+/* Derivative-damped fbm (after Inigo Quilez): octaves are suppressed where the accumulated slope is steep,
+   which reads like eroded, flat-floored valleys with sharp detail only on gentle ground. */
+function erodedFbm(N,x,y,octaves,damping){let s=0,a=1,n=0,dx=0,dy=0;
+  for(let o=0;o<octaves;o++){const v=noise2(N,x,y);dx+=ND[0];dy+=ND[1];s+=a*v/(1+damping*(dx*dx+dy*dy));n+=a;a*=.5;const nx=1.6*x-1.2*y+31.7,ny=1.2*x+1.6*y+4.3;x=nx;y=ny;}
+  return s/n;}
+/* Ridged multifractal (Musgrave): sharp crest lines; each octave is weighted by the previous signal so
+   detail concentrates on the ridges. Returns [0,1]. */
+function ridgedFbm(N,x,y,octaves){let s=0,a=1,n=0,w=1;
+  for(let o=0;o<octaves;o++){let v=1-Math.abs(noise2(N,x,y));v*=v;v*=w;w=clamp(v*1.8,0,1);s+=v*a;n+=a;a*=.5;const nx=1.6*x-1.2*y-7.9,ny=1.2*x+1.6*y+13.1;x=nx;y=ny;}
+  return s/n*1.6;}
+
+/* World-space landscape function. Everything is a function of world (x,z) so neighbouring streamed cells or
+   differently sized bakes of the same seed line up. Components (normalised to about [-1,1] / [0,1]):
+   a warped continental fbm decides lowland vs. mountain country and where the coast lies, derivative-damped
+   fbm gives rolling eroded hills, ridged multifractal gives crest lines; `ridged` blends hills->ridges inside
+   the mountain mask. Returns world height: baseHeight + amplitude * (shape - seaLevel). */
+function terrainFunction(o={}){
+  const seed=(o.seed===undefined?1:o.seed)>>>0,worldSize=o.worldSize||2048,octaves=clamp(Math.round(o.octaves||7),1,12);
+  const amplitude=o.amplitude===undefined?180:o.amplitude,base=o.baseHeight||0,ridged=clamp(o.ridged===undefined?.5:o.ridged,0,1),warp=Math.max(0,o.warp===undefined?.35:o.warp);
+  const scale=o.scale||worldSize*.5,inv=1/scale,cx=o.centerX||0,cz=o.centerZ||0,sea=o.seaLevel===undefined?.1:o.seaLevel,damp=o.damping===undefined?1.2:o.damping;
+  const mountains=clamp(o.mountains===undefined?.5:o.mountains,0,1),islands=!!o.islands,falloff=o.falloff,hillsAmt=o.hills===undefined?.16:o.hills;
+  const nW1=makeNoise(seed*7+1),nW2=makeNoise(seed*7+2),nC=makeNoise(seed*7+3),nH=makeNoise(seed*7+4),nR=makeNoise(seed*7+5),nD=makeNoise(seed*7+6);
+  const ox=(hashInts(seed,1,0)%1000)*.37,oz=(hashInts(seed,2,0)%1000)*.37,half=worldSize/2,mlo=.55-mountains*.9;
+  return (x,z)=>{
+    let px=x*inv+ox,pz=z*inv+oz;
+    if(warp>0){const wx=fbm(nW1,px*.8+3.1,pz*.8-1.7,4),wz=fbm(nW2,px*.8-5.3,pz*.8+2.9,4);px+=warp*wx;pz+=warp*wz;}
+    const C=fbm(nC,px*.55+11.3,pz*.55-4.2,5)/.42;                  // continental shape, ~[-1,1]
+    const mask=smooth(mlo,mlo+.75,C+fbm(nD,px*1.7-3,pz*1.7+8,3)*.35); // mountain country
+    const H=erodedFbm(nH,px*1.6,pz*1.6,octaves,damp)/.24;         // eroded hills, ~[-1,1]
+    const R=ridgedFbm(nR,px*1.35+2.2,pz*1.35-8.4,octaves)/1.4;    // ridges, ~[0,1]
+    const rough=clamp((H*.5+.5)*(1-ridged)+R*ridged,0,1.2);
+    let v=.13+.14*C+hillsAmt*H*(.35+.65*(1-mask))+mask*(Math.pow(rough,1.7)*.95+.04);
+    if(islands||falloff){
+      let m=1;
+      if(typeof falloff==='function')m=clamp(+falloff(x,z)||0,0,1);
+      else{const edge=typeof falloff==='number'?clamp(falloff,.02,.95):.42,r=Math.hypot(x-cx,z-cz)/half+fbm(nD,px*.8+40,pz*.8-40,3)*.22;m=1-smooth(1-edge,1.02,r);}
+      v=v*m-(1-m)*.2;
+    }
+    return base+amplitude*(v-sea);
+  };
+}
+
+/* ---------- Heightfield ----------
+   size x size samples covering worldSize x worldSize world units, row-major with z rows: data[j*size+i] is
+   the height at (originX+i*spacing, originZ+j*spacing), spacing = worldSize/(size-1). Default origin centres
+   the field on (0,0). heightAt is bilinear and clamps outside the field (the GPU terrain samples identically). */
+class Heightfield{
+  constructor({data=null,size,worldSize,originX,originZ}={}){
+    if(!Number.isInteger(size)||size<2||size>8192)throw new RangeError('Heightfield size must be an integer in [2,8192]');
+    if(!(worldSize>0))throw new RangeError('Heightfield worldSize must be positive');
+    this.size=size;this.worldSize=worldSize;this.originX=originX===undefined?-worldSize/2:originX;this.originZ=originZ===undefined?-worldSize/2:originZ;
+    this.spacing=worldSize/(size-1);this.invSpacing=1/this.spacing;
+    this.data=data||new Float32Array(size*size);if(this.data.length!==size*size)throw new RangeError('Heightfield data length must be size*size');
+    this.masks=null;this.version=0;this.recomputeRange();
+  }
+  recomputeRange(){let lo=Infinity,hi=-Infinity;const d=this.data;for(let i=0;i<d.length;i++){const v=d[i];if(v<lo)lo=v;if(v>hi)hi=v;}this.minHeight=lo;this.maxHeight=hi;return this;}
+  get maxX(){return this.originX+this.worldSize;}
+  get maxZ(){return this.originZ+this.worldSize;}
+  sample(i,j){const s=this.size;i=i<0?0:i>=s?s-1:i;j=j<0?0:j>=s?s-1:j;return this.data[j*s+i];}
+  heightAt(x,z){
+    const s=this.size,d=this.data,m=s-1;let tx=(x-this.originX)*this.invSpacing,tz=(z-this.originZ)*this.invSpacing;
+    tx=tx<0?0:tx>m?m:tx;tz=tz<0?0:tz>m?m:tz;let i=Math.floor(tx),j=Math.floor(tz);if(i>s-2)i=s-2;if(j>s-2)j=s-2;
+    const fx=tx-i,fz=tz-j,k=j*s+i,a=d[k],b=d[k+1],c=d[k+s],e=d[k+s+1];
+    return (a+(b-a)*fx)+((c+(e-c)*fx)-(a+(b-a)*fx))*fz;
+  }
+  /* Gradient (dh/dx, dh/dz) from grid central differences, bilinearly interpolated between samples, so it
+     varies smoothly and matches the linearly filtered GPU normal map. */
+  gradientAt(x,z,out={x:0,z:0}){
+    const s=this.size,m=s-1;let tx=(x-this.originX)*this.invSpacing,tz=(z-this.originZ)*this.invSpacing;
+    tx=tx<0?0:tx>m?m:tx;tz=tz<0?0:tz>m?m:tz;let i=Math.floor(tx),j=Math.floor(tz);if(i>s-2)i=s-2;if(j>s-2)j=s-2;const fx=tx-i,fz=tz-j;
+    let gx=0,gz=0;for(let q=0;q<4;q++){const ii=i+(q&1),jj=j+(q>>1),w=((q&1)?fx:1-fx)*((q>>1)?fz:1-fz);gx+=w*this._gx(ii,jj);gz+=w*this._gz(ii,jj);}
+    out.x=gx;out.z=gz;return out;
+  }
+  _gx(i,j){const s=this.size,d=this.data,a=i>0?i-1:0,b=i<s-1?i+1:s-1;return (d[j*s+b]-d[j*s+a])/((b-a)*this.spacing);}
+  _gz(i,j){const s=this.size,d=this.data,a=j>0?j-1:0,b=j<s-1?j+1:s-1;return (d[b*s+i]-d[a*s+i])/((b-a)*this.spacing);}
+  normalAt(x,z,out){const g=this.gradientAt(x,z,_grad),l=Math.hypot(g.x,1,g.z);out=out||{x:0,y:0,z:0};out.x=-g.x/l;out.y=1/l;out.z=-g.z/l;return out;}
+  /** Slope as rise over run, |grad h| (0 flat, 1 = 45 degrees). */
+  slopeAt(x,z){const g=this.gradientAt(x,z,_grad);return Math.hypot(g.x,g.z);}
+  contains(x,z){return x>=this.originX&&x<=this.maxX&&z>=this.originZ&&z<=this.maxZ;}
+  clone(){const h=new Heightfield({data:new Float32Array(this.data),size:this.size,worldSize:this.worldSize,originX:this.originX,originZ:this.originZ});if(this.masks)h.masks={flow:this.masks.flow&&new Float32Array(this.masks.flow),delta:this.masks.delta&&new Float32Array(this.masks.delta)};return h;}
+  /** Volume above minHeight reference (sum of heights * cell area); used for conservation checks. */
+  volume(){let s=0;const d=this.data;for(let i=0;i<d.length;i++)s+=d[i];return s*this.spacing*this.spacing;}
+  /* GPU texture of the raw samples. format: 'float' (R32F, exact), 'half' (R16F), 'rgba8' (24-bit fixed point
+     packed in RGB between min/max; for WebGL1 without float textures) or 'auto'. Nearest filtered: the
+     terrain shader does its own bilinear filtering with 4 texel fetches so results match heightAt(). */
+  toTexture(THREE,{format='auto',renderer=null}={}){
+    if(format==='auto')format=renderer&&!renderer.capabilities.isWebGL2&&!(renderer.extensions&&renderer.extensions.has('OES_texture_float'))?'rgba8':'float';
+    const s=this.size;let tex;const info={format,min:this.minHeight,range:Math.max(1e-6,this.maxHeight-this.minHeight)};
+    if(format==='float')tex=new THREE.DataTexture(this.data,s,s,THREE.RedFormat,THREE.FloatType);
+    else if(format==='half'){const h=new Uint16Array(s*s);for(let i=0;i<h.length;i++)h[i]=toHalf(this.data[i]);tex=new THREE.DataTexture(h,s,s,THREE.RedFormat,THREE.HalfFloatType);}
+    else if(format==='rgba8'){const b=new Uint8Array(s*s*4);packRGBA8(this.data,b,info,0,0,s,s,s);tex=new THREE.DataTexture(b,s,s,THREE.RGBAFormat,THREE.UnsignedByteType);}
+    else throw new RangeError('Unknown heightfield texture format '+format);
+    tex.minFilter=tex.magFilter=THREE.NearestFilter;tex.generateMipmaps=false;tex.flipY=false;tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping;tex.unpackAlignment=1;tex.needsUpdate=true;
+    tex.userData=tex.userData||{};tex.userData.keHeightfield=info;tex.name='ke-heightfield';return tex;
+  }
+}
+const _grad={x:0,z:0};
+const _f32=new Float32Array(1),_u32=new Uint32Array(_f32.buffer);
+function toHalf(v){_f32[0]=v;const x=_u32[0],sign=(x>>>16)&0x8000,e=((x>>>23)&0xff)-112,m=x&0x7fffff;if(e<=0)return sign;if(e>=31)return sign|0x7c00;return sign|(e<<10)|((m+0x1000)>>>13);}
+function packRGBA8(src,dst,info,i0,j0,i1,j1,s){for(let j=j0;j<j1;j++)for(let i=i0;i<i1;i++){const k=j*s+i,v=Math.round(clamp((src[k]-info.min)/info.range,0,1)*16777215);dst[k*4]=v>>>16;dst[k*4+1]=(v>>>8)&255;dst[k*4+2]=v&255;dst[k*4+3]=255;}}
+
+/* ---------- generation ---------- */
+function* generateSteps(o,hf,fn){const s=hf.size,d=hf.data,sp=hf.spacing;
+  for(let j=0;j<s;j++){const z=hf.originZ+j*sp,row=j*s;for(let i=0;i<s;i++)d[row+i]=fn(hf.originX+i*sp,z);if((j&7)===7)yield j/s;}
+  hf.recomputeRange();hf.version++;return hf;}
+Heightfield.terrainFunction=terrainFunction;
+/* generate(opts) -> Heightfield (synchronous) or, with opts.jobs (a KE.Jobs queue), a promise resolved when
+   the rows have been produced under that queue's frame budget. */
+Heightfield.generate=(o={})=>{
+  const size=o.size||1024,worldSize=o.worldSize||2048;
+  const hf=new Heightfield({size,worldSize,originX:o.originX,originZ:o.originZ});
+  const fn=terrainFunction({...o,worldSize,centerX:hf.originX+worldSize/2,centerZ:hf.originZ+worldSize/2}),steps=generateSteps(o,hf,fn);
+  if(o.jobs)return o.jobs.add(steps,{name:'heightfield.generate',priority:o.priority||0});
+  let r;do r=steps.next();while(!r.done);return hf;
+};
+
+/* ---------- hydraulic erosion ----------
+   Droplet simulation after Hans Theobald Beyer, "Implementation of a method for hydraulic erosion" (2015),
+   in the widely used form popularised by Sebastian Lague. Each droplet follows the bilinear gradient with
+   inertia, picks up sediment up to a capacity proportional to speed, water and downhill drop, erodes with a
+   radial brush and deposits when over capacity or moving uphill. Heights are normalised by the field's
+   height range while simulating so the parameters behave the same for any world scale. Sediment still
+   carried when a droplet evaporates is dropped where it dies (only droplets leaving the map lose material).
+   Channel networks need roughly one droplet per sample, which is unaffordable at 1024^2, so by default the
+   droplets run on a coarser simulation grid (simSize, 385 samples): the resulting height change is
+   upsampled bilinearly, corrected so its total volume matches the simulation exactly, and added to the full
+   field, which keeps all of its fine detail. `detailIterations` optionally adds a full-resolution pass.
+   The field keeps masks.flow (droplet visits per sample) and masks.delta (signed height change). */
+function* dropletPass(map,S,o,rnd,flow,iterations,stats){
+  const inertia=o.inertia===undefined?.05:o.inertia,capacityF=o.capacity===undefined?4:o.capacity,minCap=o.minCapacity===undefined?.001:o.minCapacity;
+  const erodeS=o.erosion===undefined?.3:o.erosion,depositS=o.deposition===undefined?.3:o.deposition,evap=o.evaporation===undefined?.01:o.evaporation;
+  const gravity=o.gravity===undefined?4:o.gravity,life=Math.round(o.lifetime||clamp(30*Math.sqrt(S/256),30,90)),radius=Math.max(1,o.radius===undefined?3:o.radius);
+  const spawnMin=o._spawnMin;stats.lifetime=life;
+  // radial brush: offsets and weights max(0, r - d) normalised; clipped at the borders and renormalised there
+  const brush=r=>{const R=Math.ceil(r),bo=[],bw=[];let sum=0;for(let y=-R;y<=R;y++)for(let x=-R;x<=R;x++){const d=Math.hypot(x,y);if(d<r){bo.push(x,y);bw.push(r-d);sum+=r-d;}}return {R,n:bw.length,w:new Float32Array(bw.map(w=>w/sum)),o:new Int32Array(bo)};};
+  const eb=brush(radius),db=o.depositRadius===0?null:brush(Math.max(1.01,o.depositRadius===undefined?Math.min(2,radius):o.depositRadius));
+  const R=eb.R,BN=eb.n,BW=eb.w,BO=eb.o;
+  // deposition: bilinear (as in the reference) or, by default, a small radial brush which avoids single-sample spikes
+  const deposit=(nx,ny,cx,cy,amount)=>{if(amount<=0)return;const idx=ny*S+nx;
+    if(!db||nx<db.R||ny<db.R||nx>=S-1-db.R||ny>=S-1-db.R){depositAt(map,S,idx,cx,cy,amount);return;}
+    for(let b=0;b<db.n;b++)map[idx+db.o[b*2+1]*S+db.o[b*2]]+=amount*db.w[b];};
+  const batch=o.batch||2000,dumpEnd=o.conserve!==false;let lost=0,eroded=0;
+  for(let it=0;it<iterations;it++){
+    let px=rnd()*(S-1),py=rnd()*(S-1),dx=0,dy=0,speed=1,water=1,sediment=0;
+    if(spawnMin>-Infinity)for(let tries=0;tries<16&&map[Math.floor(py)*S+Math.floor(px)]<spawnMin;tries++){px=rnd()*(S-1);py=rnd()*(S-1);}
+    for(let l=0;l<life;l++){
+      const nx=Math.floor(px),ny=Math.floor(py),idx=ny*S+nx,cx=px-nx,cy=py-ny;
+      const hNW=map[idx],hNE=map[idx+1],hSW=map[idx+S],hSE=map[idx+S+1];
+      const gX=(hNE-hNW)*(1-cy)+(hSE-hSW)*cy,gY=(hSW-hNW)*(1-cx)+(hSE-hNE)*cx;
+      const height=hNW*(1-cx)*(1-cy)+hNE*cx*(1-cy)+hSW*(1-cx)*cy+hSE*cx*cy;
+      if(flow)flow[idx]+=1;
+      dx=dx*inertia-gX*(1-inertia);dy=dy*inertia-gY*(1-inertia);const len=Math.hypot(dx,dy);
+      if(len<1e-12){deposit(nx,ny,cx,cy,sediment);sediment=0;break;}
+      dx/=len;dy/=len;px+=dx;py+=dy;
+      if(px<0||px>=S-1||py<0||py>=S-1){lost+=sediment;sediment=0;break;}   // leaves the map with its load
+      const qx=Math.floor(px),qy=Math.floor(py),qi=qy*S+qx,fx=px-qx,fy=py-qy;
+      const newH=map[qi]*(1-fx)*(1-fy)+map[qi+1]*fx*(1-fy)+map[qi+S]*(1-fx)*fy+map[qi+S+1]*fx*fy,dh=newH-height;
+      const cap=Math.max(-dh*speed*water*capacityF,minCap);
+      if(sediment>cap||dh>0){
+        const amount=dh>0?Math.min(dh,sediment):(sediment-cap)*depositS;sediment-=amount;deposit(nx,ny,cx,cy,amount);
+      }else{
+        const amount=Math.min((cap-sediment)*erodeS,-dh);
+        // clipped brush near borders
+        let wsum=1;const edge=nx<R||ny<R||nx>=S-R||ny>=S-R;
+        if(edge){wsum=0;for(let b=0;b<BN;b++){const x=nx+BO[b*2],y=ny+BO[b*2+1];if(x>=0&&y>=0&&x<S&&y<S)wsum+=BW[b];}}
+        for(let b=0;b<BN;b++){const x=nx+BO[b*2],y=ny+BO[b*2+1];if(edge&&(x<0||y<0||x>=S||y>=S))continue;const k=y*S+x,w=amount*BW[b]/wsum,take=map[k]<w?map[k]:w;map[k]-=take;sediment+=take;eroded+=take;}
+      }
+      speed=Math.sqrt(Math.max(0,speed*speed-dh*gravity));water*=1-evap;
+      if(l===life-1&&sediment>0){if(dumpEnd)deposit(qx,qy,fx,fy,sediment);else lost+=sediment;sediment=0;}
+    }
+    if(it%batch===batch-1)yield it/iterations;
+  }
+  stats.eroded+=eroded;stats.lost+=lost;
+}
+function depositAt(map,S,idx,cx,cy,amount){if(amount<=0)return;map[idx]+=amount*(1-cx)*(1-cy);map[idx+1]+=amount*cx*(1-cy);map[idx+S]+=amount*(1-cx)*cy;map[idx+S+1]+=amount*cx*cy;}
+/* Mass-conserving 3x3 blur of a change field (each sample spreads its value with renormalised weights at
+   the borders): removes droplet-scale speckle and keeps channels. */
+function blurChange(ch,S,passes){const tmp=new Float32Array(S*S);
+  for(let p=0;p<passes;p++){tmp.fill(0);for(let y=0;y<S;y++)for(let x=0;x<S;x++){const v=ch[y*S+x];if(v===0)continue;
+    let wsum=0;for(let b=-1;b<=1;b++)for(let a=-1;a<=1;a++){const xx=x+a,yy=y+b;if(xx>=0&&yy>=0&&xx<S&&yy<S)wsum+=(a?1:2)*(b?1:2);}
+    for(let b=-1;b<=1;b++)for(let a=-1;a<=1;a++){const xx=x+a,yy=y+b;if(xx>=0&&yy>=0&&xx<S&&yy<S)tmp[yy*S+xx]+=v*(a?1:2)*(b?1:2)/wsum;}}ch.set(tmp);}}
+function bilinearGrid(src,s,x,y){x=clamp(x,0,s-1);y=clamp(y,0,s-1);let i=Math.floor(x),j=Math.floor(y);if(i>s-2)i=s-2;if(j>s-2)j=s-2;const fx=x-i,fy=y-j,k=j*s+i;
+  return (src[k]*(1-fx)+src[k+1]*fx)*(1-fy)+(src[k+s]*(1-fx)+src[k+s+1]*fx)*fy;}
+function* erodeSteps(hf,o){
+  const S=hf.size,N=S*S,src=hf.data,lo=hf.minHeight,H=o.heightScale||Math.max(1e-6,hf.maxHeight-hf.minHeight);
+  const iterations=Math.max(0,Math.round(o.iterations===undefined?80000:o.iterations)),rnd=KE.random((o.seed===undefined?1:o.seed)>>>0);
+  const sim=clamp(Math.round(o.simSize===undefined?Math.min(S,385):o.simSize),16,S),stats={eroded:0,lost:0,lifetime:0};
+  const po={...o,_spawnMin:o.spawnAbove===undefined?-Infinity:(o.spawnAbove-lo)/H};
+  const flow=o.masks===false?null:(hf.masks&&hf.masks.flow&&hf.masks.flow.length===N?hf.masks.flow:new Float32Array(N));
+  const change=new Float32Array(N),passes=o.smoothing===undefined?2:Math.max(0,o.smoothing|0);let simCell=1;
+  if(sim<S){
+    // coarse pass: resample, simulate, upsample the change with exact volume correction
+    const M=sim*sim,map=new Float32Array(M),f=(S-1)/(sim-1),cflow=flow?new Float32Array(M):null;simCell=f*f;
+    for(let j=0;j<sim;j++)for(let i=0;i<sim;i++)map[j*sim+i]=(bilinearGrid(src,S,i*f,j*f)-lo)/H;
+    const before=new Float32Array(map);yield* dropletPass(map,sim,po,rnd,cflow,iterations,stats);
+    const cch=new Float32Array(M);let target=0;for(let i=0;i<M;i++){cch[i]=map[i]-before[i];target+=cch[i];}
+    if(passes)blurChange(cch,sim,passes);yield .9;
+    let sum=0,abs=0;const inv=1/f;
+    for(let j=0;j<S;j++)for(let i=0;i<S;i++){const v=bilinearGrid(cch,sim,i*inv,j*inv);change[j*S+i]=v;sum+=v;abs+=Math.abs(v);if(cflow)flow[j*S+i]+=bilinearGrid(cflow,sim,i*inv,j*inv)/simCell;}
+    // the coarse field's integral in fine-sample units is target*simCell; spread the resampling error over changed samples
+    const err=target*simCell-sum;if(abs>0)for(let i=0;i<N;i++)change[i]+=err*Math.abs(change[i])/abs;
+    blurChange(change,S,Math.max(1,Math.round(f*.75)));yield .95; // hides the bilinear creases of the upsampled change (mass conserving)
+    stats.eroded*=simCell;stats.lost*=simCell;
+  }
+  const detail=sim<S?Math.max(0,Math.round(o.detailIterations||0)):iterations;
+  if(detail>0){const map=new Float32Array(N);for(let i=0;i<N;i++)map[i]=(src[i]-lo)/H+change[i];const before=new Float32Array(map);
+    yield* dropletPass(map,S,{...po,lifetime:o.detailLifetime||o.lifetime},rnd,flow,detail,stats);const fch=new Float32Array(N);for(let i=0;i<N;i++)fch[i]=map[i]-before[i];
+    if(passes)blurChange(fch,S,sim<S?1:passes);for(let i=0;i<N;i++)change[i]+=fch[i];}
+  yield 1;
+  const delta=o.masks===false?null:(hf.masks&&hf.masks.delta&&hf.masks.delta.length===N?hf.masks.delta:new Float32Array(N));
+  for(let i=0;i<N;i++){const v=src[i]+change[i]*H;if(delta)delta[i]+=v-src[i];src[i]=v;}
+  if(flow||delta)hf.masks={...(hf.masks||{}),flow,delta};
+  const cell=hf.spacing*hf.spacing;hf.erosionStats={droplets:iterations,detailDroplets:sim<S?detail:0,simSize:sim,erodedVolume:stats.eroded*H*cell,lostVolume:stats.lost*H*cell,lifetime:stats.lifetime};
+  hf.recomputeRange();hf.version++;return hf;
+}
+Heightfield.erode=(hf,o={})=>{const steps=erodeSteps(hf,o);if(o.jobs)return o.jobs.add(steps,{name:'heightfield.erode',priority:o.priority||0});let r;do r=steps.next();while(!r.done);return hf;};
+
+/* ---------- thermal erosion ----------
+   Talus relaxation: wherever the drop to an 8-neighbour exceeds talus * distance, a fraction of the largest
+   excess slides to the lower neighbours in proportion to their excess. Mass conserving. talus is rise/run. */
+function* thermalSteps(hf,o){
+  const S=hf.size,N=S*S,h=hf.data,sp=hf.spacing,iterations=Math.max(0,Math.round(o.iterations===undefined?40:o.iterations));
+  const talus=o.talus===undefined?.85:o.talus,rate=clamp(o.rate===undefined?.5:o.rate,0,1),delta=new Float32Array(N);
+  const DX=[1,-1,0,0,1,1,-1,-1],DY=[0,0,1,-1,1,-1,1,-1],lim=DX.map((x,k)=>talus*sp*Math.hypot(x,DY[k])),ex=new Float64Array(8);
+  for(let it=0;it<iterations;it++){
+    delta.fill(0);
+    for(let y=0;y<S;y++){for(let x=0;x<S;x++){const i=y*S+x,v=h[i];let sum=0,mx=0;
+      for(let k=0;k<8;k++){const xx=x+DX[k],yy=y+DY[k];let e=0;if(xx>=0&&yy>=0&&xx<S&&yy<S){e=v-h[yy*S+xx]-lim[k];if(e<0)e=0;}ex[k]=e;sum+=e;if(e>mx)mx=e;}
+      if(sum<=0)continue;const move=rate*mx*.5;
+      for(let k=0;k<8;k++)if(ex[k]>0){const a=move*ex[k]/sum;delta[(y+DY[k])*S+x+DX[k]]+=a;delta[i]-=a;}}}
+    for(let i=0;i<N;i++)h[i]+=delta[i];
+    yield (it+1)/iterations;
+  }
+  hf.recomputeRange();hf.version++;return hf;
+}
+Heightfield.thermalErode=(hf,o={})=>{const steps=thermalSteps(hf,o);if(o.jobs)return o.jobs.add(steps,{name:'heightfield.thermal',priority:o.priority||0});let r;do r=steps.next();while(!r.done);return hf;};
+
+/* ---------- import ----------
+   image: HTMLImageElement / canvas / ImageBitmap / ImageData, or {data, width, height} with Uint8/Uint16/Float32
+   samples (1 or 4 channels). encoding 'luma' (8-bit gray) or 'rg16' (R*256+G, 16-bit). Non-square input is
+   resampled bilinearly to a square of `size` samples (default max(width,height)). */
+Heightfield.fromImage=(image,o={})=>{
+  let w,h,px,ch=4;
+  if(image&&image.data&&image.width&&image.height){w=image.width;h=image.height;px=image.data;ch=image.channels||Math.round(px.length/(w*h));}
+  else{if(typeof document==='undefined')throw new Error('fromImage needs a DOM for image sources');w=image.naturalWidth||image.width;h=image.naturalHeight||image.height;
+    const c=document.createElement('canvas');c.width=w;c.height=h;const g=c.getContext('2d');g.drawImage(image,0,0);px=g.getImageData(0,0,w,h).data;}
+  if(!(w>1&&h>1))throw new RangeError('fromImage needs an image at least 2x2');
+  const enc=o.encoding||'luma',max=px instanceof Uint16Array?65535:px instanceof Float32Array||px instanceof Float64Array?1:255;
+  const val=(x,y)=>{const k=(y*w+x)*ch;if(ch===1)return px[k]/max;if(enc==='rg16')return (px[k]*256+px[k+1])/65535;return (px[k]*.299+px[k+1]*.587+px[k+2]*.114)/max;};
+  const size=o.size||Math.max(w,h),minH=o.minHeight||0,maxH=o.maxHeight===undefined?100:o.maxHeight;
+  const hf=new Heightfield({size,worldSize:o.worldSize||size-1,originX:o.originX,originZ:o.originZ});
+  for(let j=0;j<size;j++)for(let i=0;i<size;i++){const fx=i/(size-1)*(w-1),fy=j/(size-1)*(h-1),x0=Math.min(Math.floor(fx),w-2),y0=Math.min(Math.floor(fy),h-2),tx=fx-x0,ty=fy-y0;
+    const v=(val(x0,y0)*(1-tx)+val(x0+1,y0)*tx)*(1-ty)+(val(x0,y0+1)*(1-tx)+val(x0+1,y0+1)*tx)*ty;hf.data[j*size+i]=minH+v*(maxH-minH);}
+  if(o.smooth){for(let p=0;p<o.smooth;p++)boxSmooth(hf);}
+  return hf.recomputeRange();
+};
+function boxSmooth(hf){const s=hf.size,d=hf.data,c=new Float32Array(d);for(let j=0;j<s;j++)for(let i=0;i<s;i++){let t=0,n=0;for(let y=-1;y<=1;y++)for(let x=-1;x<=1;x++){const a=i+x,b=j+y;if(a>=0&&b>=0&&a<s&&b<s){t+=c[b*s+a];n++;}}d[j*s+i]=t/n;}}
+
+/* ---------- biomes ----------
+   Splat weights per heightfield sample, packed RGBA8: R grass, G sand, B rock, A snow; dirt is the remainder
+   (1 - r - g - b - a). Rules: sand on low flat ground near/below the water line; rock on steep or convex
+   (ridge) ground; snow above a noisy snow line on ground flat enough to hold it; dirt in erosion channels and
+   deposition fans (from masks), on dry mid slopes (moisture noise) and in the alpine band; grass elsewhere. */
+function biomeContext(hf,o){
+  const range=Math.max(1e-6,hf.maxHeight-hf.minHeight),water=o.waterLevel===undefined?0:o.waterLevel;
+  const flow=hf.masks&&hf.masks.flow;let flowMean=1;if(flow){let s=0,n=0;for(let i=0;i<flow.length;i+=7){s+=flow[i];n++;}flowMean=Math.max(1e-3,n?s/n:1);}
+  return {water,range,beach:o.beachHeight===undefined?Math.max(1.2,range*.012):o.beachHeight,snowLine:o.snowLine===undefined?hf.minHeight+range*.74:o.snowLine,
+    alpine:o.alpineLine===undefined?hf.minHeight+range*.6:o.alpineLine,rock0:o.rockSlope?o.rockSlope[0]:.55,rock1:o.rockSlope?o.rockSlope[1]:.95,
+    moisture:makeNoise(((o.seed===undefined?1:o.seed)>>>0)*13+5),mscale:1/(o.moistureScale||260),flow,flow0:Math.log(1+flowMean*2.5),flow1:Math.log(1+flowMean*14),delta:hf.masks&&hf.masks.delta,
+    dirt:o.dirt===undefined?1:o.dirt,sand:o.sand===undefined?1:o.sand,snow:o.snow===undefined?1:o.snow,rock:o.rock===undefined?1:o.rock};
+}
+function computeBiomes(hf,ctx,out,i0,j0,i1,j1){
+  const s=hf.size,d=hf.data,sp=hf.spacing,c2=2;
+  for(let j=j0;j<j1;j++)for(let i=i0;i<i1;i++){
+    const k=j*s+i,h=d[k],x=hf.originX+i*sp,z=hf.originZ+j*sp,gx=hf._gx(i,j),gz=hf._gz(i,j),slope=Math.hypot(gx,gz);
+    const lap=(hf.sample(i-c2,j)+hf.sample(i+c2,j)+hf.sample(i,j-c2)+hf.sample(i,j+c2))*.25-h,curv=lap/(c2*sp); // + concave, - convex
+    const mn=fbm(ctx.moisture,x*ctx.mscale,z*ctx.mscale,4),n2=fbm(ctx.moisture,x*ctx.mscale*7+50,z*ctx.mscale*7-20,2);
+    const fl=ctx.flow?smooth(ctx.flow0,ctx.flow1,Math.log(1+ctx.flow[k])):0,dep=ctx.delta?smooth(ctx.range*.006,ctx.range*.03,ctx.delta[k]):0;
+    let rock=smooth(ctx.rock0,ctx.rock1,slope+Math.max(0,-curv)*1.4+n2*.12)*ctx.rock;
+    rock=Math.max(rock,smooth(ctx.snowLine,ctx.snowLine+ctx.range*.2,h)*smooth(.35,.7,slope)*ctx.rock);
+    const snowH=h+(mn*.6+n2*.4)*ctx.range*.07;
+    const snow=smooth(ctx.snowLine-ctx.range*.03,ctx.snowLine+ctx.range*.05,snowH)*(1-smooth(.55,1.1,slope))*ctx.snow;
+    const beach=ctx.water+ctx.beach*(1+n2*.8);
+    const sand=(1-smooth(beach-ctx.beach*.4,beach+ctx.beach*.6,h))*(1-smooth(.35,.7,slope))*ctx.sand;
+    const dry=clamp((-mn-.04)*3.2,0,1),alp=smooth(ctx.alpine-ctx.range*.04,ctx.alpine+ctx.range*.08,h+n2*ctx.range*.04);
+    let dirt=clamp(fl*.8+dep*.35+dry*(.35+smooth(.15,.45,slope)*.4)+alp*(.25+smooth(.25,.55,slope)*.4)+smooth(.4,.62,slope)*.2+Math.max(0,curv)*.3,0,1)*ctx.dirt;
+    let rem=1;const wr=rock*rem;rem-=wr;const wsn=snow*rem;rem-=wsn;const ws=sand*rem;rem-=ws;const wd=dirt*rem;rem-=wd;const wg=Math.max(0,rem);
+    let R=Math.round(wg*255),G=Math.round(ws*255),B=Math.round(wr*255),A=Math.round(wsn*255),sum=R+G+B+A;
+    if(sum>255){const over=sum-255;if(R>=over)R-=over;else if(B>=over)B-=over;else{G=Math.max(0,G-over);}}
+    void wd;out[k*4]=R;out[k*4+1]=G;out[k*4+2]=B;out[k*4+3]=A;
+  }
+}
+/* biomes(THREE, hf, opts) or biomes(hf, opts [, opts.THREE]) -> RGBA8 DataTexture (linear, mipmapped).
+   texture.userData.update(i0,j0,i1,j1) recomputes a sample rectangle (the terrain calls it after sculpting). */
+Heightfield.biomes=(a,b,c)=>{
+  let THREE,hf,o;if(isThree(a)){THREE=a;hf=b;o=c||{};}else{hf=a;o=b||{};THREE=o.THREE||(typeof window!=='undefined'&&window.THREE);}
+  if(!hf||!hf.data)throw new TypeError('biomes needs a Heightfield');
+  const s=hf.size,data=new Uint8Array(s*s*4),ctx=biomeContext(hf,o);computeBiomes(hf,ctx,data,0,0,s,s);
+  if(!THREE)return {data,size:s,layers:['grass','sand','rock','snow','dirt']};
+  const t=new THREE.DataTexture(data,s,s,THREE.RGBAFormat,THREE.UnsignedByteType);
+  t.minFilter=THREE.LinearMipmapLinearFilter;t.magFilter=THREE.LinearFilter;t.generateMipmaps=true;t.flipY=false;t.wrapS=t.wrapT=THREE.ClampToEdgeWrapping;t.anisotropy=KE.settings.aniso||4;t.needsUpdate=true;t.name='ke-biomes';
+  // update() reuses the context captured at creation (snow line, beach band, flow statistics), so sculpted
+  // regions are classified with the same thresholds as the rest of the map.
+  t.userData={kind:'ke-biomes',layers:['grass','sand','rock','snow','dirt'],size:s,update:(i0=0,j0=0,i1=s,j1=s)=>{computeBiomes(hf,ctx,data,Math.max(0,i0),Math.max(0,j0),Math.min(s,i1),Math.min(s,j1));}};
+  return t;
+};
+KE.Heightfield=Heightfield;
+KE.noise2D=(seed=1)=>{const n=makeNoise(seed);return (x,y)=>noise2(n,x,y);};
+
+/* ---------- GPU CDLOD terrain ----------
+   Continuous distance-dependent LOD after F. Strugar, "Continuous Distance-Dependent Level of Detail for
+   Rendering Heightmaps" (2010). A quadtree of square nodes spans the heightfield; level 0 nodes (leaves) are
+   gridResolution x gridResolution quads, each level up doubles the node size. Selection walks the tree from
+   the root: a node is drawn at its own level when it lies outside the next finer LOD sphere, otherwise its
+   children are visited; a child that is out of reach of the finer sphere is drawn as a quadrant of the parent
+   at the parent's density (patch step 2). Every selected node or quadrant becomes one instance of a single
+   shared grid mesh, so the terrain is ONE instanced draw call. The vertex shader samples the height texture
+   (four nearest texels, manual bilinear: identical to Heightfield.heightAt) and geomorphs odd grid vertices
+   onto their even neighbours as the distance approaches the level's range, so levels meet without cracks or
+   popping. Skirts hide the rare residual T-junction gaps. Morph distances use a dedicated uniform camera
+   position, so shadow passes rendered from a light share the main camera's geometry exactly. */
+const TERRAIN_VERT=`
+uniform sampler2D keHeightMap;
+uniform sampler2D keNormalMap;
+uniform vec4 keHF;
+uniform vec3 keLodCamera;
+uniform vec2 keMorph[KE_TERRAIN_LEVELS];
+uniform float keGridDim;
+uniform float keSkirtDepth;
+attribute vec4 kePatch;
+attribute float kePatchStep;
+varying vec3 keTWorld;
+varying vec2 keTUV;
+varying float keTLod;
+varying vec2 keTGrid;
+vec3 keTerrainPos;
+vec3 keTerrainNrm;
+float keTerrainHeight(vec2 p){
+  float s=keHF.w;vec2 t=clamp((p-keHF.xy)*keHF.z,vec2(0.),vec2(s-1.));vec2 i=min(floor(t),vec2(s-2.));vec2 f=t-i;float inv=1./s;vec2 uv=(i+.5)*inv;
+  float a=texture2D(keHeightMap,uv).r,b=texture2D(keHeightMap,uv+vec2(inv,0.)).r,c=texture2D(keHeightMap,uv+vec2(0.,inv)).r,d=texture2D(keHeightMap,uv+vec2(inv)).r;
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
+}
+vec2 keTerrainUV(vec2 p){return ((p-keHF.xy)*keHF.z+.5)/keHF.w;}
+vec3 keTerrainNormal(vec2 uv){vec2 e=texture2D(keNormalMap,uv).xy*2.-1.;return normalize(vec3(e.x,sqrt(max(0.,1.-dot(e,e))),e.y));}
+void keTerrainVertex(){
+  float st=kePatchStep,cell=kePatch.z/keGridDim;
+  vec2 g=position.xz;
+  vec2 g1=g-mod(g,vec2(st));
+  vec2 p1=kePatch.xy+g1*cell;
+  float h1=keTerrainHeight(p1);
+  vec2 mc=keMorph[int(kePatch.w+.5)];
+  float k=1.-clamp(mc.x-distance(keLodCamera,vec3(p1.x,h1,p1.y))*mc.y,0.,1.);
+  vec2 g2=g1-mod(g1,vec2(2.*st))*k;
+  vec2 p=kePatch.xy+g2*cell;
+  float h=keTerrainHeight(p);
+  keTUV=keTerrainUV(p);
+  keTerrainNrm=keTerrainNormal(keTUV);
+  h-=position.y*keSkirtDepth*cell*st;
+  keTerrainPos=vec3(p.x,h,p.y);
+  keTWorld=(modelMatrix*vec4(keTerrainPos,1.)).xyz;
+  keTLod=kePatch.w+k;
+  keTGrid=g;
+}
+`;
+const TERRAIN_RELIEF=`vec3 keTReliefNormal(vec3 pos,vec3 n,float h,float strength){vec3 sx=dFdx(pos),sy=dFdy(pos);vec3 r1=cross(sy,n),r2=cross(n,sx);float det=dot(sx,r1);vec3 grad=sign(det)*(dFdx(h)*r1+dFdy(h)*r2);return normalize(abs(det)*n-strength*grad);}`;
+/* Default landscape shading, injected into a MeshStandardMaterial:
+   - five layers from the biome weights (grass, sand, dirt, rock, snow) using KE.materials tiles;
+   - height blending: each layer's weight is raised by its tile's height map and only layers within a narrow
+     band of the tallest survive, so sand fills the gaps between grass tufts instead of cross-fading;
+   - rock is projected triplanar (no stretching on cliffs) and forced on steep per-pixel normals;
+   - every layer is also sampled at a 1/5 scale that takes over with distance (kills visible tiling);
+   - low-frequency macro noise varies grass hue and overall brightness across hundreds of metres;
+   - per-pixel normals from the terrain normal map (LOD independent), plus relief from the blended height;
+   - wet darkening and lower roughness in a band above the water level. */
+const TERRAIN_FRAG_DECL=`
+uniform sampler2D keNormalMap;uniform sampler2D keBiome;uniform sampler2D keHA;uniform sampler2D keHB;
+uniform sampler2D keTGrass;uniform sampler2D keTSand;uniform sampler2D keTDirt;uniform sampler2D keTRock;uniform sampler2D keTSnow;
+uniform float keTexScale;uniform float keRelief;uniform float keWaterLevel;uniform float keMacro;uniform float keFarScale;
+varying vec3 keTWorld;varying vec2 keTUV;varying float keTLod;
+${TERRAIN_RELIEF}
+vec3 keTNormalAt(vec2 uv){vec2 e=texture2D(keNormalMap,uv).xy*2.-1.;return normalize(vec3(e.x,sqrt(max(0.,1.-dot(e,e))),e.y));}
+`;
+const TERRAIN_MAP=`
+vec3 kN=keTNormalAt(keTUV);
+float kDist=length(vViewPosition);
+vec4 kB=texture2D(keBiome,keTUV);
+vec4 kWA=vec4(kB.r,kB.g,max(0.,1.-kB.r-kB.g-kB.b-kB.a),kB.b);float kWS=kB.a;
+float kSteep=smoothstep(.74,.6,kN.y);kWA=kWA*(1.-kSteep)+vec4(0.,0.,0.,kSteep);kWS*=1.-kSteep;
+vec2 kuv=keTWorld.xz*keTexScale,kuvF=keTWorld.xz*keTexScale*keFarScale+vec2(.37,.71);
+float kFar=smoothstep(12.,70.,kDist);
+vec4 kHA=mix(texture2D(keHA,kuv),texture2D(keHA,kuvF),kFar);
+vec4 kHB=mix(texture2D(keHB,kuv),texture2D(keHB,kuvF),kFar);
+vec3 kBl=pow(abs(kN),vec3(4.));kBl/=dot(kBl,vec3(1.));float kRS=keTexScale*.45;
+vec3 kRock=texture2D(keTRock,keTWorld.zy*kRS).rgb*kBl.x+texture2D(keTRock,keTWorld.xz*kRS).rgb*kBl.y+texture2D(keTRock,keTWorld.xy*kRS).rgb*kBl.z;
+vec3 kRockF=texture2D(keTRock,keTWorld.xz*kRS*keFarScale).rgb;kRock=mix(kRock,mix(kRock,kRockF,.5),kFar);
+float kRockH=dot(kRock,vec3(.299,.587,.114))*1.25;
+vec4 kLive=step(vec4(.003),kWA);float kLiveS=step(.003,kWS);
+vec4 kTA=kWA+vec4(kHA.r,kHA.g,kHA.b,kRockH)*.55*kLive;float kTS=kWS+kHB.g*.55*kLiveS;
+float kTop=max(max(max(kTA.x,kTA.y),max(kTA.z,kTA.w)),kTS)-.2;
+vec4 kBA=max(kTA-kTop,0.)*kLive;float kBS=max(kTS-kTop,0.)*kLiveS;float kSum=dot(kBA,vec4(1.))+kBS+1e-5;kBA/=kSum;kBS/=kSum;
+float kM1=keFbm2(keTWorld.xz*.0042+3.7),kM2=keNoise2(keTWorld.xz*.027-1.3),kM3=keNoise2(keTWorld.xz*.11+7.1);
+vec3 kGrass=mix(texture2D(keTGrass,kuv).rgb,texture2D(keTGrass,kuvF).rgb,kFar)*mix(vec3(.8,.97,.66),vec3(1.2,1.08,.76),smoothstep(.3,.7,kM1)*keMacro+.5*(1.-keMacro));
+vec3 kSand=mix(texture2D(keTSand,kuv).rgb,texture2D(keTSand,kuvF).rgb,kFar);
+vec3 kDirt=mix(texture2D(keTDirt,kuv).rgb,texture2D(keTDirt,kuvF).rgb,kFar);
+vec3 kSnow=mix(texture2D(keTSnow,kuv).rgb,texture2D(keTSnow,kuvF).rgb,kFar);
+vec3 kCol=kGrass*kBA.x+kSand*kBA.y+kDirt*kBA.z+kRock*kBA.w+kSnow*kBS;
+kCol*=1.+keMacro*((kM2-.5)*.22+(kM3-.5)*.1);
+float kWet=1.-smoothstep(keWaterLevel+.05,keWaterLevel+1.1,keTWorld.y);
+diffuseColor.rgb*=pow(max(kCol,vec3(0.)),vec3(2.2))*mix(1.,.62,kWet*(1.-kBS));
+float kHeight=dot(kBA,vec4(kHA.r,kHA.g,kHA.b,kRockH))+kBS*kHB.g;
+`;
+const TERRAIN_ROUGH=`roughnessFactor=mix(dot(kBA,vec4(.95,.9,.96,.82))+kBS*.55,.28,kWet*.85);`;
+const TERRAIN_NORMAL=`normal=normalize((viewMatrix*vec4(kN,0.)).xyz);normal=keTReliefNormal(-vViewPosition,normal,kHeight,keRelief*(1.-kFar*.65));`;
+
+function replaceOrThrow(src,target,repl,what){if(src.indexOf(target)<0)throw new Error('KE.GPUTerrain: shader chunk '+target+' not found in '+what+' (Three.js r128 expected)');return src.replace(target,repl);}
+
+/* Grid of (N+1)^2 vertices whose position attribute holds integer grid coordinates (x, skirt flag, z), plus
+   one skirt strip per edge. Quads split along the (i+1,j)-(i,j+1) diagonal, the convention heightAt() uses. */
+function buildPatchGeometry(THREE,N,skirts){
+  const V=N+1,pos=[],idx=[];
+  for(let j=0;j<=N;j++)for(let i=0;i<=N;i++)pos.push(i,0,j);
+  for(let j=0;j<N;j++)for(let i=0;i<N;i++){const a=j*V+i,b=a+1,c=a+V,d=c+1;idx.push(a,c,b,b,c,d);}
+  if(skirts){
+    // perimeter walked (0,0)->(N,0)->(N,N)->(0,N)->(0,0); winding (e0,e1,s0),(e1,s1,s0) faces outward
+    const edges=[[i=>[i,0]],[i=>[N,i]],[i=>[N-i,N]],[i=>[0,N-i]]];
+    for(const [f] of edges){const base=pos.length/3;for(let i=0;i<=N;i++){const [x,z]=f(i);pos.push(x,1,z);}
+      for(let i=0;i<N;i++){const [x0,z0]=f(i),[x1,z1]=f(i+1),e0=z0*V+x0,e1=z1*V+x1,s0=base+i,s1=base+i+1;idx.push(e0,e1,s0,e1,s1,s0);}}
+  }
+  const g=new THREE.InstancedBufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setIndex(idx);
+  g.userData.trianglesPerPatch=idx.length/3;return g;
+}
+
+function sampleNormalRGBA(hf,out,i0,j0,i1,j1){const s=hf.size;
+  for(let j=j0;j<j1;j++)for(let i=i0;i<i1;i++){const gx=hf._gx(i,j),gz=hf._gz(i,j),l=Math.hypot(gx,1,gz),k=(j*s+i)*4;
+    out[k]=Math.round((-gx/l*.5+.5)*255);out[k+1]=Math.round((-gz/l*.5+.5)*255);out[k+2]=Math.round(255/l);out[k+3]=255;}}
+
+const _box=[0,0,0,0,0,0];
+class GPUTerrain{
+  constructor(THREE,o={}){
+    const hf=o.heightfield;if(!hf||!hf.data||!hf.size)throw new TypeError('KE.GPUTerrain needs {heightfield: KE.Heightfield}');
+    this.THREE=THREE;this.heightfield=hf;this.options=o;
+    const N=o.gridResolution||32;if(!Number.isInteger(N)||N<4||N>256||N%4)throw new RangeError('gridResolution must be a multiple of 4 in [4,256]');
+    this.gridResolution=N;
+    const auto=Math.round(Math.log2(hf.worldSize/(N*hf.spacing*(o.detail||1))))+1;
+    this.levels=clamp(Math.round(o.levels||auto),1,14);
+    this.leafSize=hf.worldSize/Math.pow(2,this.levels-1);this.vertexSpacing=this.leafSize/N;this.leavesPerSide=1<<(this.levels-1);
+    this.originX=hf.originX;this.originZ=hf.originZ;this.morph=o.morph!==false;this.morphRatio=clamp(o.morphRatio===undefined?.68:o.morphRatio,.05,.95);
+    this.lodDistance=o.lodDistance||this.leafSize*3;this.skirts=o.skirts!==false;
+    this.ranges=new Float64Array(this.levels);this._lodScale=-1;
+    this._stats={patches:0,visited:0,culled:0,levelCounts:new Array(this.levels).fill(0),selectionMs:0,triangles:0};
+    // min/max height pyramid: level l has (leavesPerSide>>l)^2 nodes, two floats each
+    this._mm=[];for(let l=0;l<this.levels;l++){const n=this.leavesPerSide>>l;this._mm.push(new Float32Array(n*n*2));}
+    this._buildMinMax(0,0,this.leavesPerSide-1,this.leavesPerSide-1);
+    // textures
+    const s=hf.size;this.heightTexture=hf.toTexture(THREE,{format:'float'});
+    this._normalData=new Uint8Array(s*s*4);sampleNormalRGBA(hf,this._normalData,0,0,s,s);
+    const nt=new THREE.DataTexture(this._normalData,s,s,THREE.RGBAFormat,THREE.UnsignedByteType);nt.minFilter=THREE.LinearMipmapLinearFilter;nt.magFilter=THREE.LinearFilter;nt.generateMipmaps=true;nt.flipY=false;nt.wrapS=nt.wrapT=THREE.ClampToEdgeWrapping;nt.needsUpdate=true;nt.name='ke-terrain-normals';
+    this.normalTexture=nt;
+    this.waterLevel=o.waterLevel===undefined?0:o.waterLevel;
+    this._ownBiomes=!o.biomes;this.biomeTexture=o.biomes||Heightfield.biomes(THREE,hf,{waterLevel:this.waterLevel,seed:o.seed,...(o.biomeOptions||{})});
+    // shared uniforms (by reference) for every material that draws the terrain
+    this.uniforms={keHeightMap:{value:this.heightTexture},keNormalMap:{value:this.normalTexture},keHF:{value:new THREE.Vector4(hf.originX,hf.originZ,hf.invSpacing,s)},
+      keLodCamera:{value:new THREE.Vector3()},keMorph:{value:Array.from({length:this.levels},()=>new THREE.Vector2(2,0))},keGridDim:{value:N},keSkirtDepth:{value:this.skirts?(o.skirtDepth||2):0}};
+    // geometry + per-instance patch attributes
+    this.geometry=buildPatchGeometry(THREE,N,this.skirts);this._capacity=0;this._ensureCapacity(Math.min(4096,((1<<(2*Math.min(this.levels,7)))-1)/3|0||1));
+    this.geometry.instanceCount=0;
+    // materials
+    this._ownMaterial=!o.material;this.material=o.material?this.patchMaterial(o.material):this._defaultMaterial(o);
+    const mesh=new THREE.Mesh(this.geometry,this.material);mesh.name='ke-gpu-terrain';mesh.frustumCulled=false;mesh.matrixAutoUpdate=false;
+    mesh.castShadow=!!o.castShadow;mesh.receiveShadow=o.receiveShadow!==false;mesh.userData.terrain=this;
+    mesh.customDepthMaterial=this.patchMaterial(new THREE.MeshDepthMaterial({depthPacking:THREE.RGBADepthPacking}),'depth');
+    mesh.customDistanceMaterial=this.patchMaterial(new THREE.MeshDistanceMaterial(),'depth');
+    mesh.onBeforeRender=renderer=>{this._renderer=renderer;this._flush(renderer);};
+    mesh.raycast=(raycaster,intersects)=>{const r=raycaster.ray,hit=this.raycast(r.origin,r.direction,raycaster.far);
+      if(hit&&hit.distance>=raycaster.near)intersects.push({distance:hit.distance,point:new THREE.Vector3(hit.point.x,hit.point.y,hit.point.z),face:{a:0,b:0,c:0,normal:new THREE.Vector3(hit.normal.x,hit.normal.y,hit.normal.z),materialIndex:0},object:mesh});};
+    this.object=this.mesh=mesh;
+    this._frustum=new THREE.Frustum();this._pv=new THREE.Matrix4();this._box3=new THREE.Box3();this._cam=new THREE.Vector3();
+    this._sweep=new THREE.Vector3();this.shadowSweep=o.shadowSweep===undefined?(mesh.castShadow?Math.max(200,hf.maxHeight-hf.minHeight)*2:0):o.shadowSweep;
+    this._dirty=null;this._debugMaterial=null;this.debug=null;
+    this._updateRanges();
+  }
+  /* ----- CPU mirror of what the GPU draws ----- */
+  /* Height of the finest LOD surface: bilinear heightfield samples at the level-0 vertex grid, interpolated
+     over the same two triangles per quad the patch mesh uses. Equals Heightfield.heightAt at grid vertices. */
+  heightAt(x,z){
+    const s=this.vertexSpacing,n=this.leavesPerSide*this.gridResolution,hf=this.heightfield;
+    let gx=(x-this.originX)/s,gz=(z-this.originZ)/s;gx=gx<0?0:gx>n?n:gx;gz=gz<0?0:gz>n?n:gz;
+    let i=Math.floor(gx),j=Math.floor(gz);if(i>n-1)i=n-1;if(j>n-1)j=n-1;const fx=gx-i,fz=gz-j,x0=this.originX+i*s,z0=this.originZ+j*s;
+    if(fx+fz<=1){const a=hf.heightAt(x0,z0),b=hf.heightAt(x0+s,z0),c=hf.heightAt(x0,z0+s);return a+(b-a)*fx+(c-a)*fz;}
+    const b=hf.heightAt(x0+s,z0),c=hf.heightAt(x0,z0+s),d=hf.heightAt(x0+s,z0+s);return d+(c-d)*(1-fx)+(b-d)*(1-fz);
+  }
+  normalAt(x,z,out){return this.heightfield.normalAt(x,z,out);}
+  slopeAt(x,z){return this.heightfield.slopeAt(x,z);}
+  /* Ray against the finest surface. A 2D DDA walks level-0 nodes along the ray and skips every node whose
+     max height lies below the ray segment; inside candidate nodes the ray is marched at half the vertex
+     spacing and the first downward crossing is refined by bisection. Returns {point, normal, distance} or null. */
+  raycast(origin,dir,maxDist=Infinity,out){
+    let dx=dir.x,dy=dir.y,dz=dir.z;const len=Math.hypot(dx,dy,dz);if(!(len>0))return null;dx/=len;dy/=len;dz/=len;
+    const root=this._mm[this.levels-1],lo=[this.originX,root[0]-1,this.originZ],hi=[this.originX+this.heightfield.worldSize,root[1]+1,this.originZ+this.heightfield.worldSize],o=[origin.x,origin.y,origin.z],d=[dx,dy,dz];
+    let t0=0,t1=Math.min(maxDist,1e9);
+    for(let a=0;a<3;a++){if(Math.abs(d[a])<1e-12){if(o[a]<lo[a]||o[a]>hi[a])return null;continue;}let ta=(lo[a]-o[a])/d[a],tb=(hi[a]-o[a])/d[a];if(ta>tb){const t=ta;ta=tb;tb=t;}if(ta>t0)t0=ta;if(tb<t1)t1=tb;if(t0>t1)return null;}
+    const f=t=>o[1]+dy*t-this.heightAt(o[0]+dx*t,o[2]+dz*t);
+    const hit=t=>{const p={x:o[0]+dx*t,y:0,z:o[2]+dz*t};p.y=this.heightAt(p.x,p.z);const r=out||{};r.point=p;r.distance=t;r.normal=this.normalAt(p.x,p.z);return r;};
+    if(f(t0)<0)return hit(t0);// starts below the surface (or enters through a side wall)
+    const L=this.leafSize,n=this.leavesPerSide,mm=this._mm[0],step=this.vertexSpacing*.5;
+    let x=o[0]+dx*t0,z=o[2]+dz*t0,ix=clamp(Math.floor((x-this.originX)/L),0,n-1),iz=clamp(Math.floor((z-this.originZ)/L),0,n-1);
+    const sx=dx>0?1:-1,sz=dz>0?1:-1,tdx=Math.abs(dx)>1e-12?L/Math.abs(dx):Infinity,tdz=Math.abs(dz)>1e-12?L/Math.abs(dz):Infinity;
+    let tmx=Math.abs(dx)>1e-12?(this.originX+(ix+(dx>0?1:0))*L-o[0])/dx:Infinity,tmz=Math.abs(dz)>1e-12?(this.originZ+(iz+(dz>0?1:0))*L-o[2])/dz:Infinity;
+    let t=t0;
+    for(let guard=0;guard<4*n+8;guard++){
+      const te=Math.min(tmx,tmz,t1),k=(iz*n+ix)*2,top=mm[k+1];
+      if(Math.min(o[1]+dy*t,o[1]+dy*te)<=top+1e-3){let ta=t,fa=f(ta);
+        while(ta<te){const tb=Math.min(ta+step,te),fb=f(tb);if(fa>=0&&fb<0){let a=ta,b=tb;for(let q=0;q<24;q++){const m=(a+b)*.5;if(f(m)>=0)a=m;else b=m;}return hit((a+b)*.5);}ta=tb;fa=fb;}}
+      if(te>=t1)break;
+      if(tmx<tmz){ix+=sx;t=tmx;tmx+=tdx;}else{iz+=sz;t=tmz;tmz+=tdz;}
+      if(ix<0||iz<0||ix>=n||iz>=n)break;
+    }
+    return null;
+  }
+  /* ----- LOD selection ----- */
+  _updateRanges(){
+    const scale=KE.settings.lod||1,L=this.levels,U=this.uniforms.keMorph.value;this._lodScale=scale;
+    const r0=Math.max(this.lodDistance*scale,this.leafSize*2.2);
+    for(let l=0;l<L;l++)this.ranges[l]=l===L-1?Infinity:r0*Math.pow(2,l);
+    for(let l=0;l<L;l++){const end=this.ranges[l],prev=l?this.ranges[l-1]:0,start=prev+(end-prev)*this.morphRatio;
+      if(!this.morph||!isFinite(end))U[l].set(2,0);else U[l].set(end/(end-start),1/(end-start));}
+  }
+  _node(level,ix,iz){const n=this.leavesPerSide>>level,k=(iz*n+ix)*2,size=this.leafSize*(1<<level),mm=this._mm[level];
+    _box[0]=this.originX+ix*size;_box[1]=mm[k];_box[2]=this.originZ+iz*size;_box[3]=_box[0]+size;_box[4]=mm[k+1];_box[5]=_box[2]+size;return size;}
+  _dist(){const c=this._cam;const dx=Math.max(_box[0]-c.x,0,c.x-_box[3]),dy=Math.max(_box[1]-c.y,0,c.y-_box[4]),dz=Math.max(_box[2]-c.z,0,c.z-_box[5]);return Math.sqrt(dx*dx+dy*dy+dz*dz);}
+  _visible(){const b=this._box3;b.min.set(_box[0],_box[1],_box[2]);b.max.set(_box[3],_box[4],_box[5]);if(this._frustum.intersectsBox(b))return true;
+    if(!this._sweepOn)return false;const w=this._sweep;b.expandByPoint(this._v1.set(_box[0]+w.x,_box[1]+w.y,_box[2]+w.z));b.expandByPoint(this._v1.set(_box[3]+w.x,_box[4]+w.y,_box[5]+w.z));return this._frustum.intersectsBox(b);}
+  _add(x,z,size,level,step){
+    if(this._count>=this._capacity)this._ensureCapacity(this._capacity*2);
+    const i=this._count++,a=this._patch.array;a[i*4]=x;a[i*4+1]=z;a[i*4+2]=size;a[i*4+3]=level;this._step.array[i]=step;this._stats.levelCounts[level]++;
+  }
+  _select(level,ix,iz){
+    this._stats.visited++;const size=this._node(level,ix,iz),d=this._dist();
+    if(level<this.levels-1&&d>this.ranges[level])return false;
+    if(!this._visible()){this._stats.culled++;return true;}
+    if(level===0){this._add(_box[0],_box[2],size,0,1);return true;}
+    if(d>this.ranges[level-1]){this._add(_box[0],_box[2],size,level,1);return true;}
+    for(let c=0;c<4;c++){const cx=ix*2+(c&1),cz=iz*2+(c>>1);
+      if(!this._select(level-1,cx,cz)){const cs=this._node(level-1,cx,cz);if(this._visible())this._add(_box[0],_box[2],cs,level,2);else this._stats.culled++;}}
+    return true;
+  }
+  /* Select patches for this camera: call once per frame before rendering (also before shadow updates). */
+  update(camera,renderer){
+    const t0=performance.now(),st=this._stats;if((KE.settings.lod||1)!==this._lodScale)this._updateRanges();
+    camera.updateMatrixWorld();this._cam.setFromMatrixPosition(camera.matrixWorld);this.uniforms.keLodCamera.value.copy(this._cam);
+    this._pv.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);this._frustum.setFromProjectionMatrix(this._pv);
+    this._sweepOn=false;if(this.mesh.castShadow&&this.shadowSweep>0){const sd=this.sunDirection||(KE._sceneUniforms&&KE._sceneUniforms.keSunDirection.value);
+      if(sd&&sd.y>.02){this._sweep.set(sd.x,sd.y,sd.z).normalize().multiplyScalar(-this.shadowSweep);this._sweepOn=true;this._v1=this._v1||new this.THREE.Vector3();}}
+    this._count=0;st.visited=0;st.culled=0;st.levelCounts.fill(0);
+    this._select(this.levels-1,0,0);
+    this.geometry.instanceCount=this._count;
+    const P=this._patch,S=this._step;P.updateRange.offset=0;P.updateRange.count=this._count*4;P.needsUpdate=true;S.updateRange.offset=0;S.updateRange.count=this._count;S.needsUpdate=true;
+    st.patches=this._count;st.triangles=this._count*this.geometry.userData.trianglesPerPatch;st.selectionMs=performance.now()-t0;
+    if(renderer)this._renderer=renderer;if(this._renderer)this._flush(this._renderer);
+    return this;
+  }
+  _ensureCapacity(n){
+    n=Math.max(16,n|0);if(n<=this._capacity)return;const T=this.THREE,oldP=this._patch,oldS=this._step;
+    const P=new T.InstancedBufferAttribute(new Float32Array(n*4),4).setUsage(T.DynamicDrawUsage),S=new T.InstancedBufferAttribute(new Float32Array(n),1).setUsage(T.DynamicDrawUsage);
+    if(oldP){P.array.set(oldP.array);S.array.set(oldS.array);}
+    this.geometry.setAttribute('kePatch',P);this.geometry.setAttribute('kePatchStep',S);this._patch=P;this._step=S;this._capacity=n;
+    // r128 caches the instance limit on the geometry the first time it is drawn; forget it so the new
+    // attribute size applies (the renderer recomputes it on the next draw).
+    delete this.geometry._maxInstanceCount;
+  }
+  _buildMinMax(ix0,iz0,ix1,iz1){
+    const hf=this.heightfield,S=hf.size,d=hf.data,inv=hf.invSpacing,L=this.leafSize,n=this.leavesPerSide,m0=this._mm[0];
+    for(let iz=iz0;iz<=iz1;iz++)for(let ix=ix0;ix<=ix1;ix++){
+      const i0=clamp(Math.floor(ix*L*inv),0,S-1),i1=clamp(Math.ceil((ix+1)*L*inv),0,S-1),j0=clamp(Math.floor(iz*L*inv),0,S-1),j1=clamp(Math.ceil((iz+1)*L*inv),0,S-1);
+      let lo=Infinity,hi=-Infinity;for(let j=j0;j<=j1;j++){const r=j*S;for(let i=i0;i<=i1;i++){const v=d[r+i];if(v<lo)lo=v;if(v>hi)hi=v;}}
+      m0[(iz*n+ix)*2]=lo;m0[(iz*n+ix)*2+1]=hi;}
+    for(let l=1;l<this.levels;l++){const nl=n>>l,nc=nl*2,c=this._mm[l-1],m=this._mm[l],a0=ix0>>l,b0=iz0>>l,a1=ix1>>l,b1=iz1>>l;
+      for(let iz=b0;iz<=b1;iz++)for(let ix=a0;ix<=a1;ix++){let lo=Infinity,hi=-Infinity;
+        for(let q=0;q<4;q++){const k=((iz*2+(q>>1))*nc+ix*2+(q&1))*2;if(c[k]<lo)lo=c[k];if(c[k+1]>hi)hi=c[k+1];}m[(iz*nl+ix)*2]=lo;m[(iz*nl+ix)*2+1]=hi;}}
+  }
+  /* ----- editing ----- */
+  /* Brush edit in world units. raise/lower add strength*falloff metres per call; smooth blends toward the
+     3x3 mean and flatten toward `height` (default: the height under the brush centre) by strength*falloff
+     (0..1). Updates the heightfield, normals, min/max tree and biome weights on the CPU and queues GPU
+     sub-rectangle uploads. Returns the touched sample rectangle or null. */
+  sculpt({x=0,z=0,radius=8,strength=1,mode='raise',height,falloff=1}={}){
+    const hf=this.heightfield,S=hf.size,d=hf.data,inv=hf.invSpacing;
+    const i0=clamp(Math.floor((x-radius-hf.originX)*inv),0,S-1),i1=clamp(Math.ceil((x+radius-hf.originX)*inv),0,S-1),j0=clamp(Math.floor((z-radius-hf.originZ)*inv),0,S-1),j1=clamp(Math.ceil((z+radius-hf.originZ)*inv),0,S-1);
+    if(i1<i0||j1<j0||!(radius>0))return null;
+    const w=(i,j)=>{const px=hf.originX+i*hf.spacing,pz=hf.originZ+j*hf.spacing,t=Math.hypot(px-x,pz-z)/radius;if(t>=1)return 0;const q=1-t*t;return falloff>=1?q*q:Math.pow(q,2*falloff);};
+    if(mode==='raise'||mode==='lower'){const sg=mode==='lower'?-strength:strength;for(let j=j0;j<=j1;j++)for(let i=i0;i<=i1;i++)d[j*S+i]+=sg*w(i,j);}
+    else if(mode==='smooth'||mode==='flatten'){
+      const target=height===undefined?hf.heightAt(x,z):height,W=i1-i0+1,copy=new Float32Array(W*(j1-j0+1));
+      for(let j=j0;j<=j1;j++)for(let i=i0;i<=i1;i++)copy[(j-j0)*W+i-i0]=d[j*S+i];
+      for(let j=j0;j<=j1;j++)for(let i=i0;i<=i1;i++){const a=clamp(strength*w(i,j),0,1);if(!a)continue;let t=target;
+        if(mode==='smooth'){let s=0,n=0;for(let b=-1;b<=1;b++)for(let c=-1;c<=1;c++){const ii=i+c,jj=j+b;if(ii<0||jj<0||ii>=S||jj>=S)continue;s+=(ii>=i0&&ii<=i1&&jj>=j0&&jj<=j1)?copy[(jj-j0)*W+ii-i0]:d[jj*S+ii];n++;}t=s/n;}
+        const v=copy[(j-j0)*W+i-i0];d[j*S+i]=v+(t-v)*a;}
+    }else throw new RangeError('sculpt mode must be raise, lower, smooth or flatten');
+    this._heightsChanged(i0,j0,i1,j1);return {i0,j0,i1,j1};
+  }
+  /* Replace a sample rectangle: values is a Float32Array of width*height heights (row-major, z rows). */
+  setHeightRegion(i0,j0,width,height,values){
+    const hf=this.heightfield,S=hf.size;if(i0<0||j0<0||i0+width>S||j0+height>S||values.length<width*height)throw new RangeError('setHeightRegion outside the heightfield');
+    for(let j=0;j<height;j++)hf.data.set(values.subarray?values.subarray(j*width,j*width+width):Array.prototype.slice.call(values,j*width,j*width+width),(j0+j)*S+i0);
+    this._heightsChanged(i0,j0,i0+width-1,j0+height-1);return this;
+  }
+  _heightsChanged(i0,j0,i1,j1){
+    const hf=this.heightfield,S=hf.size,L=this.leafSize,sp=hf.spacing,n=this.leavesPerSide;hf.version++;
+    const a0=Math.max(0,i0-1),b0=Math.max(0,j0-1),a1=Math.min(S-1,i1+1),b1=Math.min(S-1,j1+1);
+    sampleNormalRGBA(hf,this._normalData,a0,b0,a1+1,b1+1);
+    this._buildMinMax(clamp(Math.floor((i0-1)*sp/L),0,n-1),clamp(Math.floor((j0-1)*sp/L),0,n-1),clamp(Math.floor((i1+1)*sp/L),0,n-1),clamp(Math.floor((j1+1)*sp/L),0,n-1));
+    const root=this._mm[this.levels-1];hf.minHeight=root[0];hf.maxHeight=root[1];
+    const bu=this.biomeTexture&&this.biomeTexture.userData&&this.biomeTexture.userData.update,c0=Math.max(0,i0-3),e0=Math.max(0,j0-3),c1=Math.min(S-1,i1+3),e1=Math.min(S-1,j1+3);
+    if(bu)bu(c0,e0,c1+1,e1+1);
+    const add=(key,x0,y0,x1,y1)=>{const r=this._dirty||(this._dirty={});const q=r[key];if(!q)r[key]=[x0,y0,x1,y1];else{q[0]=Math.min(q[0],x0);q[1]=Math.min(q[1],y0);q[2]=Math.max(q[2],x1);q[3]=Math.max(q[3],y1);}};
+    add('height',i0,j0,i1,j1);add('normal',a0,b0,a1,b1);if(bu)add('biome',c0,e0,c1,e1);
+    if(this._renderer)this._flush(this._renderer);
+  }
+  /* Push queued sub-rectangles with texSubImage2D (renderer.copyTextureToTexture). Without a renderer yet,
+     textures are re-uploaded whole on first use. */
+  _flush(renderer){
+    const dirty=this._dirty;if(!dirty)return;this._dirty=null;const T=this.THREE,S=this.heightfield.size;
+    const jobs=[['height',this.heightTexture,this.heightfield.data,1,Float32Array,T.RedFormat,T.FloatType],['normal',this.normalTexture,this._normalData,4,Uint8Array,T.RGBAFormat,T.UnsignedByteType],
+      ['biome',this.biomeTexture,this.biomeTexture&&this.biomeTexture.image&&this.biomeTexture.image.data,4,Uint8Array,T.RGBAFormat,T.UnsignedByteType]];
+    for(const [key,tex,src,ch,Arr,format,type] of jobs){const r=dirty[key];if(!r||!tex||!src)continue;
+      const w=r[2]-r[0]+1,h=r[3]-r[1]+1;
+      if(!renderer||!renderer.copyTextureToTexture||w*h>S*S*.5){tex.needsUpdate=true;continue;}
+      const buf=new Arr(w*h*ch);for(let j=0;j<h;j++){const o=((r[1]+j)*S+r[0])*ch;buf.set(src.subarray(o,o+w*ch),j*w*ch);}
+      const sub=new T.DataTexture(buf,w,h,format,type);sub.flipY=false;renderer.copyTextureToTexture({x:r[0],y:r[1]},sub,tex);}
+  }
+  /* Rebuild everything after the heightfield was changed outside the terrain (erode, generate, ...). */
+  refresh(){const hf=this.heightfield,S=hf.size;hf.recomputeRange();this._buildMinMax(0,0,this.leavesPerSide-1,this.leavesPerSide-1);sampleNormalRGBA(hf,this._normalData,0,0,S,S);
+    const bu=this.biomeTexture&&this.biomeTexture.userData&&this.biomeTexture.userData.update;if(bu){bu(0,0,S,S);this.biomeTexture.needsUpdate=true;}
+    this.heightTexture.needsUpdate=true;this.normalTexture.needsUpdate=true;this._dirty=null;return this;}
+  /* ----- materials ----- */
+  /* Makes any Three material draw the terrain patches: injects the CDLOD vertex code and shares the terrain
+     uniforms. Chains an existing onBeforeCompile and cache key (so KE.CascadedShadows can patch it later). */
+  patchMaterial(m,kind){
+    const U=this.uniforms,prev=m.onBeforeCompile,prevKey=m.customProgramCacheKey.bind(m),L=this.levels,decl=TERRAIN_VERT.replace('KE_TERRAIN_LEVELS',String(L));
+    const depth=kind==='depth'||m.isMeshDepthMaterial||m.isMeshDistanceMaterial;
+    m.onBeforeCompile=(sh,r)=>{if(prev)prev.call(m,sh,r);for(const k in U)sh.uniforms[k]=U[k];
+      let v=decl+sh.vertexShader;
+      if(!depth&&v.indexOf('#include <beginnormal_vertex>')>=0){v=v.replace('#include <beginnormal_vertex>','keTerrainVertex();\nvec3 objectNormal=keTerrainNrm;\n#ifdef USE_TANGENT\nvec3 objectTangent=vec3(1.,0.,0.);\n#endif');v=replaceOrThrow(v,'#include <begin_vertex>','vec3 transformed=keTerrainPos;','vertex shader');}
+      else v=replaceOrThrow(v,'#include <begin_vertex>','keTerrainVertex();\nvec3 transformed=keTerrainPos;','vertex shader');
+      sh.vertexShader=v;};
+    m.customProgramCacheKey=()=>prevKey()+':ke-cdlod-'+L;m.needsUpdate=true;return m;
+  }
+  _defaultMaterial(o){
+    const T=this.THREE;let tex=o.textures,own=false;if(!tex){tex=KE.materials(T,o.textureSize||Math.min(512,KE.settings.tex||256));own=true;}
+    const kinds=KE.MATERIAL_KINDS||['grass','sand','dirt','stone','rock','snow','ash','wood'],pick=k=>Array.isArray(tex)?tex[kinds.indexOf(k)]:tex[k];
+    let ha=tex.heightMaps&&tex.heightMaps[0],hb=tex.heightMaps&&tex.heightMaps[1];const gray=[];
+    if(!ha||!hb){const g=new T.DataTexture(new Uint8Array([128,128,128,128]),1,1,T.RGBAFormat);g.needsUpdate=true;gray.push(g);ha=ha||g;hb=hb||g;}
+    const m=new T.MeshStandardMaterial({roughness:.92,metalness:0});m.name='ke-terrain';m.extensions={derivatives:true};
+    m.userData.keTextures=own?[...tex,...tex.heightMaps]:gray;this._materialTextures=own?[...tex,...tex.heightMaps,...gray]:gray;
+    const F=this.materialUniforms={keBiome:{value:this.biomeTexture},keHA:{value:ha},keHB:{value:hb},keTGrass:{value:pick('grass')},keTSand:{value:pick('sand')},keTDirt:{value:pick('dirt')},keTRock:{value:pick('rock')},keTSnow:{value:pick('snow')},
+      keTexScale:{value:o.textureScale||.3},keFarScale:{value:o.farScale||.2},keRelief:{value:o.relief===undefined?.32:o.relief},keWaterLevel:{value:this.waterLevel},keMacro:{value:o.macro===undefined?1:o.macro}};
+    for(const k of ['keTGrass','keTSand','keTDirt','keTRock','keTSnow'])if(!F[k].value)throw new Error('KE.GPUTerrain: textures missing '+k.slice(3).toLowerCase());
+    m.onBeforeCompile=sh=>{for(const k in F)sh.uniforms[k]=F[k];
+      let f=TERRAIN_FRAG_DECL+KE.GLSL.hash+'\n'+KE.GLSL.noise+'\n'+sh.fragmentShader;
+      f=replaceOrThrow(f,'#include <map_fragment>',TERRAIN_MAP,'fragment shader');
+      f=replaceOrThrow(f,'#include <roughnessmap_fragment>','#include <roughnessmap_fragment>\n'+TERRAIN_ROUGH,'fragment shader');
+      f=replaceOrThrow(f,'#include <normal_fragment_maps>','#include <normal_fragment_maps>\n'+TERRAIN_NORMAL,'fragment shader');
+      sh.fragmentShader=f;};
+    m.customProgramCacheKey=()=>'ke-terrain-default-1';
+    return this.patchMaterial(m);
+  }
+  /* Debug views: 'lod' (colour per LOD level, morph shown as a blend), 'wireframe' (the same plus triangle
+     edges), 'height' (unlit world height in the red channel, for float render targets), or null. */
+  setDebug(mode){
+    if(!mode){this.mesh.material=this.material;this.debug=null;return this;}
+    const T=this.THREE,M={lod:0,wireframe:1,height:2}[mode];if(M===undefined)throw new RangeError('debug mode must be lod, wireframe, height or null');
+    if(!this._debugMaterial){const U=this.uniforms;this._debugMaterial=new T.ShaderMaterial({uniforms:{...U,keDebugMode:{value:0}},extensions:{derivatives:true},
+      vertexShader:TERRAIN_VERT.replace('KE_TERRAIN_LEVELS',String(this.levels))+'varying vec3 keTN;varying float keTSk;void main(){keTerrainVertex();keTN=keTerrainNrm;keTSk=position.y;gl_Position=projectionMatrix*viewMatrix*vec4(keTWorld,1.);}',
+      fragmentShader:`uniform float keDebugMode;varying vec3 keTWorld;varying float keTLod;varying vec2 keTGrid;varying vec3 keTN;varying float keTSk;
+vec3 keLodColor(float l){l=mod(l,8.);return l<1.?vec3(.95,.3,.25):l<2.?vec3(.98,.65,.2):l<3.?vec3(.95,.9,.3):l<4.?vec3(.35,.85,.35):l<5.?vec3(.25,.8,.85):l<6.?vec3(.3,.45,.95):l<7.?vec3(.65,.4,.95):vec3(.9,.45,.8);}
+void main(){if(keDebugMode>1.5){gl_FragColor=vec4(keTWorld.y,0.,0.,1.);return;}
+float l=floor(keTLod);vec3 c=mix(keLodColor(l),keLodColor(l+1.),smoothstep(.0,1.,keTLod-l));
+float sh=.35+.65*max(dot(normalize(keTN),normalize(vec3(.45,.8,.35))),0.);c*=sh;
+if(keDebugMode>.5){vec3 g=vec3(keTGrid,keTGrid.x+keTGrid.y);vec3 dd=abs(fract(g+.5)-.5);vec3 fw=max(fwidth(g),vec3(1e-4));vec3 a=smoothstep(fw*.5,fw*1.5,dd);
+  float dense=max(smoothstep(.25,.6,max(fw.x,fw.y)),step(.001,keTSk));c*=mix(mix(.22,1.,min(a.x,min(a.y,a.z))),.8,dense);}
+gl_FragColor=vec4(c,1.);
+#include <encodings_fragment>
+}`});}
+    this._debugMaterial.uniforms.keDebugMode.value=M;this.mesh.material=this._debugMaterial;this.debug=mode;return this;
+  }
+  stats(){const s=this._stats;return {patches:s.patches,drawCalls:s.patches?1:0,triangles:s.triangles,nodesVisited:s.visited,culled:s.culled,levels:this.levels,levelCounts:s.levelCounts.slice(),
+    leafSize:this.leafSize,vertexSpacing:this.vertexSpacing,gridResolution:this.gridResolution,ranges:Array.from(this.ranges),selectionMs:s.selectionMs,capacity:this._capacity};}
+  dispose(){
+    const m=this.mesh;m.parent&&m.parent.remove(m);this.geometry.dispose();this.heightTexture.dispose();this.normalTexture.dispose();if(this._ownBiomes&&this.biomeTexture)this.biomeTexture.dispose();
+    if(this._ownMaterial)this.material.dispose();m.customDepthMaterial.dispose();m.customDistanceMaterial.dispose();if(this._debugMaterial)this._debugMaterial.dispose();
+    for(const t of this._materialTextures||[])t.dispose();this._materialTextures=null;this._dirty=null;
+  }
+}
+GPUTerrain.GLSL={vertex:TERRAIN_VERT,relief:TERRAIN_RELIEF};
+KE.GPUTerrain=GPUTerrain;
+
+/* ---------- World partition ----------
+   The world is a grid of square cells. Every update(): cells whose nearest point lies within loadRadius are
+   wanted; loaded cells beyond unloadRadius (hysteresis) are unloaded; in-flight loads beyond it are
+   cancelled. New loads start nearest-first (distance measured from the position extrapolated by velocity *
+   prefetch) while the frame budget lasts and at most maxConcurrent asynchronous loads are in flight.
+   load(cell, ctx) may return a value (synchronous), a Promise, or an iterator/generator that is stepped
+   under the budget (through `jobs`, a KE.Jobs queue, when given). A cell never has two loads at once and a
+   loaded cell is never loaded again. Cells out of load range but within hlodRadius show a proxy from
+   hlod(cell) (e.g. a merged low-poly mesh); a proxy stays until its cell has finished loading, so no holes
+   appear while streaming. */
+const cellKey=(ix,iz)=>((ix+32768)&0xffff)*65536+((iz+32768)&0xffff);
+const isIterator=v=>!!v&&typeof v.next==='function'&&typeof v[Symbol.iterator]==='function';
+class WorldPartition{
+  constructor(o={}){
+    this.cellSize=o.cellSize||128;this.loadRadius=o.loadRadius===undefined?this.cellSize*3:o.loadRadius;this.unloadRadius=Math.max(this.loadRadius,o.unloadRadius===undefined?this.loadRadius+this.cellSize*.5:o.unloadRadius);
+    this.load=o.load||null;this.unload=o.unload||null;this.hlod=o.hlod||null;this.hlodUnload=o.hlodUnload||null;
+    this.hlodRadius=this.hlod?Math.max(this.loadRadius,o.hlodRadius===undefined?this.loadRadius*3:o.hlodRadius):0;
+    this.hlodUnloadRadius=this.hlod?Math.max(this.hlodRadius,o.hlodUnloadRadius===undefined?this.hlodRadius+(this.unloadRadius-this.loadRadius):o.hlodUnloadRadius):0;
+    this.budgetMs=o.budgetMs===undefined?2:o.budgetMs;this.maxConcurrent=o.maxConcurrent||4;this.jobs=o.jobs||null;this.runJobs=o.runJobs!==false;
+    this.originX=o.originX||0;this.originZ=o.originZ||0;this.bounds=o.bounds||null;this.filter=o.filter||null;this.prefetch=o.prefetch===undefined?.5:o.prefetch;
+    this.retryDelay=o.retryDelay===undefined?2:o.retryDelay;this.onError=o.onError||(e=>console.warn('KE.WorldPartition: cell load failed',e));
+    this.cells=new Map();this.position={x:0,y:0,z:0};this.velocity={x:0,z:0};this._last=null;this._time=0;
+    this._active=[];this._cand=[];this._inflight=0;this.disposed=false;
+    this.counters={started:0,completed:0,cancelled:0,unloaded:0,failed:0,discarded:0,hlodCreated:0,hlodRemoved:0,doubleLoads:0};this._ms=0;this._maxMs=0;
+    this._byPriority=(a,b)=>a._prio-b._prio||a.key-b.key;
+  }
+  cellAt(x,z){return this.cells.get(cellKey(Math.floor((x-this.originX)/this.cellSize),Math.floor((z-this.originZ)/this.cellSize)))||null;}
+  _record(ix,iz){const key=cellKey(ix,iz);let c=this.cells.get(key);if(c)return c;const s=this.cellSize,x=this.originX+ix*s,z=this.originZ+iz*s;
+    c={key,ix,iz,x,z,size:s,cx:x+s/2,cz:z+s/2,state:'unloaded',data:undefined,proxy:undefined,distance:0,loads:0,error:null,retryAt:0,task:null,_prio:0};this.cells.set(key,c);return c;}
+  _allowed(ix,iz){const s=this.cellSize,x=this.originX+ix*s,z=this.originZ+iz*s,b=this.bounds;
+    if(b&&(x+s<=b.minX||x>=b.maxX||z+s<=b.minZ||z>=b.maxZ))return false;return !this.filter||!!this.filter(ix,iz);}
+  _distance(c,px,pz){const dx=Math.max(c.x-px,0,px-(c.x+c.size)),dz=Math.max(c.z-pz,0,pz-(c.z+c.size));return Math.sqrt(dx*dx+dz*dz);}
+  /* position: {x,z} (Vector3 fine). dt: seconds since the last update (used for prefetch ordering).
+     budgetMs overrides the configured budget for this call (Infinity loads everything synchronous now). */
+  update(position,dt=0,budgetMs=this.budgetMs){
+    if(this.disposed)return this;const t0=performance.now(),end=t0+budgetMs,px=position.x,pz=position.z;this._time+=dt;
+    if(this._last&&dt>0){const k=1-Math.exp(-dt*4);this.velocity.x+=((px-this._last.x)/dt-this.velocity.x)*k;this.velocity.z+=((pz-this._last.z)/dt-this.velocity.z)*k;}
+    this._last=this._last||{x:0,z:0};this._last.x=px;this._last.z=pz;this.position.x=px;this.position.y=position.y||0;this.position.z=pz;
+    const qx=px+this.velocity.x*this.prefetch,qz=pz+this.velocity.z*this.prefetch;
+    // 1. retire: unload / cancel / drop proxies beyond hysteresis radii
+    for(const c of this.cells.values()){const d=c.distance=this._distance(c,px,pz);
+      if(d>this.unloadRadius){
+        if(c.state==='loaded'){if(this.hlod&&d<=this.hlodRadius&&c.proxy===undefined)this._makeProxy(c);this._unloadCell(c);}
+        else if(c.state==='loading')this._cancel(c);
+      }
+      if(c.proxy!==undefined&&(d>this.hlodUnloadRadius||c.state==='loaded'))this._dropProxy(c);
+      if(c.state==='unloaded'||c.state==='failed'){if(c.proxy===undefined&&d>Math.max(this.unloadRadius,this.hlodUnloadRadius))this.cells.delete(c.key);}
+    }
+    // 2. candidates: wanted cells not loaded or in flight, nearest (extrapolated) first
+    const R=Math.max(this.loadRadius,this.hlodRadius),s=this.cellSize,cand=this._cand;cand.length=0;
+    const ix0=Math.floor((px-R-this.originX)/s),ix1=Math.floor((px+R-this.originX)/s),iz0=Math.floor((pz-R-this.originZ)/s),iz1=Math.floor((pz+R-this.originZ)/s);
+    for(let iz=iz0;iz<=iz1;iz++)for(let ix=ix0;ix<=ix1;ix++){
+      const x=this.originX+ix*s,z=this.originZ+iz*s,dx=Math.max(x-px,0,px-(x+s)),dz=Math.max(z-pz,0,pz-(z+s)),d=Math.sqrt(dx*dx+dz*dz);
+      if(d>R||!this._allowed(ix,iz))continue;
+      const existing=this.cells.get(cellKey(ix,iz)),st=existing?existing.state:'unloaded';
+      const needLoad=!!this.load&&d<=this.loadRadius&&(st==='unloaded'||(st==='failed'&&this._time>=existing.retryAt));
+      const needProxy=!!this.hlod&&st!=='loaded'&&(!existing||existing.proxy===undefined);
+      if(!needLoad&&!needProxy)continue;
+      const c=existing||this._record(ix,iz);c.distance=d;c._prio=Math.hypot(c.cx-qx,c.cz-qz);c._needLoad=needLoad;cand.push(c);
+    }
+    cand.sort(this._byPriority);
+    // 3. start loads nearest-first within budget and concurrency; then HLOD proxies with what is left
+    let started=0;
+    for(const c of cand){if(!c._needLoad)continue;if(started>0&&performance.now()>=end)break;if(this._inflight>=this.maxConcurrent)break;this._start(c);started++;}
+    // proxies also cover wanted cells whose load is still queued or in flight, so streaming leaves no holes
+    if(this.hlod)for(const c of cand){if(c.proxy!==undefined||c.state==='loaded')continue;if(started>0&&performance.now()>=end)break;this._makeProxy(c);started++;}
+    // 4. step iterator loads within the remaining budget
+    if(this.jobs){if(this.runJobs)this.jobs.run(Math.max(0,end-performance.now()));}
+    else this._pump(end);
+    this._ms=performance.now()-t0;this._maxMs=Math.max(this._maxMs*.99,this._ms);return this;
+  }
+  _start(c){
+    if(c.state==='loaded'||c.state==='loading'||c.state==='cancelling'){this.counters.doubleLoads++;return;}
+    const ctx={signal:{aborted:false},partition:this,cellSize:this.cellSize};c.state='loading';c.loads++;c.error=null;this.counters.started++;
+    let r;try{r=this.load(c,ctx);}catch(e){this._fail(c,e);return;}
+    if(isIterator(r)){this._inflight++;const task={iter:r,ctx,cell:c,promise:null};c.task=task;
+      if(this.jobs){task.promise=this.jobs.add(r,{priority:-c.distance,name:'world.cell'});task.promise.then(v=>{if(c.task===task)this._finish(c,v);},e=>{if(c.task===task)this._fail(c,e);});}
+      else this._active.push(task);return;}
+    if(r&&typeof r.then==='function'){this._inflight++;const task={promise:r,ctx,cell:c};c.task=task;
+      r.then(v=>{if(c.task!==task)return;if(c.state==='cancelling'){this._inflight--;c.task=null;c.state='unloaded';this.counters.discarded++;if(this.unload)this.unload(c,v);return;}this._finish(c,v);},
+        e=>{if(c.task!==task)return;if(c.state==='cancelling'){this._inflight--;c.task=null;c.state='unloaded';return;}this._fail(c,e);});return;}
+    this._finish(c,r,true);
+  }
+  _finish(c,v,sync){if(!sync){this._inflight--;}c.task=null;
+    if(this.disposed){if(this.unload)this.unload(c,v);return;}
+    c.state='loaded';c.data=v;this.counters.completed++;if(c.proxy!==undefined)this._dropProxy(c);}
+  _fail(c,e){if(c.task)this._inflight--;c.task=null;c.state='failed';c.error=e;c.retryAt=this._time+this.retryDelay;this.counters.failed++;this.onError(e,c);}
+  _cancel(c){const t=c.task;if(!t)return;this.counters.cancelled++;t.ctx.signal.aborted=true;
+    if(t.iter){c.task=null;this._inflight--;c.state='unloaded';if(t.promise&&t.promise.cancel){t.promise.cancel();t.promise.catch(()=>{});}
+      const i=this._active.indexOf(t);if(i>=0)this._active.splice(i,1);try{t.iter.return&&t.iter.return();}catch(e){}}
+    else c.state='cancelling';// a promise cannot be stopped: its result is unloaded when it settles
+  }
+  _unloadCell(c){const v=c.data;c.data=undefined;c.state='unloaded';this.counters.unloaded++;if(this.unload)this.unload(c,v);}
+  _makeProxy(c){let p;try{p=this.hlod(c);}catch(e){this.onError(e,c);p=null;}c.proxy=p===undefined?null:p;this.counters.hlodCreated++;}
+  _dropProxy(c){const p=c.proxy;c.proxy=undefined;this.counters.hlodRemoved++;if(this.hlodUnload)this.hlodUnload(c,p);else if(p){if(typeof p.dispose==='function')p.dispose();else if(p.isObject3D&&p.parent)p.parent.remove(p);}}
+  /* Round-robin by priority: the nearest active iterator is stepped until the budget ends or it finishes. */
+  _pump(end){const a=this._active;if(!a.length)return;a.sort((x,y)=>x.cell._prio-y.cell._prio);
+    while(a.length&&performance.now()<end){const t=a[0];let r;try{r=t.iter.next();}catch(e){a.shift();this._fail(t.cell,e);continue;}if(r.done){a.shift();this._finish(t.cell,r.value);}}}
+  /* True when every wanted cell around position has finished loading. */
+  isReady(position){const px=position.x,pz=position.z,s=this.cellSize,R=this.loadRadius;
+    for(let iz=Math.floor((pz-R-this.originZ)/s);iz<=Math.floor((pz+R-this.originZ)/s);iz++)for(let ix=Math.floor((px-R-this.originX)/s);ix<=Math.floor((px+R-this.originX)/s);ix++){
+      const x=this.originX+ix*s,z=this.originZ+iz*s,d=Math.hypot(Math.max(x-px,0,px-(x+s)),Math.max(z-pz,0,pz-(z+s)));if(d>R||!this._allowed(ix,iz))continue;const c=this.cells.get(cellKey(ix,iz));if(!c||c.state!=='loaded')return false;}
+    return true;}
+  /* Load everything around position (e.g. after a teleport) ignoring the budget; resolves when ready. */
+  async preload(position,{timeoutMs=30000}={}){const t0=performance.now();for(;;){this.update(position,0,Infinity);if(this.isReady(position))return this;if(performance.now()-t0>timeoutMs)throw new Error('KE.WorldPartition.preload timed out');await new Promise(r=>setTimeout(r,0));}}
+  stats(){let loaded=0,loading=0,cancelling=0,hlod=0,failedCells=0;for(const c of this.cells.values()){if(c.state==='loaded')loaded++;else if(c.state==='loading')loading++;else if(c.state==='cancelling')cancelling++;else if(c.state==='failed')failedCells++;if(c.proxy!==undefined)hlod++;}
+    return {cells:this.cells.size,loaded,loading,cancelling,failedCells,hlod,pending:this._cand.length,inflight:this._inflight,...this.counters,ms:this._ms,maxMs:this._maxMs};}
+  dispose(){if(this.disposed)return;for(const c of this.cells.values()){if(c.state==='loading')this._cancel(c);if(c.state==='loaded')this._unloadCell(c);if(c.proxy!==undefined)this._dropProxy(c);}
+    this.disposed=true;this._active.length=0;this.cells.clear();}
+}
+KE.WorldPartition=WorldPartition;
+
+/* ---------- deterministic per-cell scatter ----------
+   Candidate points sit on a global jittered lattice (one point per spacing x spacing square, jitter from a
+   hash of the square's integer coordinates and the seed), and a cell keeps the points inside its bounds.
+   The result therefore depends only on (seed, cell) and neighbouring cells tile without seams or overlap,
+   whatever order they stream in. Each point draws acceptance, type, yaw, tilt and scale from its own hash. */
+function scatterCell(THREE,o={}){
+  const cs=o.cellSize||(o.cell&&o.cell.size)||128,cell=o.cell||{ix:0,iz:0};
+  const x0=cell.x!==undefined?cell.x:(o.originX||0)+cell.ix*cs,z0=cell.z!==undefined?cell.z:(o.originZ||0)+cell.iz*cs;
+  const src=o.heightfield||o.terrain;if(!src||typeof src.heightAt!=='function')throw new TypeError('scatterCell needs {heightfield} (or anything with heightAt)');
+  const types=o.types||[];if(!types.length)throw new TypeError('scatterCell needs at least one type {geometry, material}');
+  const spacing=Math.max(.05,o.spacing||4),seed=(o.seed===undefined?1:o.seed)>>>0,density=o.density===undefined?1:o.density,water=o.waterLevel;
+  const gi0=Math.floor(x0/spacing),gi1=Math.ceil((x0+cs)/spacing),gj0=Math.floor(z0/spacing),gj1=Math.ceil((z0+cs)/spacing);
+  const buckets=types.map(()=>[]),nrm={x:0,y:1,z:0};let wsum=0;for(const t of types)wsum+=t.weight===undefined?1:t.weight;
+  const m=new THREE.Matrix4(),q=new THREE.Quaternion(),qy=new THREE.Quaternion(),qa=new THREE.Quaternion(),up=new THREE.Vector3(0,1,0),n=new THREE.Vector3(),p=new THREE.Vector3(),sc=new THREE.Vector3();
+  for(let gj=gj0;gj<gj1;gj++)for(let gi=gi0;gi<gi1;gi++){
+    let st=hashInts(seed,gi,gj);const rnd=()=>{st=(st+0x6D2B79F5)>>>0;let t=st;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296;};
+    const x=(gi+rnd())*spacing,z=(gj+rnd())*spacing;if(x<x0||x>=x0+cs||z<z0||z>=z0+cs)continue;
+    const dens=typeof density==='function'?density(x,z):density,u=rnd();if(!(u<dens))continue;
+    const y=src.heightAt(x,z);if(water!==undefined&&y<water)continue;
+    const slope=src.slopeAt?src.slopeAt(x,z):0;
+    let pick=rnd()*wsum,ti=-1;for(let k=0;k<types.length;k++){pick-=types[k].weight===undefined?1:types[k].weight;if(pick<=0){ti=k;break;}}if(ti<0)ti=types.length-1;
+    const t=types[ti],sl=t.slope||[0,Infinity],hr=t.height||[-Infinity,Infinity];
+    const r1=rnd(),r2=rnd(),r3=rnd();
+    if(slope<sl[0]||slope>sl[1]||y<hr[0]||y>hr[1])continue;
+    if(t.density!==undefined&&!(r3<t.density))continue;
+    if(o.filter&&!o.filter(x,y,z,ti,slope))continue;
+    const sr=t.scale||[.8,1.2],s=sr[0]+(sr[1]-sr[0])*r1;
+    qy.setFromAxisAngle(up,r2*Math.PI*2);
+    if(t.align&&src.normalAt){src.normalAt(x,z,nrm);n.set(nrm.x,nrm.y,nrm.z);qa.setFromUnitVectors(up,n);q.identity().slerp(qa,clamp(t.align,0,1)).multiply(qy);}else q.copy(qy);
+    p.set(x,y-(t.sink||0)*s,z);sc.set(s,s,s);if(t.scaleY)sc.y*=t.scaleY;m.compose(p,q,sc);buckets[ti].push(...m.elements);
+  }
+  const group=new THREE.Group();group.name='ke-scatter-'+(cell.ix!==undefined?cell.ix+'_'+cell.iz:x0+'_'+z0);let total=0;
+  types.forEach((t,k)=>{const arr=buckets[k],count=arr.length/16;if(!count)return;const base=t.geometry;if(!base.boundingSphere)base.computeBoundingSphere();
+    // A per-cell view of the shared geometry (same attribute objects, no copies) that carries the cell's
+    // bounding sphere, so Three's frustum culling works per cell.
+    const g=new THREE.BufferGeometry();g.setIndex(base.index);for(const a in base.attributes)g.setAttribute(a,base.attributes[a]);g.groups=base.groups;
+    let mnx=Infinity,mny=Infinity,mnz=Infinity,mxx=-Infinity,mxy=-Infinity,mxz=-Infinity,ms=0;
+    for(let i=0;i<count;i++){const e=i*16,px=arr[e+12],py=arr[e+13],pz=arr[e+14],s=Math.hypot(arr[e],arr[e+1],arr[e+2]),sy=Math.hypot(arr[e+4],arr[e+5],arr[e+6]);ms=Math.max(ms,s,sy);
+      if(px<mnx)mnx=px;if(py<mny)mny=py;if(pz<mnz)mnz=pz;if(px>mxx)mxx=px;if(py>mxy)mxy=py;if(pz>mxz)mxz=pz;}
+    const bs=base.boundingSphere;g.boundingSphere=new THREE.Sphere(new THREE.Vector3((mnx+mxx)/2,(mny+mxy)/2,(mnz+mxz)/2),Math.hypot(mxx-mnx,mxy-mny,mxz-mnz)/2+(bs.center.length()+bs.radius)*ms);
+    const mesh=new THREE.InstancedMesh(g,t.material,count);mesh.instanceMatrix.array.set(arr);mesh.instanceMatrix.needsUpdate=true;
+    mesh.castShadow=t.castShadow!==undefined?t.castShadow:!!o.castShadow;mesh.receiveShadow=t.receiveShadow!==undefined?t.receiveShadow:o.receiveShadow!==false;mesh.name=t.name||('type'+k);mesh.userData.typeIndex=k;
+    group.add(mesh);total+=count;});
+  group.userData.count=total;group.userData.cell={x:x0,z:z0,size:cs};
+  /* Releases this cell's instance buffers and VAOs without touching the shared geometry buffers: the view's
+     attribute table is emptied before dispose() so Three frees only what belongs to the cell. */
+  group.userData.dispose=()=>{for(const mesh of group.children.slice()){const g=mesh.geometry;g.index=null;g.attributes={};g.dispose();mesh.dispose&&mesh.dispose();group.remove(mesh);}group.parent&&group.parent.remove(group);};
+  return group;
+}
+KE.scatterCell=scatterCell;
+
+
+KE.registerModule('world',{provides:['Heightfield','GPUTerrain','WorldPartition','scatterCell','noise2D']});
 })();
 
 /* ===== module: 40-physics.js ===== */
@@ -6969,6 +8699,1173 @@ Object.assign(KE,{easing,Tween,TweenManager,tweens,tween:(target,props,opts)=>ne
   animation:{resolvePath,delaunay}});
 KE.registerModule('animation',{provides:['easing','tween','tweens','Tween','TweenManager','IK','IKChain','LookAt','SpringChain','PoseBlender','AnimStateMachine','BlendSpace1D','BlendSpace2D',
   'ProceduralGait','Sequencer','SequencerTrack','CameraRail','CameraShake','RootMotion','createBoneChain','buildSkinnedTube']});
+})();
+
+/* ===== module: 70-ai.js ===== */
+/* kitsune enginev3 AI: navigation mesh, crowds, behavior trees, perception, environment queries.
+   KE.NavMesh    Recast-inspired tiled navmesh built from a heightfield: walkable-cell rasterization (slope, step,
+                 water, blockers, obstacles), erosion by agent radius (exact Euclidean distance transform),
+                 contour tracing, constrained Douglas-Peucker simplification, ear clipping + Delaunay edge flips,
+                 convex merging. A* over portal points + funnel string pulling, raycasts, dynamic obstacles
+                 (per-tile re-carve), JSON round trip, debug overlays.
+   KE.Crowd      corridor following + ORCA (reciprocal velocity obstacles) avoidance with a spatial hash,
+                 collision resolution and mesh clamping.
+   KE.BT         behavior trees with UE-style observer aborts ('self' | 'lower' | 'both'); KE.Blackboard.
+   KE.Perception sight (range, FOV, line of sight, detection time), hearing, memory.
+   KE.EQS        environment queries (generators + weighted/filtering tests).
+   KE.FSM, KE.steering  small state machine and Reynolds steering behaviours.
+   Core's KE.findPath (grid A*) is untouched. Randomness is seeded through KE.random. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+const clamp=KE.clamp||((v,a,b)=>v<a?a:v>b?b:v);
+const DEG=Math.PI/180;
+const SUCCESS='success',FAILURE='failure',RUNNING='running';
+const hasOwn=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
+const isFn=f=>typeof f==='function';
+const num=(v,d)=>Number.isFinite(v)?v:d;
+
+/* ======================================================================
+   Navigation mesh
+   ====================================================================== */
+/* Lattice direction vectors: 0:+u 1:+v 2:-u 3:-v. A cell side s is walked in direction s with the cell on
+   its left (so outer contours are counter-clockwise in x/z), and its outward normal is DIRS[OUT[s]]. */
+const DIRS=[[1,0],[0,1],[-1,0],[0,-1]],OUT=[3,0,1,2];
+
+function normObstacle(o){
+  if(!o||typeof o!=='object')throw new TypeError('Obstacle must be an object');
+  if(o.r!==undefined){const x=+o.x,z=+o.z,r=+o.r;if(![x,z,r].every(Number.isFinite)||r<=0)throw new TypeError('Circle obstacle needs finite x, z and r>0');
+    return {kind:'circle',x,z,r,minX:x-r,maxX:x+r,minZ:z-r,maxZ:z+r};}
+  if(o.hx!==undefined||o.hz!==undefined){const x=+o.x,z=+o.z,hx=+o.hx,hz=+o.hz,rot=num(+o.rotation,0);if(![x,z,hx,hz].every(Number.isFinite)||hx<=0||hz<=0)throw new TypeError('Box obstacle needs finite x, z, hx>0, hz>0');
+    const c=Math.cos(rot),s=Math.sin(rot),ex=Math.abs(c)*hx+Math.abs(s)*hz,ez=Math.abs(s)*hx+Math.abs(c)*hz;
+    return {kind:'obb',x,z,hx,hz,rotation:rot,c,s,minX:x-ex,maxX:x+ex,minZ:z-ez,maxZ:z+ez};}
+  const b=['minX','minZ','maxX','maxZ'].map(k=>+o[k]);
+  if(b.every(Number.isFinite)&&b[2]>b[0]&&b[3]>b[1])return {kind:'box',minX:b[0],minZ:b[1],maxX:b[2],maxZ:b[3]};
+  throw new TypeError('Obstacle needs {x,z,r}, {minX,minZ,maxX,maxZ} or {x,z,hx,hz,rotation}');
+}
+function obstacleContains(o,x,z){
+  if(o.kind==='circle'){const dx=x-o.x,dz=z-o.z;return dx*dx+dz*dz<=o.r*o.r;}
+  if(o.kind==='box')return x>=o.minX&&x<=o.maxX&&z>=o.minZ&&z<=o.maxZ;
+  const dx=x-o.x,dz=z-o.z,lx=dx*o.c+dz*o.s,lz=-dx*o.s+dz*o.c;return Math.abs(lx)<=o.hx&&Math.abs(lz)<=o.hz;
+}
+function obstacleJSON(o){return o.kind==='circle'?{x:o.x,z:o.z,r:o.r}:o.kind==='box'?{minX:o.minX,minZ:o.minZ,maxX:o.maxX,maxZ:o.maxZ}:{x:o.x,z:o.z,hx:o.hx,hz:o.hz,rotation:o.rotation};}
+
+/* Exact squared Euclidean distance transform (Felzenszwalb & Huttenlocher), 1D pass along a strided line. */
+function edt1d(g,off,stride,len,f,v,z){
+  v[0]=0;z[0]=-1e20;z[1]=1e20;f[0]=g[off];
+  for(let q=1,k=0,s=0;q<len;q++){f[q]=g[off+q*stride];const q2=q*q;
+    do{const r=v[k];s=(f[q]-f[r]+q2-r*r)/(q-r)/2;}while(s<=z[k]&&--k>-1);
+    k++;v[k]=q;z[k]=s;z[k+1]=1e20;}
+  for(let q=0,k=0;q<len;q++){while(z[k+1]<q)k++;const r=v[k],d=q-r;g[off+q*stride]=f[r]+d*d;}
+}
+
+/* Run-length encoding of 0/1 grids for JSON (alternating runs starting with 0). */
+function rleEncode(a){const out=[];let cur=0,run=0;for(let i=0;i<a.length;i++){const v=a[i]?1:0;if(v===cur)run++;else{out.push(run);cur=v;run=1;}}out.push(run);return out;}
+function rleDecode(runs,n){const a=new Uint8Array(n);if(!Array.isArray(runs))throw new TypeError('Invalid navmesh grid');let p=0,v=0;for(const r of runs){if(!Number.isInteger(r)||r<0||p+r>n)throw new RangeError('Invalid navmesh grid run');if(v)a.fill(1,p,p+r);p+=r;v^=1;}if(p!==n)throw new RangeError('Navmesh grid size mismatch');return a;}
+
+/* ---------- contour tracing ---------- */
+/* Traces every boundary loop of one 4-connected component (inC) of a tile. Each point records the direction
+   of the edge leaving it, whether that edge lies on the tile border, and whether it is a saddle (two cells of
+   the component touching diagonally). The left-hand rule keeps diagonal-only contacts separated. */
+function traceLoops(tw,th,inC,cells){
+  const visited=new Uint8Array(tw*th),loops=[];
+  for(const k of cells){const i=k%tw,j=(k/tw)|0;
+    for(let s=0;s<4;s++){
+      if(visited[k]&(1<<s))continue;const o=DIRS[OUT[s]];if(inC(i+o[0],j+o[1]))continue;
+      const loop=[];let ci=i,cj=j,cs=s,saddle=false,guard=0;
+      do{
+        visited[cj*tw+ci]|=1<<cs;
+        const su=cs===0||cs===3?ci:ci+1,sv=cs===0||cs===1?cj:cj+1;
+        const od=DIRS[OUT[cs]],ou=ci+od[0],ov=cj+od[1];
+        let u=su,v=sv;if(saddle){u+=(ci+.5-su)*.2;v+=(cj+.5-sv)*.2;}
+        loop.push({u,v,d:cs,border:ou<0||ov<0||ou>=tw||ov>=th,saddle});
+        const D=DIRS[cs],ai=ci+D[0],aj=cj+D[1],di=ai+od[0],dj=aj+od[1];
+        if(!inC(ai,aj)){saddle=inC(di,dj);cs=(cs+1)&3;}          // convex corner: turn left around the same cell
+        else if(inC(di,dj)){ci=di;cj=dj;cs=(cs+3)&3;saddle=false;} // concave corner: turn right
+        else{ci=ai;cj=aj;saddle=false;}                           // straight on
+        if(++guard>4*tw*th+8)throw new Error('NavMesh contour trace failed');
+      }while(!(ci===i&&cj===j&&cs===s));
+      if(saddle){const p=loop[0];p.saddle=true;p.u+=(i+.5-p.u)*.2;p.v+=(j+.5-p.v)*.2;}
+      loops.push(loop);
+    }
+  }
+  return loops;
+}
+const segDist2=(p,a,b)=>{const dx=b.u-a.u,dv=b.v-a.v,l=dx*dx+dv*dv;let t=l>0?((p.u-a.u)*dx+(p.v-a.v)*dv)/l:0;t=t<0?0:t>1?1:t;const x=a.u+dx*t-p.u,y=a.v+dv*t-p.v;return x*x+y*y;};
+/* A simplified edge is accepted only if it stays inside the component's cells (sampled every 0.2 cells), so
+   polygons never extend past the eroded walkable area: simplification only ever cuts corners inward. */
+function segInside(a,b,inC){const du=b.u-a.u,dv=b.v-a.v,n=Math.max(1,Math.ceil(Math.hypot(du,dv)/.2)),e=1e-4;
+  for(let t=0;t<=n;t++){const u=a.u+du*t/n,v=a.v+dv*t/n,i0=Math.floor(u-e),i1=Math.floor(u+e),j0=Math.floor(v-e),j1=Math.floor(v+e);
+    if(!(inC(i0,j0)||inC(i1,j0)||inC(i0,j1)||inC(i1,j1)))return false;}return true;}
+/* Douglas-Peucker between fixed points (saddles and tile-border runs, which must stay exact for tile stitching). */
+function simplifyLoop(loop,tol,inC){
+  const n=loop.length,P=[];
+  for(let k=0;k<n;k++)if(loop[k].d!==loop[(k+n-1)%n].d||loop[k].saddle)P.push(loop[k]);
+  const m=P.length;if(m<3)return null;if(tol<=0)return P;
+  const keep=new Uint8Array(m);let nf=0;
+  for(let k=0;k<m;k++)if(P[k].saddle||P[k].border||P[(k+m-1)%m].border){keep[k]=1;nf++;}
+  if(nf<2){let a=0;if(nf===1)a=keep.indexOf(1);else for(let k=1;k<m;k++)if(P[k].u<P[a].u||(P[k].u===P[a].u&&P[k].v<P[a].v))a=k;
+    let b=a,bd=-1;for(let k=0;k<m;k++){const d=(P[k].u-P[a].u)**2+(P[k].v-P[a].v)**2;if(d>bd){bd=d;b=k;}}keep[a]=keep[b]=1;}
+  const fixed=[];for(let k=0;k<m;k++)if(keep[k])fixed.push(k);
+  const tol2=tol*tol,stack=[];
+  for(let f=0;f<fixed.length;f++){const a=fixed[f];let b=fixed[(f+1)%fixed.length];if(b<=a)b+=m;if(P[a].border)continue;stack.push(a,b);
+    while(stack.length){const e=stack.pop(),s=stack.pop();if(e-s<2)continue;const A=P[s%m],B=P[e%m];let md=-1,mi=-1;
+      for(let k=s+1;k<e;k++){const d=segDist2(P[k%m],A,B);if(d>md){md=d;mi=k;}}
+      if(md>tol2||!segInside(A,B,inC)){keep[mi%m]=1;stack.push(s,mi,mi,e);}}}
+  const out=[];for(let k=0;k<m;k++)if(keep[k])out.push(P[k]);return out.length>=3?out:null;
+}
+const loopArea=L=>{let a=0;for(let i=0,n=L.length;i<n;i++){const p=L[i],q=L[(i+1)%n];a+=p.u*q.v-q.u*p.v;}return a/2;};
+function segsCross(a,b,c,d){
+  const o=(p,q,r)=>(q.u-p.u)*(r.v-p.v)-(q.v-p.v)*(r.u-p.u),e=1e-9;
+  const d1=o(a,b,c),d2=o(a,b,d),d3=o(c,d,a),d4=o(c,d,b);
+  if(((d1>e&&d2<-e)||(d1<-e&&d2>e))&&((d3>e&&d4<-e)||(d3<-e&&d4>e)))return true;
+  const on=(p,q,r)=>Math.min(p.u,q.u)-e<=r.u&&r.u<=Math.max(p.u,q.u)+e&&Math.min(p.v,q.v)-e<=r.v&&r.v<=Math.max(p.v,q.v)+e;
+  return (Math.abs(d1)<=e&&on(a,b,c))||(Math.abs(d2)<=e&&on(a,b,d))||(Math.abs(d3)<=e&&on(c,d,a))||(Math.abs(d4)<=e&&on(c,d,b));
+}
+/* Simplified loops must stay simple and mutually disjoint, with exactly one counter-clockwise outer loop. */
+function validLoops(loops){
+  let outer=0;for(const L of loops){const a=loopArea(L);if(Math.abs(a)<1e-9)return false;if(a>0)outer++;}
+  if(outer!==1)return false;
+  const segs=[];for(let l=0;l<loops.length;l++){const L=loops[l];for(let i=0;i<L.length;i++)segs.push([L[i],L[(i+1)%L.length],l,i,L.length]);}
+  for(let i=0;i<segs.length;i++)for(let j=i+1;j<segs.length;j++){const A=segs[i],B=segs[j];
+    if(A[2]===B[2]&&(Math.abs(A[3]-B[3])===1||Math.abs(A[3]-B[3])===A[4]-1))continue;
+    if(segsCross(A[0],A[1],B[0],B[1]))return false;}
+  return true;
+}
+function triangulateLoops(THREE,loops){
+  const outer=loops.find(L=>loopArea(L)>0),holes=loops.filter(L=>L!==outer),pts=outer.concat(...holes);
+  let faces;try{faces=THREE.ShapeUtils.triangulateShape(outer.map(p=>new THREE.Vector2(p.u,p.v)),holes.map(h=>h.map(p=>new THREE.Vector2(p.u,p.v))));}catch(e){return null;}
+  let want=0,got=0;for(const L of loops)want+=loopArea(L);
+  const tris=[];for(const f of faces){const [a,b,c]=f,A=pts[a],B=pts[b],C=pts[c];const ar=((B.u-A.u)*(C.v-A.v)-(B.v-A.v)*(C.u-A.u))/2;got+=Math.abs(ar);tris.push(ar>=0?[a,b,c]:[a,c,b]);}
+  if(Math.abs(got-want)>1e-6+1e-5*Math.abs(want))return null;
+  delaunayFlip(pts,tris);
+  return {pts,tris};
+}
+/* Lawson edge flips: turns the ear-clipped triangulation into the constrained Delaunay triangulation of the
+   contour (boundary edges never flip), removing slivers before convex merging. */
+function delaunayFlip(pts,tris){
+  const N=pts.length+1,key=(a,b)=>a*N+b,edge=new Map(),stack=[];
+  const add=i=>{const t=tris[i];edge.set(key(t[0],t[1]),i);edge.set(key(t[1],t[2]),i);edge.set(key(t[2],t[0]),i);};
+  const del=i=>{const t=tris[i];edge.delete(key(t[0],t[1]));edge.delete(key(t[1],t[2]));edge.delete(key(t[2],t[0]));};
+  const orient=(a,b,c)=>(pts[b].u-pts[a].u)*(pts[c].v-pts[a].v)-(pts[b].v-pts[a].v)*(pts[c].u-pts[a].u);
+  const inCircle=(a,b,c,d)=>{const A=pts[a],B=pts[b],C=pts[c],D=pts[d],ax=A.u-D.u,ay=A.v-D.v,bx=B.u-D.u,by=B.v-D.v,cx=C.u-D.u,cy=C.v-D.v;
+    return (ax*ax+ay*ay)*(bx*cy-cx*by)-(bx*bx+by*by)*(ax*cy-cx*ay)+(cx*cx+cy*cy)*(ax*by-bx*ay);};
+  tris.forEach((t,i)=>{add(i);for(let e=0;e<3;e++){const a=t[e],b=t[(e+1)%3];if(a<b)stack.push(a,b);}});
+  for(let guard=tris.length*64;stack.length&&guard>0;guard--){
+    const b=stack.pop(),a=stack.pop(),i1=edge.get(key(a,b)),i2=edge.get(key(b,a));if(i1===undefined||i2===undefined)continue;
+    const t1=tris[i1],t2=tris[i2],c=t1[0]!==a&&t1[0]!==b?t1[0]:t1[1]!==a&&t1[1]!==b?t1[1]:t1[2],d=t2[0]!==a&&t2[0]!==b?t2[0]:t2[1]!==a&&t2[1]!==b?t2[1]:t2[2];
+    if(inCircle(a,b,c,d)<=1e-9||orient(a,d,c)<=1e-9||orient(d,b,c)<=1e-9)continue;
+    del(i1);del(i2);tris[i1]=[a,d,c];tris[i2]=[d,b,c];add(i1);add(i2);stack.push(a,d,d,b,b,c,c,a);
+  }
+}
+/* Greedy convex merge (Hertel-Mehlhorn style, longest shared edge first, at most nvp vertices). Collinear
+   vertices are kept so shared edges between neighbours stay exact (no T-junctions). */
+function mergeConvex(pts,polys,nvp){
+  const cross=(a,b,c)=>(pts[b].u-pts[a].u)*(pts[c].v-pts[a].v)-(pts[b].v-pts[a].v)*(pts[c].u-pts[a].u);
+  const convex=P=>{for(let i=0,n=P.length;i<n;i++)if(cross(P[(i+n-1)%n],P[i],P[(i+1)%n])<-1e-9)return false;return true;};
+  const N=pts.length+1,key=(a,b)=>a*N+b;
+  for(let round=0;round<64;round++){
+    const edges=new Map();polys.forEach((P,pi)=>{for(let e=0;e<P.length;e++)edges.set(key(P[e],P[(e+1)%P.length]),pi*16+e);});
+    const cand=[];
+    polys.forEach((P,pi)=>{for(let e=0;e<P.length;e++){const a=P[e],b=P[(e+1)%P.length],r=edges.get(key(b,a));if(r===undefined)continue;const qi=r>>4;if(qi<=pi)continue;
+      const Q=polys[qi];if(P.length+Q.length-2>nvp)continue;const eq=r&15,M=[];
+      for(let k=1;k<=P.length;k++)M.push(P[(e+k)%P.length]);for(let k=2;k<Q.length;k++)M.push(Q[(eq+k)%Q.length]);
+      if(!convex(M))continue;cand.push({pi,qi,M,len:(pts[a].u-pts[b].u)**2+(pts[a].v-pts[b].v)**2});}});
+    if(!cand.length)break;cand.sort((x,y)=>y.len-x.len);
+    const used=new Uint8Array(polys.length);let merged=0;
+    for(const c of cand){if(used[c.pi]||used[c.qi])continue;used[c.pi]=used[c.qi]=1;polys[c.pi]=c.M;polys[c.qi]=null;merged++;}
+    polys=polys.filter(Boolean);if(!merged)break;
+  }
+  return polys;
+}
+
+/* ---------- polygon helpers ---------- */
+function makePoly(nav,tile,xs,zs){
+  const n=xs.length,p={ref:nav._nextRef++,tile,n,x:new Float64Array(xs),z:new Float64Array(zs),y:new Float64Array(n),links:[],border:new Int8Array(n),
+    area:0,cx:0,cz:0,minX:Infinity,maxX:-Infinity,minZ:Infinity,maxZ:-Infinity,island:-1,dead:false,
+    _q:0,_isl:0};
+  for(let i=0;i<n;i++){const x=p.x[i],z=p.z[i],j=(i+1)%n;p.area+=x*p.z[j]-p.x[j]*z;p.cx+=x;p.cz+=z;
+    if(x<p.minX)p.minX=x;if(x>p.maxX)p.maxX=x;if(z<p.minZ)p.minZ=z;if(z>p.maxZ)p.maxZ=z;p.y[i]=nav._rawHeight(x,z);}
+  p.area/=2;p.cx/=n;p.cz/=n;
+  /* border edge codes: 1:-X 2:+X 3:-Z 4:+Z (edges lying on the tile boundary, used for tile stitching) */
+  const tx0=tile.x0,tx1=tile.x1,tz0=tile.z0,tz1=tile.z1,e=1e-7;
+  for(let i=0;i<n;i++){const j=(i+1)%n,ax=p.x[i],az=p.z[i],bx=p.x[j],bz=p.z[j];
+    p.border[i]=Math.abs(ax-tx0)<e&&Math.abs(bx-tx0)<e?1:Math.abs(ax-tx1)<e&&Math.abs(bx-tx1)<e?2:Math.abs(az-tz0)<e&&Math.abs(bz-tz0)<e?3:Math.abs(az-tz1)<e&&Math.abs(bz-tz1)<e?4:0;}
+  return p;
+}
+function pointInPoly(p,x,z,eps){const n=p.n,X=p.x,Z=p.z;for(let i=0;i<n;i++){const j=i+1===n?0:i+1,ex=X[j]-X[i],ez=Z[j]-Z[i];
+  if(ex*(z-Z[i])-ez*(x-X[i])<-eps*Math.hypot(ex,ez))return false;}return true;}
+/* Closest point on a convex polygon; writes out.x/out.z/out.d2. */
+function closestOnPoly(p,x,z,out){
+  if(pointInPoly(p,x,z,1e-9)){out.x=x;out.z=z;out.d2=0;return out;}
+  let best=Infinity;const n=p.n,X=p.x,Z=p.z;
+  for(let i=0;i<n;i++){const j=i+1===n?0:i+1,ax=X[i],az=Z[i],ex=X[j]-ax,ez=Z[j]-az,l=ex*ex+ez*ez;let t=l>0?((x-ax)*ex+(z-az)*ez)/l:0;t=t<0?0:t>1?1:t;
+    const qx=ax+ex*t,qz=az+ez*t,d=(qx-x)**2+(qz-z)**2;if(d<best){best=d;out.x=qx;out.z=qz;}}
+  out.d2=best;return out;
+}
+function polyHeight(p,x,z){ // barycentric over the vertex fan
+  const X=p.x,Z=p.z,Y=p.y;
+  for(let k=1;k<p.n-1;k++){const ax=X[0],az=Z[0],bx=X[k],bz=Z[k],cx=X[k+1],cz=Z[k+1];const d=(bz-cz)*(ax-cx)+(cx-bx)*(az-cz);if(Math.abs(d)<1e-12)continue;
+    const w1=((bz-cz)*(x-cx)+(cx-bx)*(z-cz))/d,w2=((cz-az)*(x-cx)+(ax-cx)*(z-cz))/d,w3=1-w1-w2;
+    if(w1>=-1e-6&&w2>=-1e-6&&w3>=-1e-6)return w1*Y[0]+w2*Y[k]+w3*Y[k+1];}
+  let s=0;for(let i=0;i<p.n;i++)s+=Y[i];return s/p.n;
+}
+const tri2=(ax,az,bx,bz,cx,cz)=>(cx-ax)*(bz-az)-(bx-ax)*(cz-az);
+const hash01=n=>{let t=(n*0x9E3779B1+0x6D2B79F5)>>>0;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296;};
+
+const NAV_DEFAULTS={cellSize:.5,maxSlope:40,stepHeight:.4,agentRadius:.4,agentHeight:1.8,maxError:1.3,maxVertsPerPoly:6,minRegionArea:2,tileSize:16,waterLevel:null,maxWaterDepth:0};
+
+class NavMesh{
+  constructor(THREE,o={}){
+    if(!THREE||!THREE.Vector3)throw new TypeError('KE.NavMesh needs THREE as its first argument');
+    if(!o||typeof o!=='object')throw new TypeError('KE.NavMesh options must be an object');
+    this.THREE=THREE;const b=o.bounds;
+    if(!b||![b.minX,b.minZ,b.maxX,b.maxZ].every(Number.isFinite)||b.maxX<=b.minX||b.maxZ<=b.minZ)throw new RangeError('NavMesh bounds need finite minX<maxX and minZ<maxZ');
+    const P={...NAV_DEFAULTS};for(const k of Object.keys(NAV_DEFAULTS))if(o[k]!==undefined&&o[k]!==null)P[k]=+o[k];
+    if(!(P.cellSize>0))throw new RangeError('cellSize must be > 0');
+    P.maxSlope=clamp(P.maxSlope,0,89.9);P.stepHeight=Math.max(0,P.stepHeight);P.agentRadius=Math.max(0,P.agentRadius);P.maxError=Math.max(0,P.maxError);
+    P.maxVertsPerPoly=clamp(Math.round(P.maxVertsPerPoly),3,12);P.minRegionArea=Math.max(0,P.minRegionArea);
+    this.params=P;this.bounds={minX:+b.minX,minZ:+b.minZ,maxX:+b.maxX,maxZ:+b.maxZ};
+    Object.assign(this,{cellSize:P.cellSize,agentRadius:P.agentRadius,agentHeight:P.agentHeight});
+    const cs=P.cellSize;this.W=Math.max(1,Math.ceil((b.maxX-b.minX)/cs-1e-9));this.H=Math.max(1,Math.ceil((b.maxZ-b.minZ)/cs-1e-9));
+    if(this.W*this.H>4e6)throw new RangeError('NavMesh grid too large ('+this.W+'x'+this.H+'); raise cellSize or shrink bounds');
+    this.tileCells=Math.max(4,Math.round((P.tileSize>0?P.tileSize:16)/cs));
+    this.tilesX=Math.ceil(this.W/this.tileCells);this.tilesZ=Math.ceil(this.H/this.tileCells);
+    this.heightFn=isFn(o.heightAt)?o.heightAt:null;this.blockedFn=isFn(o.blocked)?o.blocked:null;
+    this.staticObstacles=(o.obstacles||[]).map(normObstacle);this.obstacles=new Map();this._obsId=0;
+    this.tiles=[];for(let tz=0;tz<this.tilesZ;tz++)for(let tx=0;tx<this.tilesX;tx++){const T=this.tileCells,i0=tx*T,j0=tz*T,tw=Math.min(T,this.W-i0),th=Math.min(T,this.H-j0);
+      this.tiles.push({tx,tz,i0,j0,tw,th,x0:this.bounds.minX+i0*cs,x1:this.bounds.minX+(i0+tw)*cs,z0:this.bounds.minZ+j0*cs,z1:this.bounds.minZ+(j0+th)*cs,polys:[],buckets:null,bw:0,bh:0,version:0});}
+    this.polys=[];this._nextRef=1;this.revision=0;this.islandCount=0;this._gen=0;this._agen=0;this._graphRev=-1;this._qgen=0;this._qbuf=[];
+    this._na={x:0,z:0,d2:0,poly:null};this._nb={x:0,z:0,d2:0,poly:null};this._cp={x:0,z:0,d2:0};this._ray={hit:false,t:0,x:0,z:0,nx:0,nz:0,poly:null};
+    this.rng=KE.random(num(o.seed,1));this._areaCache=null;this.buildMs=0;this.lastRebuild={tiles:0,ms:0};
+    this.heights=null;this.open=null;this.walk=null;this.pruned=null;this.clearance=null;
+  }
+  static build(THREE,o){const nav=new NavMesh(THREE,o);const g=nav._buildSteps();while(!g.next().done);return nav;}
+  /* Same build spread over frames through KE.jobs (call KE.jobs.run(ms) from your loop). Resolves to the NavMesh. */
+  static buildAsync(THREE,o,{priority=0,jobs=KE.jobs}={}){const nav=new NavMesh(THREE,o);const g=nav._buildSteps();return jobs.add(function*(){while(!g.next().done)yield;return nav;}(),{priority,name:'navmesh'});}
+  *_buildSteps(){
+    const t0=now();this._rasterize();yield;this._computeWalk(true);yield;
+    for(const t of this.tiles){this._buildTile(t);yield;}
+    this._finishRebuild(this.tiles);this.buildMs=now()-t0;
+  }
+  _rawHeight(x,z){if(this.heightFn){const h=+this.heightFn(x,z);return Number.isFinite(h)?h:0;}
+    if(this.heights){const cs=this.cellSize,i=clamp(Math.floor((x-this.bounds.minX)/cs),0,this.W-1),j=clamp(Math.floor((z-this.bounds.minZ)/cs),0,this.H-1),h=this.heights[j*this.W+i];return Number.isFinite(h)?h:0;}return 0;}
+
+  /* ---------- rasterization: walkable cells before erosion ---------- */
+  _rasterize(){
+    const {W,H,cellSize:cs,bounds:B}=this,P=this.params,N=W*H,h=new Float32Array(N),open=new Uint8Array(N);
+    for(let j=0;j<H;j++)for(let i=0;i<W;i++){const x=B.minX+(i+.5)*cs,z=B.minZ+(j+.5)*cs,y=this.heightFn?+this.heightFn(x,z):0;h[j*W+i]=Number.isFinite(y)?y:NaN;}
+    const slopeMax=Math.tan(P.maxSlope*DEG),stepMax=Math.max(P.stepHeight,cs*slopeMax),water=Number.isFinite(P.waterLevel)?P.waterLevel-P.maxWaterDepth:-Infinity;
+    for(let j=0;j<H;j++)for(let i=0;i<W;i++){const k=j*W+i,y=h[k];if(!Number.isFinite(y)||y<water)continue;
+      const xl=i>0?h[k-1]:y,xr=i<W-1?h[k+1]:y,zd=j>0?h[k-W]:y,zu=j<H-1?h[k+W]:y;
+      if(![xl,xr,zd,zu].every(Number.isFinite))continue;
+      const gx=(xr-xl)/((i>0&&i<W-1?2:1)*cs),gz=(zu-zd)/((j>0&&j<H-1?2:1)*cs);if(Math.hypot(gx,gz)>slopeMax+1e-9)continue;
+      if(Math.abs(xl-y)>stepMax||Math.abs(xr-y)>stepMax||Math.abs(zd-y)>stepMax||Math.abs(zu-y)>stepMax)continue;
+      if(this.blockedFn&&this.blockedFn(B.minX+(i+.5)*cs,B.minZ+(j+.5)*cs))continue;
+      open[k]=1;}
+    for(const o of this.staticObstacles)this._stamp(open,o);
+    this.heights=h;this.open=open;
+  }
+  _stamp(grid,o){const {W,H,cellSize:cs,bounds:B}=this;
+    const i0=clamp(Math.floor((o.minX-B.minX)/cs),0,W-1),i1=clamp(Math.floor((o.maxX-B.minX)/cs),0,W-1),j0=clamp(Math.floor((o.minZ-B.minZ)/cs),0,H-1),j1=clamp(Math.floor((o.maxZ-B.minZ)/cs),0,H-1);
+    if(o.maxX<B.minX||o.minX>B.maxX||o.maxZ<B.minZ||o.minZ>B.maxZ)return;
+    for(let j=j0;j<=j1;j++)for(let i=i0;i<=i1;i++)if(obstacleContains(o,B.minX+(i+.5)*cs,B.minZ+(j+.5)*cs))grid[j*W+i]=0;}
+
+  /* ---------- erosion by agent radius + small-island pruning ---------- */
+  /* clearance = distance from the cell centre to the nearest blocked cell centre minus half a cell (the
+     blocked cell's extent); cells with clearance < agentRadius are removed. The grid border counts as blocked. */
+  _computeWalk(prune){
+    const {W,H,cellSize:cs}=this,N=W*H,open=this.open;let src=open;
+    if(this.obstacles.size){src=open.slice();for(const o of this.obstacles.values())this._stamp(src,o);}
+    const PW=W+2,PH=H+2,g=new Float64Array(PW*PH),L=Math.max(PW,PH),f=new Float64Array(L),v=new Int32Array(L),zz=new Float64Array(L+1);
+    for(let j=0;j<H;j++)for(let i=0;i<W;i++)if(src[j*W+i])g[(j+1)*PW+i+1]=1e20;
+    for(let x=0;x<PW;x++)edt1d(g,x,PW,PH,f,v,zz);for(let y=0;y<PH;y++)edt1d(g,y*PW,1,PW,f,v,zz);
+    const clr=new Float32Array(N),walk=new Uint8Array(N),r=this.agentRadius-1e-6;
+    for(let j=0;j<H;j++)for(let i=0;i<W;i++){const k=j*W+i,c=Math.sqrt(g[(j+1)*PW+i+1])*cs-cs*.5;clr[k]=src[k]?c:0;if(src[k]&&c>=r)walk[k]=1;}
+    if(prune){this.pruned=new Uint8Array(N);const minCells=this.params.minRegionArea/(cs*cs);
+      if(minCells>1){const lab=new Int32Array(N),stack=[];let id=0;
+        for(let s=0;s<N;s++){if(!walk[s]||lab[s])continue;id++;lab[s]=id;stack.push(s);const cells=[];
+          while(stack.length){const c=stack.pop();cells.push(c);const ci=c%W,cj=(c/W)|0;
+            if(ci>0&&walk[c-1]&&!lab[c-1]){lab[c-1]=id;stack.push(c-1);}if(ci<W-1&&walk[c+1]&&!lab[c+1]){lab[c+1]=id;stack.push(c+1);}
+            if(cj>0&&walk[c-W]&&!lab[c-W]){lab[c-W]=id;stack.push(c-W);}if(cj<H-1&&walk[c+W]&&!lab[c+W]){lab[c+W]=id;stack.push(c+W);}}
+          if(cells.length<minCells)for(const c of cells)this.pruned[c]=1;}}}
+    if(this.pruned)for(let k=0;k<N;k++)if(this.pruned[k])walk[k]=0;
+    this.clearance=clr;const old=this.walk;this.walk=walk;return old;
+  }
+
+  /* ---------- per-tile polygonization ---------- */
+  _buildTile(tile){
+    for(const p of tile.polys)p.dead=true;tile.polys=[];tile.version++;
+    const {i0,j0,tw,th}=tile,W=this.W,walk=this.walk,cs=this.cellSize,B=this.bounds,P=this.params;
+    const label=new Int32Array(tw*th),comps=[];
+    for(let j=0;j<th;j++)for(let i=0;i<tw;i++){const k=j*tw+i;if(label[k]||!walk[(j0+j)*W+i0+i])continue;
+      const id=comps.length+1,cells=[k],stack=[k];label[k]=id;
+      while(stack.length){const c=stack.pop(),ci=c%tw,cj=(c/tw)|0;for(const [du,dv] of DIRS){const ni=ci+du,nj=cj+dv;if(ni<0||nj<0||ni>=tw||nj>=th)continue;const nk=nj*tw+ni;
+        if(!label[nk]&&walk[(j0+nj)*W+i0+ni]){label[nk]=id;stack.push(nk);cells.push(nk);}}}
+      comps.push(cells);}
+    const tols=P.maxError>0?[P.maxError,P.maxError*.5,P.maxError*.25,0]:[0];
+    comps.forEach((cells,ci)=>{
+      const id=ci+1,inC=(i,j)=>i>=0&&j>=0&&i<tw&&j<th&&label[j*tw+i]===id;
+      let result=null;const loops=traceLoops(tw,th,inC,cells);
+      for(const tol of tols){const simp=[];let ok=true;for(const L of loops){const s=simplifyLoop(L,tol,inC);if(!s){ok=false;break;}simp.push(s);}
+        if(!ok||!validLoops(simp))continue;const tri=triangulateLoops(this.THREE,simp);if(!tri)continue;
+        result={pts:tri.pts,polys:mergeConvex(tri.pts,tri.tris,P.maxVertsPerPoly)};break;}
+      if(!result){/* fallback: one quad per cell, merged (always valid) */
+        const pts=[],idx=new Map(),vi=(u,v)=>{const k=v*(tw+1)+u;let r=idx.get(k);if(r===undefined){r=pts.length;pts.push({u,v});idx.set(k,r);}return r;};
+        const quads=cells.map(k=>{const i=k%tw,j=(k/tw)|0;return [vi(i,j),vi(i+1,j),vi(i+1,j+1),vi(i,j+1)];});
+        result={pts,polys:mergeConvex(pts,quads,P.maxVertsPerPoly)};}
+      for(const poly of result.polys){const xs=[],zs=[];for(const vi of poly){const p=result.pts[vi];xs.push(B.minX+(i0+p.u)*cs);zs.push(B.minZ+(j0+p.v)*cs);}
+        tile.polys.push(makePoly(this,tile,xs,zs));}
+    });
+    this._linkInternal(tile);this._bucketTile(tile);
+  }
+  _linkInternal(tile){
+    const q=v=>Math.round(v*1e5),key=(ax,az,bx,bz)=>q(ax)+','+q(az)+'|'+q(bx)+','+q(bz),edges=new Map();
+    for(const p of tile.polys){p.links.length=0;for(let e=0;e<p.n;e++){const f=(e+1)%p.n;edges.set(key(p.x[e],p.z[e],p.x[f],p.z[f]),[p,e]);}}
+    for(const p of tile.polys)for(let e=0;e<p.n;e++){const f=(e+1)%p.n,r=edges.get(key(p.x[f],p.z[f],p.x[e],p.z[e]));
+      if(r&&r[0]!==p)p.links.push({edge:e,to:r[0],ax:p.x[e],az:p.z[e],bx:p.x[f],bz:p.z[f]});}
+  }
+  /* Stitch tile A to its +X (axis 0) or +Z (axis 1) neighbour B by overlapping border edges on the shared line. */
+  _linkTiles(A,B,axis){
+    const ca=axis?4:2,cb=axis?3:1,ea=[],eb=[];
+    for(const p of A.polys)for(let e=0;e<p.n;e++)if(p.border[e]===ca)ea.push([p,e]);
+    for(const p of B.polys)for(let e=0;e<p.n;e++)if(p.border[e]===cb)eb.push([p,e]);
+    const add=(p,e,lo,hi)=>{const f=(e+1)%p.n,ta=axis?p.x[e]:p.z[e],tb=axis?p.x[f]:p.z[f],fwd=tb>ta,s=fwd?lo:hi,t=fwd?hi:lo,c=axis?p.z[e]:p.x[e];
+      return axis?{edge:e,ax:s,az:c,bx:t,bz:c}:{edge:e,ax:c,az:s,bx:c,bz:t};};
+    for(const [p,e] of ea){const f=(e+1)%p.n,a0=axis?p.x[e]:p.z[e],a1=axis?p.x[f]:p.z[f],alo=Math.min(a0,a1),ahi=Math.max(a0,a1);
+      for(const [q,g] of eb){const h=(g+1)%q.n,b0=axis?q.x[g]:q.z[g],b1=axis?q.x[h]:q.z[h],lo=Math.max(alo,Math.min(b0,b1)),hi=Math.min(ahi,Math.max(b0,b1));
+        if(hi-lo<=1e-4)continue;const l1=add(p,e,lo,hi);l1.to=q;p.links.push(l1);const l2=add(q,g,lo,hi);l2.to=p;q.links.push(l2);}}
+  }
+  _tileAt(tx,tz){return tx>=0&&tz>=0&&tx<this.tilesX&&tz<this.tilesZ?this.tiles[tz*this.tilesX+tx]:null;}
+  _bucketTile(tile){
+    const S=4,cs=this.cellSize;tile.bw=Math.ceil(tile.tw/S);tile.bh=Math.ceil(tile.th/S);tile.buckets=Array.from({length:tile.bw*tile.bh},()=>[]);
+    for(const p of tile.polys){const bi0=clamp(Math.floor((p.minX-tile.x0)/cs/S),0,tile.bw-1),bi1=clamp(Math.floor((p.maxX-tile.x0)/cs/S),0,tile.bw-1),
+      bj0=clamp(Math.floor((p.minZ-tile.z0)/cs/S),0,tile.bh-1),bj1=clamp(Math.floor((p.maxZ-tile.z0)/cs/S),0,tile.bh-1);
+      for(let j=bj0;j<=bj1;j++)for(let i=bi0;i<=bi1;i++)tile.buckets[j*tile.bw+i].push(p);}
+  }
+  /* Relink rebuilt tiles with their neighbours, refresh the flat polygon list and connectivity islands. */
+  _finishRebuild(changed){
+    const set=new Set(changed);
+    for(const t of changed)for(const [dx,dz] of DIRS){const n=this._tileAt(t.tx+dx,t.tz+dz);if(!n)continue;
+      if(!set.has(n))for(const p of n.polys)p.links=p.links.filter(l=>!l.to.dead);}
+    for(const t of changed){const px=this._tileAt(t.tx+1,t.tz),pz=this._tileAt(t.tx,t.tz+1),mx=this._tileAt(t.tx-1,t.tz),mz=this._tileAt(t.tx,t.tz-1);
+      if(px)this._linkTiles(t,px,0);if(pz)this._linkTiles(t,pz,1);if(mx&&!set.has(mx))this._linkTiles(mx,t,0);if(mz&&!set.has(mz))this._linkTiles(mz,t,1);}
+    this.polys=[];for(const t of this.tiles)for(const p of t.polys)this.polys.push(p);
+    const stamp=++this._gen;let id=0;const stack=[];
+    for(const s of this.polys){if(s._isl===stamp)continue;s._isl=stamp;s.island=id;stack.push(s);
+      while(stack.length){const p=stack.pop();for(const l of p.links){const q=l.to;if(q._isl!==stamp){q._isl=stamp;q.island=id;stack.push(q);}}}id++;}
+    this.islandCount=id;this.revision++;this._areaCache=null;
+  }
+
+  /* ---------- dynamic obstacles ---------- */
+  addObstacle(o,{rebuild=true}={}){if(!this.open)throw new Error('This NavMesh has no rasterization grid (saved without it)');const id=++this._obsId;this.obstacles.set(id,normObstacle(o));if(rebuild)this.rebuild();return id;}
+  removeObstacle(id,{rebuild=true}={}){const had=this.obstacles.delete(id);if(had&&rebuild)this.rebuild();return had;}
+  /* Recomputes erosion over the grid (linear time) and rebuilds only tiles whose walkable cells changed. */
+  rebuild(){
+    const t0=now(),old=this._computeWalk(false),W=this.W,changed=[];
+    for(const t of this.tiles){let diff=false;for(let j=t.j0;j<t.j0+t.th&&!diff;j++)for(let i=t.i0,k=j*W+i;i<t.i0+t.tw;i++,k++)if(old[k]!==this.walk[k]){diff=true;break;}if(diff)changed.push(t);}
+    for(const t of changed)this._buildTile(t);if(changed.length)this._finishRebuild(changed);
+    this.lastRebuild={tiles:changed.length,ms:now()-t0};return this.lastRebuild;
+  }
+
+  /* ---------- spatial queries ---------- */
+  _gather(x0,z0,x1,z1){
+    const buf=this._qbuf;buf.length=0;const stamp=++this._qgen,cs=this.cellSize,B=this.bounds,T=this.tileCells*cs;
+    const tx0=clamp(Math.floor((x0-B.minX)/T),0,this.tilesX-1),tx1=clamp(Math.floor((x1-B.minX)/T),0,this.tilesX-1),tz0=clamp(Math.floor((z0-B.minZ)/T),0,this.tilesZ-1),tz1=clamp(Math.floor((z1-B.minZ)/T),0,this.tilesZ-1);
+    if(x1<B.minX||x0>B.maxX||z1<B.minZ||z0>B.maxZ)return buf;
+    for(let tz=tz0;tz<=tz1;tz++)for(let tx=tx0;tx<=tx1;tx++){const t=this.tiles[tz*this.tilesX+tx];if(!t.buckets)continue;const S=4*cs;
+      const bi0=clamp(Math.floor((x0-t.x0)/S),0,t.bw-1),bi1=clamp(Math.floor((x1-t.x0)/S),0,t.bw-1),bj0=clamp(Math.floor((z0-t.z0)/S),0,t.bh-1),bj1=clamp(Math.floor((z1-t.z0)/S),0,t.bh-1);
+      for(let j=bj0;j<=bj1;j++)for(let i=bi0;i<=bi1;i++)for(const p of t.buckets[j*t.bw+i])if(p._q!==stamp){p._q=stamp;buf.push(p);}}
+    return buf;
+  }
+  /* Polygon containing (x,z), or null. */
+  findPoly(x,z,eps=1e-4){const c=this._gather(x-eps,z-eps,x+eps,z+eps);for(const p of c)if(pointInPoly(p,x,z,eps))return p;return null;}
+  /* Nearest point on the mesh within radius; writes into out {x,z,d2,poly} and returns it, or null. */
+  _nearest(x,z,radius,out,island=-1){
+    let r=Math.min(radius,Math.max(this.cellSize*4,.5));const cp=this._cp;
+    for(;;){const c=this._gather(x-r,z-r,x+r,z+r);let best=Infinity;out.poly=null;
+      for(const p of c){if(island>=0&&p.island!==island)continue;if(p.minX-x>r||x-p.maxX>r||p.minZ-z>r||z-p.maxZ>r)continue;closestOnPoly(p,x,z,cp);
+        if(cp.d2<best){best=cp.d2;out.x=cp.x;out.z=cp.z;out.d2=cp.d2;out.poly=p;if(best===0)return out;}}
+      if(out.poly&&best<=r*r)return out;if(r>=radius)return out.poly?out:null;r=Math.min(radius,r*2);}
+  }
+  findNearest(x,z,radius=4){const r=this._nearest(x,z,radius,{x:0,z:0,d2:0,poly:null});return r;}
+  nearestPoint(p,out,{radius=4}={}){const r=this._nearest(p.x,p.z,radius,this._na);if(!r)return null;out=out||new this.THREE.Vector3();out.set(r.x,this.heightAt(r.x,r.z),r.z);return out;}
+  isWalkable(x,z,eps=1e-3){if(typeof x==='object'){z=x.z;x=x.x;}return !!this.findPoly(x,z,eps);}
+  heightAt(x,z){if(this.heightFn){const h=+this.heightFn(x,z);if(Number.isFinite(h))return h;}const p=this.findPoly(x,z,1e-3)||(this._nearest(x,z,2,this._nb)||{}).poly;return p?polyHeight(p,x,z):0;}
+  /* Distance (world units) from a cell centre to the nearest blocked cell, from the erosion distance field. */
+  clearanceAt(x,z){if(!this.clearance)return 0;const cs=this.cellSize,i=Math.floor((x-this.bounds.minX)/cs),j=Math.floor((z-this.bounds.minZ)/cs);if(i<0||j<0||i>=this.W||j>=this.H)return 0;return this.clearance[j*this.W+i];}
+
+  /* Uniform random point on the mesh (area weighted), or within radius of `near` on the same island. */
+  randomPoint(rng=this.rng,near=null,radius=Infinity,out){
+    const T=this.THREE;rng=isFn(rng)?rng:this.rng;out=out||new T.Vector3();if(!this.polys.length)return null;
+    let cand=this.polys,cum;
+    if(near){const s=this._nearest(near.x,near.z,Math.max(2,Math.min(radius,8)),this._na);if(!s)return null;const isl=s.poly.island,R=Number.isFinite(radius)?radius:1e9;
+      cand=(Number.isFinite(radius)?this._gather(near.x-R,near.z-R,near.x+R,near.z+R):this.polys).filter(p=>p.island===isl);
+      let acc=0;cum=cand.map(p=>acc+=Math.max(p.area,1e-9));}
+    else{if(!this._areaCache){let acc=0;this._areaCache=this.polys.map(p=>acc+=Math.max(p.area,1e-9));}cum=this._areaCache;}
+    if(!cand.length)return null;
+    for(let tries=0;tries<24;tries++){
+      const r=rng()*cum[cum.length-1];let lo=0,hi=cum.length-1;while(lo<hi){const m=(lo+hi)>>1;if(cum[m]<r)lo=m+1;else hi=m;}
+      const p=cand[lo];let tot=0;for(let k=1;k<p.n-1;k++)tot+=Math.abs(tri2(p.x[0],p.z[0],p.x[k],p.z[k],p.x[k+1],p.z[k+1]));
+      let pick=rng()*tot,k=1;for(;k<p.n-2;k++){const a=Math.abs(tri2(p.x[0],p.z[0],p.x[k],p.z[k],p.x[k+1],p.z[k+1]));if(pick<a)break;pick-=a;}
+      let u=rng(),v=rng();if(u+v>1){u=1-u;v=1-v;}
+      const x=p.x[0]+(p.x[k]-p.x[0])*u+(p.x[k+1]-p.x[0])*v,z=p.z[0]+(p.z[k]-p.z[0])*u+(p.z[k+1]-p.z[0])*v;
+      if(near&&Number.isFinite(radius)&&(x-near.x)**2+(z-near.z)**2>radius*radius)continue;
+      return out.set(x,this.heightAt(x,z),z);}
+    return near?this.nearestPoint(near,out):null;
+  }
+
+  /* ---------- raycast along the mesh surface (2D, polygon walk) ---------- */
+  _raycast(ax,az,bx,bz,res){
+    res.hit=false;res.t=1;res.x=bx;res.z=bz;res.nx=0;res.nz=0;res.poly=null;
+    let p=this.findPoly(ax,az,1e-4);if(!p){const n=this._nearest(ax,az,this.cellSize*.5,this._nb);p=n&&n.d2<1e-6?n.poly:null;}
+    if(!p){res.hit=true;res.t=0;res.x=ax;res.z=az;return res;}
+    const dx=bx-ax,dz=bz-az;let t=0;
+    for(let iter=0;iter<2048;iter++){
+      let tExit=Infinity,eExit=-1;const n=p.n;
+      for(let e=0;e<n;e++){const f=e+1===n?0:e+1,ex=p.x[f]-p.x[e],ez=p.z[f]-p.z[e],nx=ez,nz=-ex,den=nx*dx+nz*dz;if(den<=1e-12)continue;
+        const tt=(nx*(p.x[e]-ax)+nz*(p.z[e]-az))/den;if(tt<tExit){tExit=tt;eExit=e;}}
+      res.poly=p;
+      if(eExit<0||tExit>=1){res.t=1;res.x=bx;res.z=bz;return res;}
+      if(tExit<t)tExit=t;
+      const X=ax+dx*tExit,Z=az+dz*tExit;let next=null;
+      for(let e=0;e<n&&!next;e++){const f=e+1===n?0:e+1,ex=p.x[f]-p.x[e],ez=p.z[f]-p.z[e],den=ez*dx-ex*dz;if(den<=1e-12)continue;
+        const tt=(ez*(p.x[e]-ax)-ex*(p.z[e]-az))/den;if(Math.abs(tt-tExit)>1e-7)continue;
+        for(const l of p.links){if(l.edge!==e||l.to.dead)continue;const lx=l.bx-l.ax,lz=l.bz-l.az,ll=lx*lx+lz*lz,s=ll>0?((X-l.ax)*lx+(Z-l.az)*lz)/ll:0;if(s>=-1e-6&&s<=1+1e-6){next=l.to;break;}}}
+      if(!next){const f=eExit+1===n?0:eExit+1,ex=p.x[f]-p.x[eExit],ez=p.z[f]-p.z[eExit],l=Math.hypot(ex,ez)||1;
+        res.hit=true;res.t=tExit;res.x=X;res.z=Z;res.nx=ez/l;res.nz=-ex/l;return res;}
+      p=next;t=tExit;}
+    res.hit=true;res.t=t;res.x=ax+dx*t;res.z=az+dz*t;return res;
+  }
+  raycast(a,b,out){const r=this._raycast(a.x,a.z,b.x,b.z,this._ray),T=this.THREE;out=out||{};out.hit=r.hit;out.t=r.t;
+    out.point=(out.point||new T.Vector3()).set(r.x,this.heightAt(r.x,r.z),r.z);out.normal=(out.normal||new T.Vector3()).set(r.nx,0,r.nz);out.poly=r.poly;return out;}
+
+  /* ---------- path finding: polygon A* + funnel ---------- */
+  /* A* over portal sample points. A node is a point on a portal (both endpoints, interior samples about every
+     2 m, plus one goal-directed crossing point); moving between two points on the boundary of one convex polygon
+     is a straight segment inside it, so edge costs are exact and the Euclidean heuristic is consistent. This
+     picks near-optimal corridors, which the funnel then straightens. */
+  _prepareGraph(){
+    let nid=0;const links=[];
+    for(const p of this.polys)for(const l of p.links){l.from=p;const len=Math.hypot(l.bx-l.ax,l.bz-l.az);l.ns=Math.min(8,Math.max(1,Math.ceil(len/2)))+1;l.base=nid;nid+=l.ns+1;links.push(l);}
+    if(!this._ng||this._ng.length<nid){const n=Math.max(nid,64)*2;this._ng=new Float64Array(n);this._nx=new Float64Array(n);this._nz=new Float64Array(n);this._npar=new Int32Array(n);this._ngen=new Int32Array(n);this._ncl=new Int32Array(n);this._nlink=new Int32Array(n);}
+    links.forEach((l,li)=>{for(let k=0;k<=l.ns;k++)this._nlink[l.base+k]=li;});
+    this._links=links;this._graphRev=this.revision;this._hn=[];this._hf=[];
+  }
+  _astar(sp,sx,sz,ep,ex,ez,maxNodes,partial){
+    if(sp===ep)return {polys:[sp],links:[]};
+    if(this._graphRev!==this.revision)this._prepareGraph();
+    const gen=++this._agen||(this._agen=1),G=this._ng,X=this._nx,Z=this._nz,PAR=this._npar,GEN=this._ngen,CL=this._ncl,HN=this._hn,HF=this._hf;HN.length=HF.length=0;
+    const push=(n,f)=>{let i=HN.length;HN.push(n);HF.push(f);while(i>0){const q=(i-1)>>1;if(HF[q]<=f)break;HN[i]=HN[q];HF[i]=HF[q];i=q;}HN[i]=n;HF[i]=f;};
+    const pop=()=>{const top=HN[0],ln=HN.pop(),lf=HF.pop(),len=HN.length;if(len){let i=0;for(;;){let c=i*2+1;if(c>=len)break;if(c+1<len&&HF[c+1]<HF[c])c++;if(HF[c]>=lf)break;HN[i]=HN[c];HF[i]=HF[c];i=c;}HN[i]=ln;HF[i]=lf;}return top;};
+    const relax=(n,x,z,g,par)=>{if(GEN[n]===gen){if(CL[n]===gen||g>=G[n]-1e-9)return;}else{GEN[n]=gen;CL[n]=0;}G[n]=g;X[n]=x;Z[n]=z;PAR[n]=par;push(n,g+Math.hypot(ex-x,ez-z));};
+    let goalG=Infinity,goalPar=-1,bestNode=-1,bestH=Infinity,expanded=0,reached=false;
+    const expand=(poly,x,z,g,par,from)=>{
+      if(poly===ep){const gg=g+Math.hypot(ex-x,ez-z);if(gg<goalG){goalG=gg;goalPar=par;push(-1,gg);}return;}
+      for(const l of poly.links){if(l.to.dead||l.to===from)continue;const ns=l.ns,lx=l.bx-l.ax,lz=l.bz-l.az;
+        for(let k=0;k<ns;k++){const t=k/(ns-1),px=l.ax+lx*t,pz=l.az+lz*t;relax(l.base+k,px,pz,g+Math.hypot(px-x,pz-z),par);}
+        const dx=ex-x,dz=ez-z,den=lx*dz-lz*dx;
+        if(Math.abs(den)>1e-12){const s=((x-l.ax)*dz-(z-l.az)*dx)/den,u=((x-l.ax)*lz-(z-l.az)*lx)/den;
+          if(s>1e-6&&s<1-1e-6&&u>0){const px=l.ax+lx*s,pz=l.az+lz*s;relax(l.base+ns,px,pz,g+Math.hypot(px-x,pz-z),par);}}}
+    };
+    expand(sp,sx,sz,0,-1,null);
+    while(HN.length){const n=pop();if(n===-1){reached=true;break;}if(CL[n]===gen)continue;CL[n]=gen;
+      const h=Math.hypot(ex-X[n],ez-Z[n]);if(h<bestH){bestH=h;bestNode=n;}if(++expanded>maxNodes)break;
+      const l=this._links[this._nlink[n]];expand(l.to,X[n],Z[n],G[n],n,l.from);}
+    if(!reached&&!partial)return null;
+    let n=reached?goalPar:bestNode;const links=[];for(;n>=0;n=PAR[n])links.push(this._links[this._nlink[n]]);links.reverse();
+    const polys=[sp];for(const l of links)polys.push(l.to);return {polys,links};
+  }
+  /* Simple Stupid Funnel Algorithm (Mononen) over the corridor portals. */
+  _funnel(links,sx,sz,ex,ez){
+    const pl=[sx,sz],pr=[sx,sz];
+    for(const l of links){pl.push(l.bx,l.bz);pr.push(l.ax,l.az);}
+    pl.push(ex,ez);pr.push(ex,ez);
+    const np=pl.length/2,pts=[sx,sz],eq=(ax,az,bx,bz)=>(ax-bx)**2+(az-bz)**2<1e-10;
+    let apx=sx,apz=sz,lx=pl[0],lz=pl[1],rx=pr[0],rz=pr[1],apexIndex=0,leftIndex=0,rightIndex=0;
+    for(let i=1;i<np;i++){const nlx=pl[i*2],nlz=pl[i*2+1],nrx=pr[i*2],nrz=pr[i*2+1];
+      if(tri2(apx,apz,rx,rz,nrx,nrz)<=0){
+        if(eq(apx,apz,rx,rz)||tri2(apx,apz,lx,lz,nrx,nrz)>0){rx=nrx;rz=nrz;rightIndex=i;}
+        else{apx=lx;apz=lz;apexIndex=leftIndex;if(!eq(pts[pts.length-2],pts[pts.length-1],apx,apz))pts.push(apx,apz);lx=rx=apx;lz=rz=apz;leftIndex=rightIndex=apexIndex;i=apexIndex;continue;}}
+      if(tri2(apx,apz,lx,lz,nlx,nlz)>=0){
+        if(eq(apx,apz,lx,lz)||tri2(apx,apz,rx,rz,nlx,nlz)<0){lx=nlx;lz=nlz;leftIndex=i;}
+        else{apx=rx;apz=rz;apexIndex=rightIndex;if(!eq(pts[pts.length-2],pts[pts.length-1],apx,apz))pts.push(apx,apz);lx=rx=apx;lz=rz=apz;leftIndex=rightIndex=apexIndex;i=apexIndex;continue;}}
+    }
+    if(!eq(pts[pts.length-2],pts[pts.length-1],ex,ez))pts.push(ex,ez);else if(pts.length===2)pts.push(ex,ez);
+    /* drop corners that are collinear with their neighbours (paths running exactly along a portal edge) */
+    for(let i=2;i+2<pts.length;){const ax=pts[i-2],az=pts[i-1],bx=pts[i],bz=pts[i+1],cx=pts[i+2],cz=pts[i+3],ux=bx-ax,uz=bz-az,vx=cx-bx,vz=cz-bz;
+      if(Math.abs(ux*vz-uz*vx)<=1e-9*Math.hypot(ux,uz)*Math.hypot(vx,vz)+1e-12&&ux*vx+uz*vz>=0)pts.splice(i,2);else i+=2;}
+    return pts;
+  }
+  /* Returns Vector3 corners (y from heightAt) or [] when unreachable. opts: maxNodes, searchRadius, partial
+     (walk to the reachable polygon closest to the goal), subdivide (max segment length for terrain-draped paths). */
+  findPath(start,end,opts={}){
+    const T=this.THREE,maxNodes=opts.maxNodes||16384,R=num(opts.searchRadius,Math.max(2,this.agentRadius*4));
+    this.lastCorridor=null;this.lastPathPartial=false;
+    const s=this._nearest(start.x,start.z,R,this._na);if(!s)return [];const sp=s.poly,sx=s.x,sz=s.z;
+    const e=this._nearest(end.x,end.z,R,this._nb);
+    if(!e&&!opts.partial)return [];
+    let ep=e&&e.poly,ex=e?e.x:end.x,ez=e?e.z:end.z;
+    if((!ep||ep.island!==sp.island)&&opts.partial){const e2=this._nearest(end.x,end.z,1e6,this._nb,sp.island);if(!e2)return [];ep=e2.poly;ex=e2.x;ez=e2.z;this.lastPathPartial=true;}
+    if(ep.island!==sp.island)return [];
+    const res=this._astar(sp,sx,sz,ep,ex,ez,maxNodes,!!opts.partial);if(!res)return [];
+    const corridor=res.polys,last=corridor[corridor.length-1];if(last!==ep){closestOnPoly(last,ex,ez,this._cp);ex=this._cp.x;ez=this._cp.z;this.lastPathPartial=true;}
+    this.lastCorridor=corridor;
+    const flat=this._funnel(res.links,sx,sz,ex,ez),out=[],sub=opts.subdivide>0?opts.subdivide:0;
+    for(let i=0;i<flat.length;i+=2){const x=flat[i],z=flat[i+1];
+      if(sub&&i>0){const px=flat[i-2],pz=flat[i-1],d=Math.hypot(x-px,z-pz),m=Math.ceil(d/sub);for(let k=1;k<m;k++){const t=k/m,qx=px+(x-px)*t,qz=pz+(z-pz)*t;out.push(new T.Vector3(qx,this.heightAt(qx,qz),qz));}}
+      out.push(new T.Vector3(x,this.heightAt(x,z),z));}
+    return out;
+  }
+  static pathLength(path){let d=0;for(let i=1;i<path.length;i++)d+=Math.hypot(path[i].x-path[i-1].x,path[i].z-path[i-1].z);return d;}
+
+  /* ---------- stats, serialization, debug ---------- */
+  stats(){let verts=0,links=0,area=0;for(const p of this.polys){verts+=p.n;links+=p.links.length;area+=p.area;}
+    let walkable=0;if(this.walk)for(let k=0;k<this.walk.length;k++)walkable+=this.walk[k];
+    return {cells:this.W*this.H,walkableCells:walkable,polys:this.polys.length,verts,links,islands:this.islandCount,area,tiles:this.tiles.length,tileCells:this.tileCells,
+      obstacles:this.obstacles.size,buildMs:this.buildMs,lastRebuild:{...this.lastRebuild},revision:this.revision};}
+  toJSON({grid=true}={}){
+    const r=v=>Math.round(v*1e4)/1e4,P=this.params;
+    return {format:'kitsune-navmesh',version:1,params:{...P,bounds:{...this.bounds}},W:this.W,H:this.H,
+      tiles:this.tiles.map(t=>({tx:t.tx,tz:t.tz,polys:t.polys.map(p=>{const a=[];for(let i=0;i<p.n;i++)a.push(r(p.x[i]),r(p.y[i]),r(p.z[i]));return a;})})),
+      obstacles:this.staticObstacles.map(obstacleJSON),
+      grid:grid&&this.open?{open:rleEncode(this.open),pruned:rleEncode(this.pruned||new Uint8Array(this.W*this.H))}:null};
+  }
+  static fromJSON(THREE,json,opts={}){
+    if(THREE&&!THREE.Vector3&&json&&json.Vector3){const t=THREE;THREE=json;json=t;}
+    if(typeof json==='string')json=JSON.parse(json);
+    if(!json||json.format!=='kitsune-navmesh'||json.version!==1)throw new TypeError('Not a kitsune navmesh (format/version mismatch)');
+    const p=json.params||{};const nav=new NavMesh(THREE,{...p,obstacles:json.obstacles||[],heightAt:opts.heightAt,blocked:opts.blocked,seed:opts.seed});
+    if(nav.W!==json.W||nav.H!==json.H||!Array.isArray(json.tiles)||json.tiles.length!==nav.tiles.length)throw new RangeError('Navmesh JSON does not match its parameters');
+    const t0=now();
+    json.tiles.forEach((tj,ti)=>{const tile=nav.tiles[ti];if(tj.tx!==tile.tx||tj.tz!==tile.tz||!Array.isArray(tj.polys))throw new RangeError('Navmesh tile order mismatch');
+      for(const a of tj.polys){if(!Array.isArray(a)||a.length<9||a.length%3||a.length>36||!a.every(Number.isFinite))throw new TypeError('Invalid navmesh polygon');
+        const xs=[],zs=[],ys=[];for(let i=0;i<a.length;i+=3){xs.push(a[i]);ys.push(a[i+1]);zs.push(a[i+2]);}
+        const poly=makePoly(nav,tile,xs,zs);if(!nav.heightFn)poly.y.set(ys);tile.polys.push(poly);}
+      nav._linkInternal(tile);nav._bucketTile(tile);});
+    nav._finishRebuild(nav.tiles);
+    if(json.grid&&json.grid.open){const N=nav.W*nav.H;nav.open=rleDecode(json.grid.open,N);nav.pruned=rleDecode(json.grid.pruned||[N],N);
+      if(!nav.heightFn){nav.heights=new Float32Array(N);const cs=nav.cellSize,B=nav.bounds;for(let j=0;j<nav.H;j++)for(let i=0;i<nav.W;i++)nav.heights[j*nav.W+i]=nav.heightAt(B.minX+(i+.5)*cs,B.minZ+(j+.5)*cs);}
+      nav._computeWalk(false);}
+    nav.buildMs=now()-t0;return nav;
+  }
+  /* Debug overlay: per-polygon tinted fill draped over heightAt plus polygon outlines (boundary edges darker). */
+  debugMesh(THREE=this.THREE,{color=0x39b3ff,opacity=.42,edgeColor=0xe9fbff,borderColor=0x08314f,heightOffset=.06,colorize=true,resolution=null}={}){
+    const T=THREE,pos=[],col=[],lp=[],lc=[],base=new T.Color(color),c=new T.Color(),hsl={h:0,s:0,l:0};base.getHSL(hsl);
+    const H=(x,z)=>this.heightAt(x,z)+heightOffset,step=resolution||this.cellSize*2,ec=new T.Color(edgeColor),bc=new T.Color(borderColor);
+    for(const p of this.polys){
+      if(colorize){const a=hash01(p.ref),b=hash01(p.ref+7919),d=hash01(p.ref+104729);c.setHSL((hsl.h+(a-.5)*.1+1)%1,clamp(hsl.s*(.8+.4*b),0,1),clamp(hsl.l*(.78+.44*d),0,1));}else c.copy(base);
+      for(let k=1;k<p.n-1;k++){const ax=p.x[0],az=p.z[0],bx=p.x[k],bz=p.z[k],cx=p.x[k+1],cz=p.z[k+1];
+        const m=Math.max(1,Math.ceil(Math.max(Math.hypot(bx-ax,bz-az),Math.hypot(cx-ax,cz-az),Math.hypot(cx-bx,cz-bz))/step));
+        const P=(i,j)=>{const x=ax+(bx-ax)*i/m+(cx-ax)*j/m,z=az+(bz-az)*i/m+(cz-az)*j/m;pos.push(x,H(x,z),z);col.push(c.r,c.g,c.b);};
+        for(let j=0;j<m;j++)for(let i=0;i+j<m;i++){P(i,j);P(i,j+1);P(i+1,j);if(i+j<m-1){P(i+1,j);P(i,j+1);P(i+1,j+1);}}}
+      for(let e=0;e<p.n;e++){const f=(e+1)%p.n,ax=p.x[e],az=p.z[e],bx=p.x[f],bz=p.z[f],linked=p.links.some(l=>l.edge===e),cc=linked?ec:bc;
+        const m=Math.max(1,Math.ceil(Math.hypot(bx-ax,bz-az)/this.cellSize));
+        for(let k=0;k<m;k++){const x0=ax+(bx-ax)*k/m,z0=az+(bz-az)*k/m,x1=ax+(bx-ax)*(k+1)/m,z1=az+(bz-az)*(k+1)/m;lp.push(x0,H(x0,z0)+.01,z0,x1,H(x1,z1)+.01,z1);lc.push(cc.r,cc.g,cc.b,cc.r,cc.g,cc.b);}}}
+    const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(pos,3));g.setAttribute('color',new T.Float32BufferAttribute(col,3));
+    const fill=new T.Mesh(g,new T.MeshBasicMaterial({vertexColors:true,transparent:true,opacity,depthWrite:false,side:T.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-2,toneMapped:false}));
+    const lg=new T.BufferGeometry();lg.setAttribute('position',new T.Float32BufferAttribute(lp,3));lg.setAttribute('color',new T.Float32BufferAttribute(lc,3));
+    const lines=new T.LineSegments(lg,new T.LineBasicMaterial({vertexColors:true,transparent:true,opacity:.85,depthWrite:false,toneMapped:false}));
+    fill.renderOrder=lines.renderOrder=2;fill.name='ke-navmesh-fill';lines.name='ke-navmesh-edges';
+    const group=new T.Group();group.name='ke-navmesh-debug';group.add(fill,lines);
+    group.dispose=()=>{g.dispose();lg.dispose();fill.material.dispose();lines.material.dispose();group.parent&&group.parent.remove(group);};
+    return group;
+  }
+  /* Flat ribbon along a path, draped on the mesh height; returns a Mesh with dispose(). */
+  debugPath(THREE=this.THREE,path,{color=0xffc21a,width=.2,heightOffset=.14}={}){
+    const T=THREE,pos=[],idx=[],pts=[];
+    for(let i=0;i<path.length;i++){if(i===0){pts.push([path[0].x,path[0].z]);continue;}const a=path[i-1],b=path[i],m=Math.max(1,Math.ceil(Math.hypot(b.x-a.x,b.z-a.z)/(this.cellSize*.5)));
+      for(let k=1;k<=m;k++)pts.push([a.x+(b.x-a.x)*k/m,a.z+(b.z-a.z)*k/m]);}
+    for(let i=0;i<pts.length;i++){const p=pts[Math.max(0,i-1)],q=pts[Math.min(pts.length-1,i+1)];let dx=q[0]-p[0],dz=q[1]-p[1];const l=Math.hypot(dx,dz)||1;dx/=l;dz/=l;
+      const [x,z]=pts[i],y=this.heightAt(x,z)+heightOffset;pos.push(x-dz*width/2,y,z+dx*width/2,x+dz*width/2,y,z-dx*width/2);
+      if(i){const b=(i-1)*2;idx.push(b,b+1,b+2,b+1,b+3,b+2);}}
+    const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(pos,3));g.setIndex(idx);
+    const mesh=new T.Mesh(g,new T.MeshBasicMaterial({color,side:T.DoubleSide,depthWrite:false,transparent:true,opacity:.95,toneMapped:false}));mesh.renderOrder=3;mesh.name='ke-navmesh-path';
+    mesh.dispose=()=>{g.dispose();mesh.material.dispose();mesh.parent&&mesh.parent.remove(mesh);};return mesh;
+  }
+  dispose(){for(const t of this.tiles){for(const p of t.polys)p.dead=true;t.polys=[];t.buckets=null;}this.polys=[];this.heights=this.open=this.walk=this.clearance=this.pruned=null;}
+}
+const now=()=>typeof performance!=='undefined'?performance.now():Date.now();
+KE.NavMesh=NavMesh;
+
+/* ======================================================================
+   Crowd: corridor following + ORCA avoidance
+   ====================================================================== */
+/* ORCA linear programs (van den Berg et al., RVO2), on flat arrays: lines are points P[2i..] and unit
+   directions D[2i..]; the permitted half-plane is to the left of each directed line. */
+function lp1(P,D,no,radius,ox,oz,dirOpt,res){
+  const px=P[no*2],pz=P[no*2+1],dx=D[no*2],dz=D[no*2+1],dot=px*dx+pz*dz,disc=dot*dot+radius*radius-(px*px+pz*pz);if(disc<0)return false;
+  const sq=Math.sqrt(disc);let tL=-dot-sq,tR=-dot+sq;
+  for(let i=0;i<no;i++){const ix=D[i*2],iz=D[i*2+1],den=dx*iz-dz*ix,nm=ix*(pz-P[i*2+1])-iz*(px-P[i*2]);
+    if(Math.abs(den)<=1e-9){if(nm<0)return false;continue;}
+    const t=nm/den;if(den>=0){if(t<tR)tR=t;}else if(t>tL)tL=t;if(tL>tR)return false;}
+  let t;if(dirOpt)t=ox*dx+oz*dz>0?tR:tL;else{t=dx*(ox-px)+dz*(oz-pz);if(t<tL)t=tL;else if(t>tR)t=tR;}
+  res[0]=px+t*dx;res[1]=pz+t*dz;return true;
+}
+function lp2(P,D,n,radius,ox,oz,dirOpt,res){
+  if(dirOpt){res[0]=ox*radius;res[1]=oz*radius;}
+  else if(ox*ox+oz*oz>radius*radius){const l=Math.hypot(ox,oz);res[0]=ox/l*radius;res[1]=oz/l*radius;}
+  else{res[0]=ox;res[1]=oz;}
+  for(let i=0;i<n;i++)if(D[i*2]*(P[i*2+1]-res[1])-D[i*2+1]*(P[i*2]-res[0])>0){const tx=res[0],tz=res[1];if(!lp1(P,D,i,radius,ox,oz,dirOpt,res)){res[0]=tx;res[1]=tz;return i;}}
+  return n;
+}
+function lp3(P,D,n,begin,radius,res,PP,PD){
+  let dist=0;
+  for(let i=begin;i<n;i++){
+    if(D[i*2]*(P[i*2+1]-res[1])-D[i*2+1]*(P[i*2]-res[0])<=dist)continue;
+    let m=0;
+    for(let j=0;j<i;j++){const det=D[i*2]*D[j*2+1]-D[i*2+1]*D[j*2];let px,pz;
+      if(Math.abs(det)<=1e-9){if(D[i*2]*D[j*2]+D[i*2+1]*D[j*2+1]>0)continue;px=.5*(P[i*2]+P[j*2]);pz=.5*(P[i*2+1]+P[j*2+1]);}
+      else{const t=(D[j*2]*(P[i*2+1]-P[j*2+1])-D[j*2+1]*(P[i*2]-P[j*2]))/det;px=P[i*2]+t*D[i*2];pz=P[i*2+1]+t*D[i*2+1];}
+      const dx=D[j*2]-D[i*2],dz=D[j*2+1]-D[i*2+1],l=Math.hypot(dx,dz)||1;PP[m*2]=px;PP[m*2+1]=pz;PD[m*2]=dx/l;PD[m*2+1]=dz/l;m++;}
+    const tx=res[0],tz=res[1];if(lp2(PP,PD,m,radius,-D[i*2+1],D[i*2],true,res)<m){res[0]=tx;res[1]=tz;}
+    dist=D[i*2]*(P[i*2+1]-res[1])-D[i*2+1]*(P[i*2]-res[0]);
+  }
+}
+
+class CrowdAgent{
+  constructor(crowd,o){
+    const T=crowd.nav.THREE;this.crowd=crowd;this.id=++crowd._ids;this.index=-1;
+    this.position=new T.Vector3();this.velocity=new T.Vector3();this.desiredVelocity=new T.Vector3();
+    this.radius=Math.max(.01,num(+o.radius,crowd.nav.agentRadius||.4));this.height=num(+o.height,1.8);this.maxSpeed=Math.max(0,num(+o.maxSpeed,3.5));this.maxAccel=Math.max(.01,num(+o.maxAccel,8));
+    this.arriveDistance=num(+o.arriveDistance,Math.max(.15,this.radius*.5));this.slowDistance=num(+o.slowDistance,Math.max(this.radius*2,this.maxSpeed*this.maxSpeed/(2*this.maxAccel)+.3));
+    this.separationWeight=num(+o.separationWeight,.5);this.avoidance=o.avoidance!==false;this.userData=o.userData||{};
+    this.onArrive=isFn(o.onArrive)?o.onArrive:null;
+    this.target=null;this.state='idle';this.path=[];this.pathIndex=0;this.corridor=null;this.partial=false;this.poly=null;
+    this._needsPath=false;this._queued=false;this._arrived=false;this._checkT=0;this._stuck=0;this._nd=0;this._nvx=0;this._nvz=0;this._dx=0;this._dz=0;this._prefx=0;this._prefz=0;this._yaw=0;
+  }
+  /* Move to a point (Vector3-like) or stop with null. Paths are planned by the crowd within its per-update budget. */
+  setTarget(v){
+    if(!v){this.target=null;this.state='idle';this.path=[];this.corridor=null;this._needsPath=false;return this;}
+    if(!Number.isFinite(v.x)||!Number.isFinite(v.z))throw new TypeError('Agent target needs finite x and z');
+    (this.target||(this.target=new this.crowd.nav.THREE.Vector3())).set(v.x,num(v.y,0),v.z);this._arrived=false;
+    if(!this.path.length)this.state='waiting';if(this.crowd)this.crowd._request(this);return this;
+  }
+  stop(){return this.setTarget(null);}
+  teleport(v){this.position.set(v.x,num(v.y,0),v.z);this.velocity.set(0,0,0);this.poly=null;if(this.crowd){this.crowd._constrain(this);if(this.target)this.crowd._request(this);}return this;}
+  get speed(){return Math.hypot(this.velocity.x,this.velocity.z);}
+  /* Remaining distance along the planned path (2D). */
+  remainingDistance(){if(!this.path.length)return this.target?Infinity:0;let d=0,x=this.position.x,z=this.position.z;
+    for(let i=this.pathIndex;i<this.path.length;i++){const p=this.path[i];d+=Math.hypot(p.x-x,p.z-z);x=p.x;z=p.z;}return d;}
+}
+
+class Crowd{
+  constructor(nav,o={}){
+    if(!(nav instanceof NavMesh))throw new TypeError('KE.Crowd needs a KE.NavMesh');
+    this.nav=nav;this.maxAgents=clamp(Math.round(num(+o.maxAgents,128)),1,4096);this.separation=Math.max(0,num(+o.separation,1.2));
+    this.timeHorizon=Math.max(.1,num(+o.timeHorizon,1.5));this.maxNeighbors=clamp(Math.round(num(+o.maxNeighbors,10)),1,32);
+    this.neighborDist=Number.isFinite(o.neighborDist)?o.neighborDist:null;this.collisionIterations=clamp(Math.round(num(+o.collisionIterations,4)),0,16);
+    this.maxPathsPerUpdate=Math.max(1,Math.round(num(+o.maxPathsPerUpdate,16)));this.cornerCheckInterval=Math.max(0,num(+o.cornerCheckInterval,.25));
+    this.stuckTime=num(+o.stuckTime,2);this.laneBias=Math.max(0,num(+o.laneBias,.35));this.agents=[];this.events=new KE.Events();this.onArrive=isFn(o.onArrive)?o.onArrive:null;this.time=0;this._ids=0;
+    const M=this.maxAgents,K=this.maxNeighbors;
+    this._nbr=new Int32Array(M*K);this._nbrD=new Float64Array(M*K);this._nbrN=new Int32Array(M);
+    let hs=64;while(hs<M*2)hs<<=1;this._hsize=hs;this._hstart=new Int32Array(hs+1);this._hcur=new Int32Array(hs);this._hitems=new Int32Array(M);this._hkey=new Int32Array(M);this._stamp=new Int32Array(M);this._sgen=0;this._hc=1;
+    this._lp=new Float64Array((K+1)*2);this._ld=new Float64Array((K+1)*2);this._pp=new Float64Array((K+1)*2);this._pd=new Float64Array((K+1)*2);this._res=new Float64Array(2);
+    this._queue=[];this._rev=nav.revision;this._ray={hit:false,t:0,x:0,z:0,nx:0,nz:0,poly:null};this._near={x:0,z:0,d2:0,poly:null};
+  }
+  addAgent(o={}){
+    if(this.agents.length>=this.maxAgents)throw new RangeError('Crowd is full ('+this.maxAgents+' agents)');
+    const a=new CrowdAgent(this,o);a.index=this.agents.length;this.agents.push(a);
+    if(o.position){a.position.set(o.position.x,num(o.position.y,0),o.position.z);this._constrain(a);}
+    if(o.target)a.setTarget(o.target);return a;
+  }
+  removeAgent(a){const i=this.agents.indexOf(a);if(i<0)return false;this.agents.splice(i,1);for(let k=i;k<this.agents.length;k++)this.agents[k].index=k;
+    a.crowd=null;a.state='removed';a._needsPath=false;return true;}
+  _request(a){a._needsPath=true;if(!a._queued){a._queued=true;this._queue.push(a);}}
+  _plan(a){
+    a._needsPath=false;const nav=this.nav,path=nav.findPath(a.position,a.target,{partial:true});
+    a.corridor=nav.lastCorridor;a.partial=nav.lastPathPartial;a._stuck=0;
+    if(!path.length){a.path=[];a.state='unreachable';this._emit('unreachable',a);return;}
+    a.path=path;a.pathIndex=Math.min(1,path.length-1);a.state='moving';a._checkT=0;
+  }
+  _emit(name,a){if(name==='arrive'){if(a.onArrive)a.onArrive(a);if(this.onArrive)this.onArrive(a);}this.events.emit(name,a);}
+  _hk(ix,iz){return (Math.imul(ix,73856093)^Math.imul(iz,19349663))&(this._hsize-1);}
+  _buildHash(){
+    const A=this.agents,n=A.length,hs=this._hsize,st=this._hstart,cur=this._hcur,items=this._hitems,key=this._hkey;let maxR=0,hc=.5;
+    for(let i=0;i<n;i++)if(A[i].radius>maxR)maxR=A[i].radius;
+    for(let i=0;i<n;i++){const a=A[i];a._nd=this.neighborDist!==null?this.neighborDist:a.maxSpeed*this.timeHorizon+a.radius+maxR;if(a._nd>hc)hc=a._nd;}
+    this._hc=hc;st.fill(0);
+    for(let i=0;i<n;i++){const k=this._hk(Math.floor(A[i].position.x/hc),Math.floor(A[i].position.z/hc));key[i]=k;st[k+1]++;}
+    for(let k=0;k<hs;k++){st[k+1]+=st[k];cur[k]=st[k];}
+    for(let i=0;i<n;i++)items[cur[key[i]]++]=i;
+  }
+  _neighbors(i){
+    const A=this.agents,a=A[i],K=this.maxNeighbors,base=i*K,nb=this._nbr,nd=this._nbrD,hc=this._hc,r=a._nd,x=a.position.x,z=a.position.z,st=this._hstart,items=this._hitems,stamp=this._stamp;
+    if(++this._sgen>1e9){this._sgen=1;stamp.fill(0);}const sg=this._sgen;let cnt=0;
+    const ix0=Math.floor((x-r)/hc),ix1=Math.floor((x+r)/hc),iz0=Math.floor((z-r)/hc),iz1=Math.floor((z+r)/hc);
+    for(let ix=ix0;ix<=ix1;ix++)for(let iz=iz0;iz<=iz1;iz++){const k=this._hk(ix,iz);
+      for(let s=st[k];s<st[k+1];s++){const j=items[s];if(j===i||stamp[j]===sg)continue;stamp[j]=sg;const b=A[j],dx=b.position.x-x,dz=b.position.z-z,d2=dx*dx+dz*dz;if(d2>r*r)continue;
+        let p;if(cnt<K)p=cnt++;else if(d2<nd[base+K-1])p=K-1;else continue;
+        while(p>0&&nd[base+p-1]>d2){nb[base+p]=nb[base+p-1];nd[base+p]=nd[base+p-1];p--;}nb[base+p]=j;nd[base+p]=d2;}}
+    this._nbrN[i]=cnt;
+  }
+  /* Preferred velocity: steer to the current path corner (with visibility shortcuts and lost-corridor
+     replanning), slow down on the final approach, plus a soft separation term. */
+  _preferred(a,dt){
+    a._prefx=a._prefz=0;const path=a.path,x=a.position.x,z=a.position.z;
+    if(a.target&&path.length&&(a.state==='moving'||a.state==='arrived'||a.state==='waiting')){
+      const last=path.length-1,cr=Math.max(.3,a.radius);
+      while(a.pathIndex<last){const c=path[a.pathIndex];if((c.x-x)**2+(c.z-z)**2<cr*cr)a.pathIndex++;else break;}
+      a._checkT-=dt;
+      if(a._checkT<=0&&a.state==='moving'){a._checkT=this.cornerCheckInterval*(.75+.5*hash01(a.id*7+Math.floor(this.time*10)));
+        for(let s=0;s<2&&a.pathIndex<last;s++){const c=path[a.pathIndex+1];if(!this.nav._raycast(x,z,c.x,c.z,this._ray).hit)a.pathIndex++;else break;}
+        const c=path[a.pathIndex];if(this.nav._raycast(x,z,c.x,c.z,this._ray).hit)this._request(a);}
+      const c=path[a.pathIndex],dx=c.x-x,dz=c.z-z,d=Math.hypot(dx,dz);let speed=a.maxSpeed;
+      if(a.pathIndex===last){if(d<a.slowDistance)speed*=d/a.slowDistance;if(d<a.arriveDistance*.35)speed=0;}
+      if(d>1e-6){a._prefx=dx/d*speed;a._prefz=dz/d*speed;}
+      /* counter-flow lane bias: everyone sidesteps to the same side of oncoming agents ahead, which forms lanes
+         instead of head-on ORCA deadlocks in doorways and corridors */
+      if(this.laneBias>0&&speed>1e-3&&d>a.radius){const ux=dx/d,uz=dz/d,K=this.maxNeighbors,base=a.index*K,cnt=this._nbrN[a.index],range=a.radius*8;let s=0;
+        for(let k=0;k<cnt;k++){const b=this.agents[this._nbr[base+k]],rx=b.position.x-x,rz=b.position.z-z,ahead=rx*ux+rz*uz,dd=Math.sqrt(this._nbrD[base+k]);
+          if(ahead<=0||dd>range)continue;const bv=b.velocity.x*ux+b.velocity.z*uz;if(bv>-.25*b.maxSpeed)continue;
+          const lat=rx*uz-rz*ux;/* >0: neighbour is on our right */s+=(1-dd/range)*(lat>a.radius*2?.3:1);}
+        if(s>0){const k=Math.min(1,s)*this.laneBias*speed;a._prefx+=-uz*k;a._prefz+=ux*k;}}
+    }
+    if(a.separationWeight>0&&this.separation>0){const K=this.maxNeighbors,base=a.index*K,cnt=this._nbrN[a.index];let sx=0,sz=0;
+      for(let k=0;k<cnt;k++){const b=this.agents[this._nbr[base+k]],sep=(a.radius+b.radius)*this.separation,d=Math.sqrt(this._nbrD[base+k]);
+        if(d>=sep||d<1e-6)continue;const w=1-d/sep;sx+=(x-b.position.x)/d*w;sz+=(z-b.position.z)/d*w;}
+      a._prefx+=sx*a.separationWeight*a.maxSpeed;a._prefz+=sz*a.separationWeight*a.maxSpeed;}
+    const l=Math.hypot(a._prefx,a._prefz);if(l>a.maxSpeed){a._prefx*=a.maxSpeed/l;a._prefz*=a.maxSpeed/l;}
+    a.desiredVelocity.set(a._prefx,0,a._prefz);
+  }
+  /* ORCA: one half-plane per neighbour, then the velocity closest to the preferred one (lp2, lp3 fallback). */
+  _orca(i,dt){
+    const A=this.agents,a=A[i];if(!a.avoidance){a._nvx=a._prefx;a._nvz=a._prefz;return;}
+    const K=this.maxNeighbors,base=i*K,cnt=this._nbrN[i],P=this._lp,D=this._ld,invTH=1/this.timeHorizon,vx=a.velocity.x,vz=a.velocity.z;let nl=0;
+    for(let k=0;k<cnt;k++){const b=A[this._nbr[base+k]],rpx=b.position.x-a.position.x,rpz=b.position.z-a.position.z,rvx=vx-b.velocity.x,rvz=vz-b.velocity.z,d2=rpx*rpx+rpz*rpz,R=a.radius+b.radius,R2=R*R;
+      let dx,dz,ux,uz;
+      if(d2>R2){const wx=rvx-invTH*rpx,wz=rvz-invTH*rpz,wl2=wx*wx+wz*wz,dp1=wx*rpx+wz*rpz;
+        if(dp1<0&&dp1*dp1>R2*wl2){const wl=Math.sqrt(wl2),nx=wx/wl,nz=wz/wl;dx=nz;dz=-nx;const m=R*invTH-wl;ux=m*nx;uz=m*nz;}
+        else{const leg=Math.sqrt(d2-R2);
+          if(rpx*wz-rpz*wx>0){dx=(rpx*leg-rpz*R)/d2;dz=(rpx*R+rpz*leg)/d2;}else{dx=-(rpx*leg+rpz*R)/d2;dz=-(-rpx*R+rpz*leg)/d2;}
+          const dp2=rvx*dx+rvz*dz;ux=dp2*dx-rvx;uz=dp2*dz-rvz;}}
+      else{const inv=1/dt,wx=rvx-inv*rpx,wz=rvz-inv*rpz,wl=Math.hypot(wx,wz)||1e-9,nx=wx/wl,nz=wz/wl;dx=nz;dz=-nx;const m=R*inv-wl;ux=m*nx;uz=m*nz;}
+      const share=b.avoidance?.5:1;P[nl*2]=vx+share*ux;P[nl*2+1]=vz+share*uz;D[nl*2]=dx;D[nl*2+1]=dz;nl++;}
+    const res=this._res,fail=lp2(P,D,nl,a.maxSpeed,a._prefx,a._prefz,false,res);if(fail<nl)lp3(P,D,nl,fail,a.maxSpeed,res,this._pp,this._pd);
+    a._nvx=res[0];a._nvz=res[1];
+  }
+  /* Keep the agent on the mesh: track its polygon through links, else clamp to the nearest mesh point and
+     remove the velocity component pushing off the mesh (wall sliding). */
+  _constrain(a){
+    const nav=this.nav,x=a.position.x,z=a.position.z;let p=a.poly;
+    if(p&&(p.dead||!pointInPoly(p,x,z,1e-6))){let q=null;if(!p.dead)for(const l of p.links)if(!l.to.dead&&pointInPoly(l.to,x,z,1e-6)){q=l.to;break;}p=q||nav.findPoly(x,z,1e-6);}
+    else if(!p)p=nav.findPoly(x,z,1e-6);
+    if(!p){const r=nav._nearest(x,z,Math.max(4,a.radius*8),this._near);if(r){const dx=r.x-x,dz=r.z-z,l=Math.hypot(dx,dz);a.position.x=r.x;a.position.z=r.z;p=r.poly;
+      if(l>1e-9){const nx=dx/l,nz=dz/l,vn=a.velocity.x*nx+a.velocity.z*nz;if(vn<0){a.velocity.x-=vn*nx;a.velocity.z-=vn*nz;}}}}
+    a.poly=p;a.position.y=nav.heightFn?nav.heightAt(a.position.x,a.position.z):p?polyHeight(p,a.position.x,a.position.z):a.position.y;
+  }
+  _updateState(a,dt){
+    if(!a.target||!a.path.length)return;const last=a.path[a.path.length-1],d=Math.hypot(last.x-a.position.x,last.z-a.position.z);
+    if(a.state==='moving'){
+      if(a.pathIndex>=a.path.length-1&&d<=a.arriveDistance){if(a.partial){a.state='unreachable';this._emit('unreachable',a);}else{a.state='arrived';if(!a._arrived){a._arrived=true;this._emit('arrive',a);}}return;}
+      if(a.speed<a.maxSpeed*.08){a._stuck+=dt;if(a._stuck>this.stuckTime){a._stuck=0;this._request(a);}}else a._stuck=Math.max(0,a._stuck-dt);}
+    else if(a.state==='arrived'&&d>a.arriveDistance*3+a.radius){a.state='moving';a.pathIndex=a.path.length-1;a._checkT=0;}
+  }
+  update(dt){
+    dt=+dt;if(!(dt>0))return this;dt=Math.min(dt,.1);this.time+=dt;
+    const A=this.agents,n=A.length,nav=this.nav;if(!n)return this;
+    if(nav.revision!==this._rev){this._rev=nav.revision;for(const a of A){if(a.poly&&a.poly.dead)a.poly=null;if(a.target&&a.corridor&&a.corridor.some(p=>p.dead))this._request(a);}}
+    for(let budget=this.maxPathsPerUpdate;budget>0&&this._queue.length;){const a=this._queue.shift();a._queued=false;if(a.crowd!==this||!a._needsPath||!a.target)continue;this._plan(a);budget--;}
+    this._buildHash();for(let i=0;i<n;i++)this._neighbors(i);
+    for(let i=0;i<n;i++)this._preferred(A[i],dt);
+    for(let i=0;i<n;i++)this._orca(i,dt);
+    for(let i=0;i<n;i++){const a=A[i];let dvx=a._nvx-a.velocity.x,dvz=a._nvz-a.velocity.z;const dv=Math.hypot(dvx,dvz),mx=a.maxAccel*dt;
+      if(dv>mx){dvx*=mx/dv;dvz*=mx/dv;}a.velocity.x+=dvx;a.velocity.z+=dvz;a.velocity.y=0;a.position.x+=a.velocity.x*dt;a.position.z+=a.velocity.z*dt;}
+    /* positional collision resolution (Detour style: averaged half-penetration pushes) */
+    const K=this.maxNeighbors,nb=this._nbr;
+    for(let it=0;it<this.collisionIterations;it++){
+      for(let i=0;i<n;i++){const a=A[i],base=i*K,cnt=this._nbrN[i];let dx=0,dz=0,w=0;
+        for(let k=0;k<cnt;k++){const b=A[nb[base+k]];let ex=a.position.x-b.position.x,ez=a.position.z-b.position.z;const R=a.radius+b.radius,d2=ex*ex+ez*ez;if(d2>=R*R)continue;
+          let d=Math.sqrt(d2),pen=R-d;if(d<1e-4){const ang=hash01(Math.min(a.id,b.id)*65537+Math.max(a.id,b.id))*Math.PI*2,s=a.id<b.id?1:-1;ex=Math.cos(ang)*s;ez=Math.sin(ang)*s;d=1;pen=Math.max(pen,.01);}
+          const f=pen*.5*.7/d;dx+=ex*f;dz+=ez*f;w++;}
+        if(w){a._dx=dx/w;a._dz=dz/w;}else a._dx=a._dz=0;}
+      for(let i=0;i<n;i++){A[i].position.x+=A[i]._dx;A[i].position.z+=A[i]._dz;}}
+    for(let i=0;i<n;i++){this._constrain(A[i]);this._updateState(A[i],dt);}
+    return this;
+  }
+  /* Agents within radius of (x,z); fills and returns out. */
+  query(x,z,radius,out=[]){out.length=0;for(const a of this.agents)if((a.position.x-x)**2+(a.position.z-z)**2<=radius*radius)out.push(a);return out;}
+  /* Instanced debug view: one cylinder per agent coloured by state plus a heading marker. */
+  debugView(THREE=this.nav.THREE,{colors={}}={}){
+    const T=THREE,M=this.maxAgents,C={moving:0xff8a3d,arrived:0x3ccf6e,waiting:0xd9d9d9,unreachable:0xe23d3d,idle:0x8fa3bf,...colors};
+    const bg=new T.CylinderGeometry(1,1,1,20,1),ng=new T.ConeGeometry(.5,1,3);ng.rotateX(Math.PI/2);
+    const body=new T.InstancedMesh(bg,new T.MeshLambertMaterial({color:0xffffff}),M),nose=new T.InstancedMesh(ng,new T.MeshLambertMaterial({color:0x1d2330}),M);
+    body.frustumCulled=nose.frustumCulled=false;body.instanceMatrix.setUsage(T.DynamicDrawUsage);nose.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    const m=new T.Matrix4(),q=new T.Quaternion(),s=new T.Vector3(),p=new T.Vector3(),c=new T.Color(),up=new T.Vector3(0,1,0),group=new T.Group();group.name='ke-crowd-debug';group.add(body,nose);
+    const view={object:group,update:()=>{const A=this.agents;body.count=nose.count=A.length;
+      for(let i=0;i<A.length;i++){const a=A[i],h=a.height;if(a.speed>.05)a._yaw=Math.atan2(a.velocity.x,a.velocity.z);
+        q.identity();p.set(a.position.x,a.position.y+h/2,a.position.z);s.set(a.radius,h,a.radius);m.compose(p,q,s);body.setMatrixAt(i,m);c.set(C[a.state]!==undefined?C[a.state]:C.idle);body.setColorAt(i,c);
+        q.setFromAxisAngle(up,a._yaw);p.set(a.position.x+Math.sin(a._yaw)*a.radius*.3,a.position.y+h+.02,a.position.z+Math.cos(a._yaw)*a.radius*.3);s.set(a.radius*1.1,a.radius*.12,a.radius*1.2);m.compose(p,q,s);nose.setMatrixAt(i,m);}
+      body.instanceMatrix.needsUpdate=nose.instanceMatrix.needsUpdate=true;if(body.instanceColor)body.instanceColor.needsUpdate=true;},
+      dispose:()=>{bg.dispose();ng.dispose();body.material.dispose();nose.material.dispose();group.parent&&group.parent.remove(group);}};
+    view.update();return view;
+  }
+  dispose(){for(const a of this.agents){a.crowd=null;a.state='removed';}this.agents=[];this._queue=[];this.events.clear();}
+}
+KE.Crowd=Crowd;KE.CrowdAgent=CrowdAgent;
+
+/* ======================================================================
+   Blackboard
+   ====================================================================== */
+class Blackboard{
+  constructor(initial={},parent=null){this._data=new Map();this.parent=parent instanceof Blackboard?parent:null;this._ls=new Map();
+    if(initial&&typeof initial==='object')for(const k of Object.keys(initial))this._data.set(k,initial[k]);}
+  get(k,fallback){if(this._data.has(k))return this._data.get(k);return this.parent?this.parent.get(k,fallback):fallback;}
+  has(k){return this._data.has(k)||(!!this.parent&&this.parent.has(k));}
+  set(k,v){const had=this.has(k),old=this.get(k);this._data.set(k,v);if(!had||!Object.is(old,v))this._emit(k,v,old);return this;}
+  delete(k){if(!this._data.has(k))return false;const old=this._data.get(k);this._data.delete(k);this._emit(k,this.get(k),old);return true;}
+  /* onChange(key, fn) or onChange(fn) for every key; fn(value, oldValue, key, blackboard). Returns an unsubscribe function. */
+  onChange(key,fn){if(isFn(key)){fn=key;key='*';}if(!isFn(fn))throw new TypeError('Blackboard listener must be a function');let s=this._ls.get(key);if(!s)this._ls.set(key,s=new Set());s.add(fn);return ()=>{s.delete(fn);};}
+  _emit(k,v,old){const a=this._ls.get(k),b=this._ls.get('*');if(a)for(const f of [...a])f(v,old,k,this);if(b)for(const f of [...b])f(v,old,k,this);}
+  keys(){return [...this._data.keys()];}
+  clear(){for(const k of [...this._data.keys()])this.delete(k);}
+  toJSON(){const o={};for(const [k,v] of this._data)o[k]=v;return o;}
+}
+KE.Blackboard=Blackboard;
+
+/* ======================================================================
+   Behavior trees
+   ====================================================================== */
+/* Node definitions are plain immutable objects; a tree instance flattens them into arrays with per-instance
+   memory, so one definition can drive many AIs. Composites keep the running child between ticks ("memory");
+   pass {memory:false} for reactive composites that re-evaluate from the first child every tick.
+   Condition decorators support UE-style observer aborts, polled every tick:
+     'self'  - while the decorated subtree runs, abort it (failure) as soon as the condition turns false;
+     'lower' - while a lower-priority sibling runs, abort it when this condition's result changes (for a
+               selector: becomes true; for a sequence: becomes false) and resume from this child;
+     'both'  - both of the above. */
+const BB_OPS={'==':(a,b)=>a===b,'!=':(a,b)=>a!==b,'<':(a,b)=>a<b,'<=':(a,b)=>a<=b,'>':(a,b)=>a>b,'>=':(a,b)=>a>=b,
+  set:a=>a!==undefined&&a!==null,unset:a=>a===undefined||a===null,truthy:a=>!!a,falsy:a=>!a,in:(a,b)=>Array.isArray(b)&&b.includes(a)};
+const BT_TYPES={selector:1,sequence:1,parallel:1,inverter:1,succeeder:1,failer:1,repeat:1,retry:1,cooldown:1,timeout:1,condition:1,action:1,wait:1,subtree:1};
+const DECORATORS=new Set(['inverter','succeeder','failer','repeat','retry','cooldown','timeout','condition','subtree']);
+const BT_NODES=new WeakSet(),isNode=n=>!!n&&typeof n==='object'&&BT_NODES.has(n);
+const abortMode=a=>{if(a===undefined||a===null||a===false)return 'none';if(['none','self','lower','both'].includes(a))return a;throw new RangeError('BT abort mode must be none, self, lower or both');};
+const btNode=(type,o,extra)=>{if(!hasOwn(BT_TYPES,type))throw new TypeError('Unknown BT node type '+type);const n=Object.freeze({type,name:typeof o.name==='string'?o.name:type,...extra});BT_NODES.add(n);return n;};
+const btKids=c=>{if(!Array.isArray(c)||!c.length)throw new TypeError('BT composite needs a non-empty child array');c.forEach(x=>{if(!isNode(x))throw new TypeError('BT child is not a node');});return Object.freeze(c.slice());};
+const btOne=c=>{if(!isNode(c))throw new TypeError('BT decorator needs a child node');return c;};
+const secs=(o,d)=>{const O=typeof o==='number'?{duration:o}:(o||{});const v=num(+O.duration,d);if(!(v>=0))throw new RangeError('BT duration must be >= 0');return [v,O];};
+
+const BT_ENTER={
+  selector:(t,i,n,m)=>{m.i=0;},sequence:(t,i,n,m)=>{m.i=0;},
+  parallel:(t,i,n,m)=>{const k=t.kids[i].length;if(!m.cs||m.cs.length!==k)m.cs=new Array(k);m.cs.fill(null);},
+  repeat:(t,i,n,m)=>{m.n=0;},retry:(t,i,n,m)=>{m.n=0;},timeout:(t,i,n,m)=>{m.t0=t.time;},
+  wait:(t,i,n,m)=>{m.until=t.time+(n.max>n.min?n.min+t.rng()*(n.max-n.min):n.min);},
+  action:(t,i,n,m)=>{m.data={};if(n.onEnter)n.onEnter(t.ctx,t.blackboard,m.data,t);}
+};
+const BT_EXIT={
+  action:(t,i,n,m,s)=>{if(n.onExit)n.onExit(t.ctx,s,t.blackboard,m.data,t);},
+  cooldown:(t,i,n,m,s)=>{if(s==='aborted')m.readyAt=t.time+n.duration;}
+};
+function btComposite(t,i,n,m,stopOn){ // stopOn: FAILURE for sequence, SUCCESS for selector
+  const k=t.kids[i],prev=m.running?m.i:-1;let start=0;
+  if(n.memory&&m.running){start=m.i;const j=t._lowerAbort(i,start);if(j>=0){t._halt(k[start]);start=j;}}
+  for(let c=start;c<k.length;c++){const s=t._exec(k[c]);
+    if(s===RUNNING){if(prev>=0&&prev!==c)t._halt(k[prev]);m.i=c;return RUNNING;}
+    if(s===stopOn){if(prev>c)t._halt(k[prev]);m.i=0;return stopOn;}}
+  m.i=0;return stopOn===FAILURE?SUCCESS:FAILURE;
+}
+const BT_TICK={
+  sequence:(t,i,n,m)=>btComposite(t,i,n,m,FAILURE),
+  selector:(t,i,n,m)=>btComposite(t,i,n,m,SUCCESS),
+  parallel:(t,i,n,m)=>{const k=t.kids[i],N=k.length;let ok=0,bad=0;
+    for(let c=0;c<N;c++){let s=m.cs[c];if(s===null){s=t._exec(k[c]);if(s!==RUNNING)m.cs[c]=s;}if(s===SUCCESS)ok++;else if(s===FAILURE)bad++;}
+    const done=r=>{for(const c of k)t._halt(c);return r;};
+    if(n.success==='one'?ok>0:ok===N)return done(SUCCESS);if(n.failure==='one'?bad>0:bad===N)return done(FAILURE);
+    if(ok+bad===N)return FAILURE;return RUNNING;},
+  inverter:(t,i)=>{const s=t._exec(t.kids[i][0]);return s===SUCCESS?FAILURE:s===FAILURE?SUCCESS:s;},
+  succeeder:(t,i)=>{const s=t._exec(t.kids[i][0]);return s===RUNNING?s:SUCCESS;},
+  failer:(t,i)=>{const s=t._exec(t.kids[i][0]);return s===RUNNING?s:FAILURE;},
+  repeat:(t,i,n,m)=>{const s=t._exec(t.kids[i][0]);if(s===RUNNING)return s;if(s===FAILURE&&!n.ignoreFailure)return FAILURE;return ++m.n>=n.count?SUCCESS:RUNNING;},
+  retry:(t,i,n,m)=>{const s=t._exec(t.kids[i][0]);if(s!==FAILURE)return s;return ++m.n>=n.count?FAILURE:RUNNING;},
+  cooldown:(t,i,n,m)=>{if(!m.running&&t.time<m.readyAt-1e-9)return FAILURE;const s=t._exec(t.kids[i][0]);if(s!==RUNNING)m.readyAt=t.time+n.duration;return s;},
+  timeout:(t,i,n,m)=>{if(t.time-m.t0>=n.duration){t._halt(t.kids[i][0]);return FAILURE;}return t._exec(t.kids[i][0]);},
+  condition:(t,i,n,m)=>{
+    if(!n.child){m.cond=t._cond(i);return m.cond?SUCCESS:FAILURE;}
+    if(!m.running){m.cond=t._cond(i);if(!m.cond)return FAILURE;}
+    else if(n.abort==='self'||n.abort==='both'){m.cond=t._cond(i);if(!m.cond){t._halt(t.kids[i][0]);return FAILURE;}}
+    return t._exec(t.kids[i][0]);},
+  action:(t,i,n,m)=>{const r=n.fn(t.ctx,t.blackboard,t.dt,m.data,t);
+    if(r===SUCCESS||r===FAILURE||r===RUNNING)return r;if(r===true||r===undefined||r===null)return SUCCESS;if(r===false)return FAILURE;
+    throw new TypeError('BT action "'+n.name+'" returned an invalid status: '+String(r));},
+  wait:(t,i,n,m)=>t.time>=m.until-1e-9?SUCCESS:RUNNING,
+  subtree:(t,i)=>t._exec(t.kids[i][0])
+};
+class BehaviorTree{
+  constructor(root,{blackboard=null,seed=1,name='tree'}={}){
+    if(!isNode(root))throw new TypeError('KE.BT.tree needs a root node');
+    this.nodes=[];this.kids=[];this.mem=[];this.name=name;
+    const walk=(n,depth)=>{if(depth>128)throw new RangeError('Behavior tree nested too deeply (recursive subtree?)');if(this.nodes.length>=20000)throw new RangeError('Behavior tree too large');
+      const i=this.nodes.length;this.nodes.push(n);this.kids.push(null);this.mem.push({status:null,running:false,i:0,n:0,t0:0,until:0,readyAt:-Infinity,cond:undefined,cs:null,data:null,tick:-1});
+      const ch=n.children||(n.child?[n.child]:[]);this.kids[i]=ch.map(c=>walk(c,depth+1));return i;};
+    walk(root,0);
+    this.blackboard=blackboard instanceof Blackboard?blackboard:new Blackboard(blackboard||{});
+    this.rng=KE.random(seed);this.time=0;this.dt=0;this.ticks=0;this.ctx=undefined;this.status=null;
+  }
+  /* One evaluation from the root. ctx is passed to every action/condition. */
+  tick(dt=0,ctx){dt=+dt;this.dt=Number.isFinite(dt)&&dt>0?dt:0;this.time+=this.dt;this.ctx=ctx;this.ticks++;return this.status=this._exec(0);}
+  _exec(i){const n=this.nodes[i],m=this.mem[i];if(!m.running&&BT_ENTER[n.type])BT_ENTER[n.type](this,i,n,m);
+    const s=BT_TICK[n.type](this,i,n,m);m.status=s;m.tick=this.ticks;m.running=s===RUNNING;if(!m.running&&BT_EXIT[n.type])BT_EXIT[n.type](this,i,n,m,s);return s;}
+  _halt(i){const m=this.mem[i];if(!m.running)return;for(const c of this.kids[i])this._halt(c);m.running=false;m.status='aborted';const n=this.nodes[i];if(BT_EXIT[n.type])BT_EXIT[n.type](this,i,n,m,'aborted');}
+  _cond(i){return !!this.nodes[i].fn(this.ctx,this.blackboard,this);}
+  _lowerAbort(i,upto){const k=this.kids[i];
+    for(let c=0;c<upto;c++){let j=k[c];
+      for(let d=0;d<16&&j!==undefined;d++){const n=this.nodes[j];
+        if(n.type==='condition'&&n.child&&(n.abort==='lower'||n.abort==='both')&&this._cond(j)!==this.mem[j].cond)return c;
+        if(!DECORATORS.has(n.type))break;j=this.kids[j][0];}}
+    return -1;}
+  /* Abort everything that is running (actions get onExit(ctx,'aborted')). */
+  halt(){this._halt(0);return this;}
+  /* halt() and forget all node memory, including cooldowns. */
+  reset(){this._halt(0);for(const m of this.mem)Object.assign(m,{status:null,running:false,i:0,n:0,t0:0,until:0,readyAt:-Infinity,cond:undefined,cs:null,data:null,tick:-1});this.status=null;return this;}
+  debugState(i=0){const n=this.nodes[i],m=this.mem[i],o={type:n.type,name:n.name,status:m.status,running:m.running,lastTick:m.tick};
+    if(n.type==='condition'){o.abort=n.abort;o.value=m.cond;if(n.key!==undefined){o.key=n.key;o.op=n.op;o.compare=n.value;}}
+    if(n.type==='cooldown')o.readyIn=Math.max(0,m.readyAt-this.time);if(n.type==='wait'&&m.running)o.remaining=Math.max(0,m.until-this.time);
+    if(n.type==='repeat'||n.type==='retry')o.count=m.n;
+    const k=this.kids[i];if(k.length)o.children=k.map(c=>this.debugState(c));return o;}
+  debugString(){const lines=[],rec=(o,d)=>{lines.push('  '.repeat(d)+(o.running?'> ':'  ')+o.name+(o.name!==o.type?' ('+o.type+')':'')+(o.status?' ['+o.status+']':''));(o.children||[]).forEach(c=>rec(c,d+1));};rec(this.debugState(),0);return lines.join('\n');}
+}
+const BT={SUCCESS,FAILURE,RUNNING,ops:Object.keys(BB_OPS),
+  selector:(children,o={})=>btNode('selector',o,{children:btKids(children),memory:o.memory!==false}),
+  sequence:(children,o={})=>btNode('sequence',o,{children:btKids(children),memory:o.memory!==false}),
+  parallel:(children,o={})=>{const success=o.success==='one'?'one':'all',failure=o.failure==='one'||o.failure==='all'?o.failure:success==='all'?'one':'all';
+    return btNode('parallel',o,{children:btKids(children),success,failure});},
+  inverter:(child,o={})=>btNode('inverter',o,{child:btOne(child)}),
+  succeeder:(child,o={})=>btNode('succeeder',o,{child:btOne(child)}),
+  failer:(child,o={})=>btNode('failer',o,{child:btOne(child)}),
+  repeat:(child,o={})=>{const O=typeof o==='number'?{count:o}:o;const count=O.count===undefined?Infinity:Math.max(1,Math.floor(+O.count));if(!(count>=1))throw new RangeError('BT repeat count must be >= 1');
+    return btNode('repeat',O,{child:btOne(child),count,ignoreFailure:!!O.ignoreFailure});},
+  retry:(child,o={})=>{const O=typeof o==='number'?{count:o}:o;const count=Math.max(1,Math.floor(num(+O.count,3)));return btNode('retry',O,{child:btOne(child),count});},
+  cooldown:(child,o)=>{const [duration,O]=secs(o,1);return btNode('cooldown',O,{child:btOne(child),duration});},
+  timeout:(child,o)=>{const [duration,O]=secs(o,1);return btNode('timeout',O,{child:btOne(child),duration});},
+  /* condition(fn[, child][, {abort,name}]): fn(ctx, blackboard, tree) -> truthy. Without a child it is a leaf. */
+  condition:(fn,a,b)=>{if(!isFn(fn))throw new TypeError('BT.condition needs a function');const child=isNode(a)?a:null,O=(child?b:a)||{};
+    return btNode('condition',O,{fn,child,abort:child?abortMode(O.abort):'none'});},
+  /* blackboardCondition(key, op[, value][, child][, opts]); ops: == != < <= > >= set unset truthy falsy in (value may be omitted for unary ops) */
+  blackboardCondition:(key,op,value,a,b)=>{if(isNode(value)){b=a;a=value;value=undefined;}/* unary ops may omit the value */
+    if(typeof key!=='string')throw new TypeError('blackboardCondition key must be a string');if(!hasOwn(BB_OPS,op))throw new RangeError('Unknown blackboard op: '+op);
+    const cmp=BB_OPS[op],child=isNode(a)?a:null,O=(child?b:a)||{};
+    return btNode('condition',{name:O.name||'bb:'+key+' '+op+(value===undefined?'':' '+String(value))},{fn:(ctx,bb)=>cmp(bb.get(key),value),key,op,value,child,abort:child?abortMode(O.abort):'none'});},
+  /* action(fn, {onEnter, onExit, name}): fn(ctx, blackboard, dt, memory, tree) -> 'success'|'failure'|'running'|boolean|undefined(=success). */
+  action:(fn,o={})=>{if(!isFn(fn))throw new TypeError('BT.action needs a function');return btNode('action',o,{fn,onEnter:isFn(o.onEnter)?o.onEnter:null,onExit:isFn(o.onExit)?o.onExit:null});},
+  /* wait(seconds | [min,max] | {min,max}) */
+  wait:(d,o={})=>{let min,max;if(Array.isArray(d)){min=+d[0];max=+d[1];}else if(d&&typeof d==='object'){min=+d.min;max=+d.max;o=d;}else{min=max=+d;}
+    if(!Number.isFinite(max))max=min;if(!(min>=0)||!(max>=min))throw new RangeError('BT.wait needs 0 <= min <= max');return btNode('wait',o,{min,max});},
+  subtree:(root,o={})=>btNode('subtree',o,{child:btOne(root)}),
+  tree:(root,o)=>new BehaviorTree(root,o),
+  /* Build from JSON: {type, name?, children|child, ...}; actions/conditions/subtrees resolve by name from the registry
+     {actions:{name:fn|{fn,onEnter,onExit}}, conditions:{name:fn}, subtrees:{name:json|node}}. No code is evaluated. */
+  fromJSON(json,registry={}){
+    let count=0;const reg=k=>registry&&registry[k]&&typeof registry[k]==='object'?registry[k]:{},stack=[];
+    const lookup=(table,name,path)=>{if(typeof name!=='string'||!hasOwn(reg(table),name))throw new Error(path+': unknown '+table.replace(/s$/,'')+' "'+name+'"');return reg(table)[name];};
+    const build=(j,path,depth)=>{
+      if(depth>64)throw new RangeError(path+': nested too deeply');if(++count>10000)throw new RangeError('Behavior tree JSON too large');
+      if(!j||typeof j!=='object'||Array.isArray(j))throw new TypeError(path+': node must be an object');
+      const o=typeof j.name==='string'?{name:j.name.slice(0,64)}:{},kids=()=>{if(!Array.isArray(j.children)||!j.children.length)throw new TypeError(path+': children required');return j.children.map((c,k)=>build(c,path+'.children['+k+']',depth+1));};
+      const kid=()=>{const c=j.child!==undefined?j.child:Array.isArray(j.children)&&j.children.length===1?j.children[0]:undefined;if(c===undefined)throw new TypeError(path+': child required');return build(c,path+'.child',depth+1);};
+      const hasKid=j.child!==undefined||(Array.isArray(j.children)&&j.children.length===1);
+      switch(j.type){
+        case 'selector':case 'sequence':return BT[j.type](kids(),{...o,memory:j.memory!==false});
+        case 'parallel':return BT.parallel(kids(),{...o,success:j.success,failure:j.failure});
+        case 'inverter':case 'succeeder':case 'failer':return BT[j.type](kid(),o);
+        case 'repeat':return BT.repeat(kid(),{...o,count:j.count===undefined||j.count===null?undefined:j.count,ignoreFailure:!!j.ignoreFailure});
+        case 'retry':return BT.retry(kid(),{...o,count:j.count});
+        case 'cooldown':case 'timeout':return BT[j.type](kid(),{...o,duration:j.duration});
+        case 'wait':return BT.wait(j.min!==undefined?[j.min,j.max]:j.duration,o);
+        case 'action':{const a=lookup('actions',j.action!==undefined?j.action:j.name,path);if(isFn(a))return BT.action(a,{name:j.action||j.name,...o});
+          if(a&&isFn(a.fn))return BT.action(a.fn,{name:j.action||j.name,...o,onEnter:a.onEnter,onExit:a.onExit});throw new TypeError(path+': invalid action entry');}
+        case 'condition':{const f=lookup('conditions',j.condition!==undefined?j.condition:j.name,path);const O={name:j.condition||j.name,...o,abort:j.abort};return hasKid?BT.condition(f,kid(),O):BT.condition(f,O);}
+        case 'blackboardCondition':{const O={...o,abort:j.abort};return hasKid?BT.blackboardCondition(j.key,j.op,j.value,kid(),O):BT.blackboardCondition(j.key,j.op,j.value,O);}
+        case 'subtree':{const ref=j.ref;if(stack.includes(ref))throw new Error(path+': recursive subtree "'+ref+'"');const s=lookup('subtrees',ref,path);
+          if(isNode(s))return BT.subtree(s,{name:ref,...o});stack.push(ref);try{return BT.subtree(build(s,path+'<'+ref+'>',depth+1),{name:ref,...o});}finally{stack.pop();}}
+        default:throw new TypeError(path+': unknown node type "'+String(j.type)+'"');}
+    };
+    return build(json,'root',0);
+  }
+};
+KE.BT=BT;KE.BehaviorTree=BehaviorTree;
+
+/* ======================================================================
+   Perception
+   ====================================================================== */
+/* Sight: 3D range, horizontal FOV cone, optional line-of-sight test (function, NavMesh raycast or an array
+   of Object3D occluders with THREE), optional detection time (awareness builds faster when close).
+   Hearing: hear(position, loudness) or KE.events 'noise'; heard if distance <= hearing.range * loudness.
+   Memory: a target stays in `known` for memory seconds after it was last sensed. */
+class Perception{
+  constructor(a,b){
+    let THREE=null,o=a;if(a&&a.Vector3){THREE=a;o=b;}o=o||{};this.THREE=THREE;
+    this.sight=o.sight===false?null:{range:15,fov:110,height:1.6,targetHeight:1,lineOfSight:null,detectTime:0,proximity:0,...(o.sight||{})};
+    this.hearing=o.hearing===false?null:{range:12,...(o.hearing||{})};
+    const mem=o.memory;this.memory=typeof mem==='number'?mem:mem&&Number.isFinite(mem.duration)?mem.duration:5;
+    this.known=new Map();this.time=0;this.events=new KE.Events();
+    for(const k of ['onSee','onLose','onHear','onForget'])this[k]=isFn(o[k])?o[k]:null;
+    this.origin=this._vec(0,0,0);this.forward={x:0,z:1};this._eye=this._vec(0,0,0);this._tp=this._vec(0,0,0);this._seen=new Set();this._offs=[];this._ray=null;this._hits=[];this._seq=0;
+  }
+  _vec(x,y,z){return this.THREE?new this.THREE.Vector3(x,y,z):{x,y,z,set(a,b,c){this.x=a;this.y=b;this.z=c;return this;}};}
+  _fire(kind,target,rec){const cb=this['on'+kind[0].toUpperCase()+kind.slice(1)];if(cb)cb(target,rec,this);this.events.emit(kind,target,rec,this);}
+  _record(target){let r=this.known.get(target);if(!r){r={target,visible:false,awareness:0,lastSeen:-Infinity,lastHeard:-Infinity,lastSensed:-Infinity,sense:null,
+    lastKnown:this._vec(0,0,0),velocity:this._vec(0,0,0),distance:Infinity,loudness:0,seq:0};this.known.set(target,r);}return r;}
+  _los(eye,tp,target){const L=this.sight.lineOfSight;if(!L)return true;if(isFn(L))return !!L(eye,tp,target,this);
+    if(L instanceof NavMesh)return !L._raycast(eye.x,eye.z,tp.x,tp.z,L._ray).hit;
+    if(Array.isArray(L)&&this.THREE){const T=this.THREE;if(!this._ray){this._ray=new T.Raycaster();this._dir=new T.Vector3();}const dir=this._dir.set(tp.x-eye.x,tp.y-eye.y,tp.z-eye.z),d=dir.length();if(d<1e-6)return true;
+      this._ray.set(eye,dir.divideScalar(d));this._ray.far=d-.05;this._hits.length=0;return this._ray.intersectObjects(L,true,this._hits).length===0;}
+    return true;}
+  _forwardOf(self){const f=this.forward;
+    if(self.forward){f.x=self.forward.x;f.z=self.forward.z;}
+    else if(Number.isFinite(self.heading)){f.x=Math.sin(self.heading);f.z=Math.cos(self.heading);}
+    else if(self.quaternion){const q=self.quaternion;f.x=2*(q.x*q.z+q.w*q.y);f.z=1-2*(q.x*q.x+q.y*q.y);}
+    else if(self.rotation&&Number.isFinite(self.rotation.y)){f.x=Math.sin(self.rotation.y);f.z=Math.cos(self.rotation.y);}
+    else if(self.velocity&&Math.hypot(self.velocity.x,self.velocity.z)>1e-3){f.x=self.velocity.x;f.z=self.velocity.z;} // e.g. crowd agents; keeps the last facing when stopped
+    const l=Math.hypot(f.x,f.z);if(l>1e-9){f.x/=l;f.z/=l;}else{f.x=0;f.z=1;}return f;}
+  /* self: {position, forward|heading|quaternion}; candidates: objects with .position (or x/y/z), optional .height. */
+  update(dt,self,candidates=[]){
+    dt=Math.max(0,+dt||0);this.time+=dt;const pos=self.position||self;this.origin.set(pos.x,num(pos.y,0),pos.z);const f=this._forwardOf(self),S=this.sight,seen=this._seen;seen.clear();
+    if(S){const eye=this._eye.set(this.origin.x,this.origin.y+S.height,this.origin.z),cosHalf=Math.cos(clamp(S.fov,0,360)*DEG/2);
+      for(const c of candidates){if(!c||c===self)continue;const p=c.position||c;if(!Number.isFinite(p.x)||!Number.isFinite(p.z))continue;
+        const th=Number.isFinite(c.height)?c.height*.75:S.targetHeight,tp=this._tp.set(p.x,num(p.y,0)+th,p.z);
+        const dx=tp.x-eye.x,dy=tp.y-eye.y,dz=tp.z-eye.z,d=Math.sqrt(dx*dx+dy*dy+dz*dz);if(d>S.range)continue;
+        const hd=Math.hypot(dx,dz);const inFov=d<=S.proximity||hd<1e-6||S.fov>=360||(dx*f.x+dz*f.z)/hd>=cosHalf;if(!inFov)continue;
+        if(!this._los(eye,tp,c))continue;
+        const r=this._record(c);seen.add(c);
+        if(S.detectTime>0)r.awareness=Math.min(1,r.awareness+dt/S.detectTime*(1+Math.max(0,1-d/S.range)));else r.awareness=1;
+        if(r.awareness>=1){if(r.lastSeen>-Infinity&&this.time>r.lastSeen){const k=1/Math.max(1e-3,this.time-r.lastSeen);r.velocity.set((p.x-r.lastKnown.x)*k,0,(p.z-r.lastKnown.z)*k);}
+          r.lastKnown.set(p.x,num(p.y,0),p.z);r.lastSeen=r.lastSensed=this.time;r.seq=++this._seq;r.sense='sight';r.distance=d;
+          if(!r.visible){r.visible=true;this._fire('see',c,r);}}}}
+    for(const [t,r] of this.known){
+      if(!seen.has(t)){if(r.visible){r.visible=false;this._fire('lose',t,r);}if(S&&S.detectTime>0&&r.awareness<1)r.awareness=Math.max(0,r.awareness-dt/(S.detectTime*2));}
+      if(r.visible)continue;
+      if(r.lastSensed===-Infinity){if(r.awareness<=0)this.known.delete(t);}           // partial awareness that faded: drop silently
+      else if(this.time-r.lastSensed>this.memory){this.known.delete(t);this._fire('forget',t,r);}}
+    return this;
+  }
+  /* Register a sound at position; returns the memory record or null when out of range. */
+  hear(position,loudness=1,source=null){
+    if(!this.hearing||!position)return null;const d=Math.hypot(position.x-this.origin.x,num(position.y,0)-this.origin.y,position.z-this.origin.z);
+    if(!(loudness>0)||d>this.hearing.range*loudness)return null;
+    const key=source||'noise',r=this._record(key);r.lastHeard=r.lastSensed=this.time;r.seq=++this._seq;r.loudness=loudness;
+    if(!r.visible){r.lastKnown.set(position.x,num(position.y,0),position.z);r.sense='hearing';r.distance=d;}
+    this._fire('hear',key,r);return r;
+  }
+  /* Subscribe to 'noise' events: emit('noise', {position, loudness, source}) or emit('noise', position, loudness, source). */
+  listen(bus=KE.events,event='noise'){const off=bus.on(event,(a,b,c)=>{if(a&&a.position)this.hear(a.position,num(a.loudness,1),a.source||null);else this.hear(a,num(b,1),c||null);});this._offs.push(off);return off;}
+  canSee(target){const r=this.known.get(target);return !!(r&&r.visible);}
+  get(target){return this.known.get(target)||null;}
+  /* Most relevant record: visible and nearest first, otherwise the most recently sensed. */
+  best(){let b=null;for(const r of this.known.values()){if(r.lastSensed===-Infinity)continue;if(!b||(r.visible&&!b.visible)||(r.visible===b.visible&&(r.visible?r.distance<b.distance:r.lastSensed>b.lastSensed||(r.lastSensed===b.lastSensed&&r.seq>b.seq))))b=r;}return b;}
+  forget(target){const r=this.known.get(target);if(r){this.known.delete(target);this._fire('forget',target,r);}return !!r;}
+  clear(){this.known.clear();return this;}
+  dispose(){for(const off of this._offs)off();this._offs=[];this.known.clear();this.events.clear();}
+}
+KE.Perception=Perception;
+
+/* ======================================================================
+   Environment queries
+   ====================================================================== */
+/* generator -> candidate points (projected onto the navmesh when nav is given) -> tests in order. A test
+   returns a number (booleans count 1/0; non-finite drops the item). filter: true (keep > 0), {min,max} or
+   fn(value,item). Scores are min-max normalized per test across surviving items and summed with weight
+   (negative weight prefers low values). Returns items sorted best first. */
+const EQS={
+  query(o={}){
+    const gen=o.generator||{},nav=o.nav||null,T=o.THREE||(nav&&nav.THREE)||null,rng=isFn(o.rng)?o.rng:KE.random(num(o.seed,1)),maxItems=clamp(Math.round(num(o.maxItems,4096)),1,65536);
+    const V=(x,y,z)=>T?new T.Vector3(x,y,z):{x,y,z};const c=gen.center||{x:0,y:0,z:0},cy=num(c.y,0),pts=[];
+    switch(gen.type){
+      case 'grid':{const half=gen.size!==undefined?gen.size/2:num(gen.radius,5),sp=Math.max(1e-3,num(gen.spacing,1)),n=Math.floor(half/sp+1e-9),circle=gen.circle!==false&&gen.size===undefined;
+        for(let j=-n;j<=n;j++)for(let i=-n;i<=n;i++){const x=i*sp,z=j*sp;if(circle&&x*x+z*z>half*half+1e-9)continue;pts.push(V(c.x+x,cy,c.z+z));}break;}
+      case 'ring':{const rings=Math.max(1,Math.round(num(gen.rings,1))),count=Math.max(1,Math.round(num(gen.count,12))),R=num(gen.radius,5),r0=num(gen.innerRadius,rings>1?R/rings:R),off=num(gen.angle,0);
+        for(let k=0;k<rings;k++){const r=rings>1?r0+(R-r0)*k/(rings-1):R;for(let i=0;i<count;i++){const a=off+i/count*Math.PI*2+(k%2)*Math.PI/count;pts.push(V(c.x+Math.sin(a)*r,cy,c.z+Math.cos(a)*r));}}break;}
+      case 'points':for(const p of gen.points||[])if(p&&Number.isFinite(p.x)&&Number.isFinite(p.z))pts.push(V(p.x,num(p.y,cy),p.z));break;
+      case 'navRandom':{if(!nav)throw new Error('EQS navRandom generator needs nav');const count=Math.max(1,Math.round(num(gen.count,24)));
+        for(let i=0;i<count;i++){const p=nav.randomPoint(rng,gen.center||null,num(gen.radius,Infinity));if(p)pts.push(p);}break;}
+      default:throw new TypeError('EQS generator type must be grid, ring, points or navRandom');}
+    if(pts.length>maxItems)pts.length=maxItems;
+    let items=[];
+    if(nav&&gen.project!==false&&gen.type!=='navRandom'){const pr=num(gen.projectRadius,nav.cellSize*2),seen=new Set();
+      for(const p of pts){const q=nav.nearestPoint(p,null,{radius:pr});if(!q)continue;const k=Math.round(q.x*100)+','+Math.round(q.z*100);if(seen.has(k))continue;seen.add(k);items.push({position:q,score:0,values:[],valid:true});}}
+    else items=pts.map(p=>({position:p,score:0,values:[],valid:true}));
+    const tests=o.tests||[];
+    tests.forEach((t,ti)=>{if(!t||!isFn(t.fn))throw new TypeError('EQS test '+ti+' needs fn');
+      for(const it of items){if(!it.valid)continue;let v=t.fn(it.position,it,o.context);if(typeof v==='boolean')v=v?1:0;if(!Number.isFinite(v)){it.valid=false;continue;}it.values[ti]=v;
+        const f=t.filter;if(f===true?v<=0:isFn(f)?!f(v,it):f&&typeof f==='object'?(Number.isFinite(f.min)&&v<f.min)||(Number.isFinite(f.max)&&v>f.max):false)it.valid=false;}
+      const w=t.weight===undefined?(t.filter!==undefined&&t.filter!==null?0:1):+t.weight;if(!w)return;
+      let lo=Infinity,hi=-Infinity;for(const it of items)if(it.valid){const v=it.values[ti];if(v<lo)lo=v;if(v>hi)hi=v;}
+      for(const it of items)if(it.valid){const nv=hi>lo&&t.normalize!==false?(it.values[ti]-lo)/(hi-lo):t.normalize===false?it.values[ti]:1;it.score+=w>=0?w*nv:-w*(1-nv);}});
+    items.sort((a,b)=>a.valid!==b.valid?(a.valid?-1:1):b.score-a.score);
+    const best=items.length&&items[0].valid?items[0]:null;
+    return {best:best?best.position:null,bestScore:best?best.score:-Infinity,bestItem:best,items,valid:items.filter(i=>i.valid).length};
+  },
+  tests:{
+    /* distance to a point (or fn returning one); prefer 'near' or 'far'; optional min/max filter */
+    distance(to,{prefer='near',weight=1,min,max}={}){const get=isFn(to)?to:()=>to;return {name:'distance',fn:p=>{const t=get();return Math.hypot(p.x-t.x,p.z-t.z);},weight:prefer==='far'?Math.abs(weight):-Math.abs(weight),filter:min!==undefined||max!==undefined?{min,max}:undefined};},
+    /* navmesh path length from a point; unreachable items are dropped */
+    pathLength(nav,from,{prefer='near',weight=1,max}={}){return {name:'pathLength',fn:p=>{const path=nav.findPath(from,p);return path.length?NavMesh.pathLength(path):NaN;},weight:prefer==='far'?Math.abs(weight):-Math.abs(weight),filter:max!==undefined?{max}:undefined};},
+    /* line of sight from a point (fn(from,to)->clear or NavMesh); want:false keeps hidden points (cover) */
+    visibility(from,los,{want=true,height=1.5}={}){const get=isFn(from)?from:()=>from;return {name:'visibility',fn:p=>{const f=get(),a={x:f.x,y:num(f.y,0)+height,z:f.z},b={x:p.x,y:num(p.y,0)+height,z:p.z};
+      const clear=los instanceof NavMesh?!los._raycast(a.x,a.z,b.x,b.z,los._ray).hit:!!los(a,b);return clear===want;},filter:true,weight:0};},
+    /* distance to the nearest navmesh blocker (from the erosion field) */
+    clearance(nav,{min=0,weight=1}={}){return {name:'clearance',fn:p=>nav.clearanceAt(p.x,p.z),weight,filter:min>0?{min}:undefined};}
+  }
+};
+EQS.run=EQS.query;
+KE.EQS=EQS;
+
+/* ======================================================================
+   Finite state machine
+   ====================================================================== */
+/* states: {name:{enter(ctx,fsm,from,...args), update(ctx,dt,fsm) -> optional next state name, exit(ctx,fsm,to),
+   transitions:[{to, when(ctx,fsm)}]}}; `any` holds global transitions checked after the state's own. */
+class FSM{
+  constructor({initial,states,context=null,any=[],onChange=null}={}){
+    if(!states||typeof states!=='object')throw new TypeError('KE.FSM needs a states object');
+    this.states=states;this.context=context;this.any=Array.isArray(any)?any:[];this.onChange=isFn(onChange)?onChange:null;
+    this.state=null;this.previous=null;this.time=0;this._changing=false;this._pending=null;this.events=new KE.Events();
+    if(initial!==undefined)this.change(initial);
+  }
+  change(name,...args){
+    if(!hasOwn(this.states,name))throw new Error('Unknown FSM state: '+name);
+    if(this._changing){this._pending=[name,args];return this;}
+    for(let guard=0;;guard++){if(guard>32)throw new Error('FSM transition loop');
+      this._changing=true;try{const from=this.state,cur=from!==null?this.states[from]:null;if(cur&&isFn(cur.exit))cur.exit(this.context,this,name);
+        this.previous=from;this.state=name;this.time=0;const nx=this.states[name];if(nx&&isFn(nx.enter))nx.enter(this.context,this,from,...args);
+        if(this.onChange)this.onChange(name,from,this);this.events.emit('change',name,from);}finally{this._changing=false;}
+      if(!this._pending)return this;[name,args]=this._pending;this._pending=null;}
+  }
+  update(dt=0){
+    if(this.state===null)return this;const st=this.states[this.state];
+    for(let k=0;k<2;k++){const list=k?this.any:st.transitions;if(list)for(const tr of list)if(tr.to!==this.state&&tr.when(this.context,this)){this.change(tr.to);return this;}}
+    this.time+=Math.max(0,+dt||0);if(isFn(st.update)){const r=st.update(this.context,dt,this);if(typeof r==='string'&&r!==this.state)this.change(r);}return this;
+  }
+  is(name){return this.state===name;}
+}
+KE.FSM=FSM;
+
+/* ======================================================================
+   Steering behaviours (planar XZ). agent: {position, velocity, maxSpeed}. Each returns a desired
+   velocity written into out (y = 0); steering.force converts it to a clamped steering force.
+   ====================================================================== */
+const setXZ=(out,x,z)=>{out.x=x;out.y=0;out.z=z;return out;};
+const steering={
+  seek(agent,target,out){const dx=target.x-agent.position.x,dz=target.z-agent.position.z,d=Math.hypot(dx,dz);return d<1e-9?setXZ(out,0,0):setXZ(out,dx/d*agent.maxSpeed,dz/d*agent.maxSpeed);},
+  flee(agent,threat,out,panicDistance=Infinity){const dx=agent.position.x-threat.x,dz=agent.position.z-threat.z,d=Math.hypot(dx,dz);if(d>panicDistance)return setXZ(out,0,0);
+    if(d<1e-9)return setXZ(out,agent.maxSpeed,0);return setXZ(out,dx/d*agent.maxSpeed,dz/d*agent.maxSpeed);},
+  arrive(agent,target,out,slowRadius=2,stopRadius=.05){const dx=target.x-agent.position.x,dz=target.z-agent.position.z,d=Math.hypot(dx,dz);if(d<=stopRadius)return setXZ(out,0,0);
+    const s=agent.maxSpeed*Math.min(1,d/Math.max(1e-6,slowRadius));return setXZ(out,dx/d*s,dz/d*s);},
+  pursue(agent,quarry,out,maxPrediction=1.5){const q=quarry.position||quarry,v=quarry.velocity||{x:0,z:0},d=Math.hypot(q.x-agent.position.x,q.z-agent.position.z),s=agent.maxSpeed||1,t=Math.min(maxPrediction,d/s);
+    return steering.seek(agent,{x:q.x+v.x*t,z:q.z+v.z*t},out);},
+  evade(agent,pursuer,out,maxPrediction=1.5,panicDistance=Infinity){const q=pursuer.position||pursuer,v=pursuer.velocity||{x:0,z:0},d=Math.hypot(q.x-agent.position.x,q.z-agent.position.z),s=agent.maxSpeed||1,t=Math.min(maxPrediction,d/s);
+    return steering.flee(agent,{x:q.x+v.x*t,z:q.z+v.z*t},out,panicDistance);},
+  /* Reynolds wander: a target on a circle ahead, jittered by rng (seeded; defaults to KE.random(1)). State lives in agent.wanderAngle. */
+  wander(agent,out,{radius=1,distance=2,jitter=2,dt=1/60,rng=null}={}){const r=rng||(steering._rng||(steering._rng=KE.random(1)));
+    agent.wanderAngle=num(agent.wanderAngle,0)+(r()*2-1)*jitter*Math.sqrt(Math.max(dt,0));
+    const v=agent.velocity||{x:0,z:0};let hx=v.x,hz=v.z,l=Math.hypot(hx,hz);if(l<1e-6){const h=num(agent.heading,0);hx=Math.sin(h);hz=Math.cos(h);l=1;}hx/=l;hz/=l;
+    const tx=hx*distance+Math.sin(agent.wanderAngle)*radius,tz=hz*distance+Math.cos(agent.wanderAngle)*radius,tl=Math.hypot(tx,tz)||1;return setXZ(out,tx/tl*agent.maxSpeed,tz/tl*agent.maxSpeed);},
+  /* Push away from neighbours closer than radius (weighted by proximity). */
+  separate(agent,neighbors,out,radius=1){let x=0,z=0;for(const n of neighbors){const p=n.position||n;if(p===agent.position)continue;const dx=agent.position.x-p.x,dz=agent.position.z-p.z,d=Math.hypot(dx,dz);
+    if(d<1e-9||d>=radius)continue;const w=1-d/radius;x+=dx/d*w;z+=dz/d*w;}const l=Math.hypot(x,z);return l>1?setXZ(out,x/l*agent.maxSpeed,z/l*agent.maxSpeed):setXZ(out,x*agent.maxSpeed,z*agent.maxSpeed);},
+  force(desired,agent,maxForce,out){const v=agent.velocity||{x:0,z:0};let x=desired.x-v.x,z=desired.z-v.z;const l=Math.hypot(x,z);if(l>maxForce&&l>0){x*=maxForce/l;z*=maxForce/l;}return setXZ(out,x,z);}
+};
+KE.steering=steering;
+
+KE.registerModule('ai',{provides:['NavMesh','Crowd','BT','Blackboard','Perception','EQS','FSM','steering']});
 })();
 
 /* ===== module: 80-audio.js ===== */

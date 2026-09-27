@@ -188,6 +188,32 @@ if(has('physics3d')&&KE.Physics3D.available){try{physics=await KE.Physics3D.crea
   for(let i=0;i<7;i++){const a=-.55+i*.18,x=48+Math.sin(a)*36.5,z=49+Math.cos(a)*35;const m=new T.Mesh(new T.BoxGeometry(.42,.36,.42),paper);m.position.set(x,.5,z);m.castShadow=true;scene.add(m);
    const b=physics.addBox(m,{density:.3,friction:.4});physics.addBuoyancy(b,{waterLevel:(x,z)=>water.heightAt(x,z),density:1,drag:1.2});props.push(b);}
  }catch(e){console.warn('Spirit Isle: rigid-body props disabled',e);physics=null;}}
+/* Spirit guide (AI module): a wisp walks a navmesh built from the terrain, trees, lanterns and shrine. Its behavior tree leads
+   the fox toward the nearest remaining stone, waits when the fox falls behind, comes back when it is far away, and circles
+   the fox once every stone is found. */
+let guide=null;
+if(has('ai')){try{
+ const obstacles=solids.map(o=>({x:o.x,z:o.z,r:o.r})).concat(lanternCenters.map(([x,,z])=>({x,z,r:.45})),[{x:48,z:28,hx:2.9,hz:2.4,rotation:0}]);
+ const nav=KE.NavMesh.build(T,{bounds:{minX:12,minZ:12,maxX:86,maxZ:86},heightAt:ground,cellSize:.6,maxSlope:38,stepHeight:.5,agentRadius:.3,waterLevel:.45,obstacles});
+ const crowd=new KE.Crowd(nav,{maxAgents:2});
+ const wispMat=new T.MeshStandardMaterial({color:0xe6fdff,emissive:0x8ff3ff,emissiveIntensity:5,roughness:.3});
+ const wisp=new T.Mesh(new T.SphereGeometry(.2,20,14),wispMat);wisp.userData.keNoWeather=wisp.userData.keNoGI=true;scene.add(wisp);
+ const start=nav.nearestPoint(new T.Vector3(49.6,0,62.5),new T.Vector3(),{radius:6})||new T.Vector3(48,ground(48,62),62);
+ const agent=crowd.addAgent({position:start,radius:.3,maxSpeed:3.4,maxAccel:9});
+ const light=lights.add({position:[start.x,start.y+1.2,start.z],color:0x9ff4ff,intensity:1.2,distance:4.5,priority:.95});
+ const trail=vfx?vfx.create('trail',{attachTo:wisp,color:0x9ff4ff,scale:.5}):null;
+ const bb=new KE.Blackboard(),{BT}=KE,goal=new T.Vector3(),lastGoal=new T.Vector3(1e9,0,0);let spin=0;
+ const aim=(x,z)=>{goal.set(x,0,z);if(goal.distanceToSquared(lastGoal)>1.2){lastGoal.copy(goal);agent.setTarget(goal);}};
+ const toFox=()=>Math.hypot(agent.position.x-player.x,agent.position.z-player.z);
+ const tree=BT.tree(BT.selector([
+  BT.condition(()=>stones.every(s=>s.collected),BT.action((c,b,dt)=>{spin+=dt*1.4;aim(player.x+Math.cos(spin)*1.8,player.z+Math.sin(spin)*1.8);return 'running';}),{abort:'lower',name:'celebrate'}),
+  BT.condition(()=>toFox()>9,BT.action(()=>{aim(player.x,player.z);return toFox()<3?'success':'running';}),{abort:'lower',name:'return'}),
+  BT.action(()=>{let best=null,d=1e9;for(const s of stones)if(!s.collected){const dd=Math.hypot(s.x-player.x,s.z-player.z);if(dd<d){d=dd;best=s;}}if(!best)return 'failure';bb.set('stone',best.id);
+   if(toFox()>5.5){agent.stop();lastGoal.set(1e9,0,0);return 'running';}aim(best.x+.9,best.z+.9);return 'running';},{name:'lead'})]),{blackboard:bb});
+ guide={nav,crowd,agent,wisp,tree,blackboard:bb,update(dt,t){tree.tick(dt,this);crowd.update(dt);const p=agent.position;wisp.position.set(p.x,p.y+1.15+Math.sin(t*2.3)*.14,p.z);lights.set(light,{position:wisp.position});},
+  reset(){agent.teleport(nav.nearestPoint(new T.Vector3(player.x+1.5,0,player.z-1.5),new T.Vector3(),{radius:6})||start);lastGoal.set(1e9,0,0);tree.reset();},
+  dispose(){if(trail)trail.dispose();lights.remove&&lights.remove(light);scene.remove(wisp);wisp.geometry.dispose();wispMat.dispose();crowd.dispose();nav.dispose();}};
+}catch(e){console.warn('Spirit Isle: spirit guide disabled',e);guide=null;}}
 /* Spatial audio (audio module): day birds, night crickets, rain and shore waves; generative music that follows the time of day;
    synthesized footsteps from the gait's paw plants (stone on the path, grass elsewhere). Falls back to the core tone synth. */
 const sound=has('audio')&&KE.AudioEngine?new KE.AudioEngine(T,{volume:.8}):null;let beds=null,music=null,musicMood='calm',stepSeed=0;
@@ -209,7 +235,7 @@ const toast=message=>{const el=document.getElementById('toast');el.textContent=m
 function progress(){const count=stones.filter(s=>s.collected).length;document.querySelectorAll('#track i').forEach((e,i)=>e.classList.toggle('on',i<count));document.getElementById('quest-title').textContent=count===5?'The island remembers you':`Spirit stones · ${count} / 5`;document.getElementById('quest-copy').textContent=count===5?'All five found. Keep exploring, or start a new run in Settings.':'Follow the golden trail through the island shrine.';}
 const getState=()=>({x:player.x,z:player.z,day,collected:stones.filter(s=>s.collected).map(s=>s.id)});
 const validSave=s=>s&&Number.isFinite(s.x)&&s.x>=2&&s.x<=94&&Number.isFinite(s.z)&&s.z>=2&&s.z<=94&&Number.isFinite(s.day)&&Array.isArray(s.collected)&&s.collected.every(n=>Number.isInteger(n)&&n>=0&&n<5);
-function restore(s){player.x=s.x;player.z=s.z;player.y=ground(s.x,s.z)+player.r;player.vx=player.vy=player.vz=0;day=((s.day%1)+1)%1;for(const stone of stones){stone.collected=s.collected.includes(stone.id);stone.m.visible=stone.ring.visible=!stone.collected;lights.set(stone.light,{enabled:!stone.collected});}follow.initialized=false;sky.setTime(day);sky.refresh();pipeline.resetHistory();progress();}
+function restore(s){player.x=s.x;player.z=s.z;player.y=ground(s.x,s.z)+player.r;player.vx=player.vy=player.vz=0;day=((s.day%1)+1)%1;for(const stone of stones){stone.collected=s.collected.includes(stone.id);stone.m.visible=stone.ring.visible=!stone.collected;lights.set(stone.light,{enabled:!stone.collected});}follow.initialized=false;sky.setTime(day);sky.refresh();pipeline.resetHistory();if(guide)guide.reset();progress();}
 document.getElementById('save').onclick=()=>toast(store.save('main',getState()).ok?'Adventure saved on this device.':'This browser could not save. Keep this tab open.');
 document.getElementById('load').onclick=()=>{const result=store.load('main',{validate:validSave});if(result.ok&&result.found){restore(result.data);toast('Adventure restored.');}else toast(result.ok?'No saved adventure yet.':'The saved adventure could not be read.');};
 document.getElementById('reset').onclick=()=>{restore({x:48,z:65,day:.13,collected:[]});toast('A new adventure begins.');};
@@ -235,7 +261,7 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
  hero.position.set(player.x,player.y-player.r,player.z);
  if(foxGait){const air=player.y-player.r-ground(player.x,player.z)>.12;if(air){foxLegs.forEach((leg,i)=>leg.rotation.x=KE.damp(leg.rotation.x,i<2?-.7:.6,14,dt));}else{if(wasAirborne)foxGait.reset();foxGait.update(dt,{x:player.vx,y:0,z:player.vz});}wasAirborne=air;tailSpring.update(dt);}
  else{hero.position.y+=Math.sin(walkTime)*.025;const gait=Math.min(1,Math.hypot(player.vx,player.vz)/4);foxLegs.forEach((leg,i)=>leg.rotation.x=Math.sin(walkTime+(i===0||i===3?0:Math.PI))*.55*gait);foxTail.rotation.y=Math.sin(t*1.8)*.1;}
- if(fur)fur.update(dt,{x:player.vx,y:player.vy,z:player.vz});
+ if(fur)fur.update(dt,{x:player.vx,y:player.vy,z:player.vz});if(guide&&!paused)guide.update(dt,t);
  if(!paused){const look=input.consumeLook();follow.rotate(look.x,look.y);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.zoom(look.zoom);}follow.update(player,dt,ground);
  wet=KE.damp(wet,raining?1:0,.6,dt);surfaceWeather.update(dt,{raining});
  sky.update(dt,camera);sun.intensity*=1-wet*.6;const night=sky.night;
@@ -255,8 +281,8 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
  if(++frame%20===0){const st=KE.rendererStats(renderer);document.getElementById('stats').textContent=S.showFps?`${fps} FPS · ${S.preset}${pipeline.enabled?' · Tenko '+pipeline.stats.passes+' passes':''}\n${st.calls} draws · ${(st.triangles/1000).toFixed(0)}k tris`:'';}
  }});loop.start();
 /* Expose a small debug handle for automated checks and your own development tools. */
-window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,sound,world,editor,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
- dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();if(editor)editor.dispose();if(world)world.dispose();if(sound)sound.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
+window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,sound,world,editor,guide,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
+ dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();if(guide)guide.dispose();if(editor)editor.dispose();if(world)world.dispose();if(sound)sound.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();
 </script>
