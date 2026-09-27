@@ -160,6 +160,8 @@ KE.SkyAtmosphere=class{
       scatter([0,1,0],s,o.sunIntensity,o.altitude,c);this.zenithColor.setRGB(c[0]+.01*this.night,c[1]+.016*this.night,c[2]+.035*this.night);prevSun.copy(sun);}
     this.ambientSky.copy(this.zenithColor).lerp(this.fogColor,.5);this.ambientGround.setRGB(o.groundColor[0],o.groundColor[1],o.groundColor[2]).multiplyScalar(4*Math.max(elev,0)+.15);
     if(o.hemi){o.hemi.color.copy(this.ambientSky);o.hemi.groundColor.copy(this.ambientGround);}
+    // Publish the active light to shared scene uniforms (water/VFX use them even without a pipeline).
+    const SU=KE.sceneUniforms(T);SU.keSunDirection.value.copy(this.lightDirection);if(light)SU.keSunColor.value.copy(light.color).multiplyScalar(light.intensity);
     // Shader uniforms.
     this.cloudTime+=dt;this.windOffset.set(o.wind[0]*this.cloudTime,0,o.wind[1]*this.cloudTime);
     U.uSun.value.copy(sun);U.uMoon.value.copy(this.moonDirection);U.uSunI.value=o.sunIntensity;U.uMoonI.value=o.sunIntensity*.0035*this.night;U.uNightGlow.value=this.night;U.uSkyScale.value=o.skyScale;U.uCoverage.value=o.coverage;U.uCloudDensity.value=o.cloudDensity;
