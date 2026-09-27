@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI sandbox · kitsune enginev3</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#1b2330;font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#10202c}
+  canvas{display:block;touch-action:none}
+  #hud{position:fixed;left:12px;top:12px;max-width:min(380px,calc(100vw - 24px));background:#ffffffe0;border-radius:10px;padding:10px 12px;box-shadow:0 2px 12px #0003}
+  #hud h1{font-size:14px;margin:0 0 4px}
+  #hud p{margin:0 0 6px}
+  #hud kbd{font:600 11px ui-monospace,monospace;background:#e6edf3;border:1px solid #c3d0db;border-radius:4px;padding:0 4px}
+  #stats,#bt{font:12px ui-monospace,monospace;white-space:pre;color:#2c4254;margin:0}
+  #bt{position:fixed;right:12px;top:12px;max-width:min(330px,calc(100vw - 24px));max-height:60vh;overflow:auto;background:#ffffffd0;border-radius:10px;padding:8px 10px;font-size:11px;box-shadow:0 2px 12px #0003}
+  #err{position:fixed;inset:0;display:none;place-items:center;background:#0b1520e6;color:#fff;font-size:15px;padding:24px;text-align:center}
+</style>
+</head>
+<body>
+<div id="hud">
+  <h1>AI sandbox</h1>
+  <p><kbd>Click</kbd> send the crowd (and make a noise) · <kbd>Shift</kbd>+click add/remove a crate · drag to orbit</p>
+  <p><kbd>N</kbd> navmesh overlay · <kbd>P</kbd> paths · <kbd>B</kbd> guard tree · <kbd>Space</kbd> pause</p>
+  <div id="stats"></div>
+</div>
+<pre id="bt"></pre>
+<div id="err"></div>
+<!--THREE-->
+<!--KITSUNE-->
+<script>
+(function(){
+'use strict';
+const THREE=window.THREE,KE=window.KitsuneEngine;
+const fail=msg=>{const e=document.getElementById('err');e.textContent=msg;e.style.display='grid';};
+if(!KE||!KE.NavMesh){fail('This page needs the kitsune engine with the AI module (70-ai.js).');return;}
+const {BT}=KE;
+
+/* ---------- renderer, camera, lights ---------- */
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);renderer.outputEncoding=THREE.sRGBEncoding;
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x9cc3e4);scene.fog=new THREE.Fog(0x9cc3e4,70,140);
+const camera=new THREE.PerspectiveCamera(50,innerWidth/innerHeight,.1,400);camera.position.set(36,52,70);
+const controls=new THREE.OrbitControls(camera,renderer.domElement);controls.target.set(36,0,23);controls.maxPolarAngle=1.35;controls.enableDamping=true;controls.update();
+scene.add(new THREE.HemisphereLight(0xe4f1ff,0x4a3d28,.55));
+const sun=new THREE.DirectionalLight(0xfff0d8,.85);sun.position.set(10,40,-5);sun.target.position.set(36,0,23);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-45,right:45,top:35,bottom:-35,near:1,far:120});scene.add(sun,sun.target);
+
+/* ---------- terrain, pond, rocks, walls ---------- */
+const W=73,H=46,water=-.55;
+const basin=(x,z)=>Math.max(0,1-Math.hypot(x-17,z-30)/8.5),mound=(x,z)=>Math.max(0,1-Math.hypot(x-61,z-11)/4.2);
+const ht=(x,z)=>1.5+.8*Math.sin(x*.16)*Math.cos(z*.13)+.4*Math.sin(z*.31+x*.07)-4.2*Math.min(1,basin(x,z)*1.6)+4.3*Math.min(1,Math.max(0,1-Math.hypot(x-17,z-30)/4.2)*2.6)+6*mound(x,z);
+const land=KE.terrain(THREE,{w:W,h:H,sub:2,chunk:48,height:(i,j)=>ht(i+.5,j+.5),
+  tint:(i,j)=>{const x=i+.5,z=j+.5,y=ht(x,z);return y<water+.5?[.42,.36,.2]:mound(x,z)>.15?[.2,.19,.16]:[.07+.02*Math.sin(i*.7)*Math.cos(j*.5),.2+.03*Math.sin(j*.9),.05];},
+  material:new THREE.MeshLambertMaterial({vertexColors:true})});
+land.forEach(m=>{m.receiveShadow=true;scene.add(m);});const heightAt=land.heightAt;
+const pond=new THREE.Mesh(new THREE.CircleGeometry(8.6,64),new THREE.MeshLambertMaterial({color:0x2f6fa8,transparent:true,opacity:.82}));pond.rotation.x=-Math.PI/2;pond.position.set(17,water,30);scene.add(pond);
+const rocks=[[30,12,1.6],[36,31,2.2],[49,17,1.4],[56,34,2],[24,17,1.2],[9,11,1.1]],rockMat=new THREE.MeshLambertMaterial({color:0x8d8a84});
+for(const [x,z,r] of rocks){const m=new THREE.Mesh(new THREE.DodecahedronGeometry(r,0),rockMat);m.scale.set(1,.7,1);m.position.set(x,heightAt(x,z)+r*.3,z);m.castShadow=m.receiveShadow=true;scene.add(m);}
+const walls=[{minX:41,minZ:.5,maxX:42,maxZ:20},{minX:41,minZ:25,maxX:42,maxZ:45.5}],wallMat=new THREE.MeshLambertMaterial({color:0xc9b79c});
+for(const w of walls){const m=new THREE.Mesh(new THREE.BoxGeometry(w.maxX-w.minX,2,w.maxZ-w.minZ),wallMat);m.position.set((w.minX+w.maxX)/2,heightAt((w.minX+w.maxX)/2,(w.minZ+w.maxZ)/2)+.7,(w.minZ+w.maxZ)/2);m.castShadow=m.receiveShadow=true;scene.add(m);}
+const occluders=scene.children.filter(o=>o.isMesh&&(o.geometry.type==='BoxGeometry'||o.geometry.type==='DodecahedronGeometry'));
+
+/* ---------- navmesh + overlay ---------- */
+const nav=KE.NavMesh.build(THREE,{bounds:{minX:.5,minZ:.5,maxX:72.5,maxZ:45.5},heightAt,cellSize:.5,agentRadius:.4,maxSlope:38,waterLevel:water+.15,obstacles:[...rocks.map(([x,z,r])=>({x,z,r})),...walls]});
+let overlay=null,showNav=true,showPaths=false;
+const refreshOverlay=()=>{if(overlay)overlay.dispose();overlay=nav.debugMesh(THREE,{opacity:.3});overlay.visible=showNav;scene.add(overlay);};refreshOverlay();
+
+/* ---------- crowd ---------- */
+const crowd=new KE.Crowd(nav,{maxAgents:96}),rng=KE.random(7),crowdView=crowd.debugView(THREE);scene.add(crowdView.object);
+crowdView.object.children.forEach(m=>{m.castShadow=true;});
+const intruders=[];for(let i=0;i<28;i++){const p=nav.randomPoint(rng,new THREE.Vector3(12,0,12),9);if(p)intruders.push(crowd.addAgent({position:p,radius:.4,maxSpeed:2.6+rng()*.8,userData:{kind:'intruder'}}));}
+
+/* ---------- guard: perception + behavior tree ---------- */
+const guard=crowd.addAgent({position:new THREE.Vector3(60,0,24),radius:.5,maxSpeed:2,height:2.2,userData:{kind:'guard'}});
+const bb=new KE.Blackboard({waypoint:0,searches:0});
+const waypoints=[[60,24],[66,40],[50,40],[47,8],[66,4]].map(([x,z])=>nav.nearestPoint(new THREE.Vector3(x,0,z)));
+const eyes=new KE.Perception(THREE,{sight:{range:14,fov:100,height:1.9,lineOfSight:occluders,detectTime:.4},hearing:{range:16},memory:8,
+  onSee:t=>{if(!bb.get('target'))bb.set('target',t);},
+  onLose:(t,rec)=>{if(bb.get('target')===t){bb.set('lastKnown',rec.lastKnown.clone().addScaledVector(rec.velocity,.8));bb.set('searches',0);bb.delete('target');}},
+  onHear:(s,rec)=>{if(!bb.get('target')){bb.set('lastKnown',rec.lastKnown.clone());bb.set('searches',0);}}});
+eyes.listen();
+const moveTo=(key,speed)=>BT.action((ctx,b)=>{const p=b.get(key);if(!p)return 'failure';guard.maxSpeed=speed;
+  if(!guard.target||Math.hypot(guard.target.x-p.x,guard.target.z-p.z)>.5)guard.setTarget(p);
+  return guard.state==='arrived'?'success':guard.state==='unreachable'?'failure':'running';},{name:'moveTo '+key,onExit:(c,s)=>{if(s==='aborted')guard.stop();}});
+const tree=BT.tree(BT.selector([
+  BT.blackboardCondition('target','set',BT.action((ctx,b,dt,mem)=>{   // chase: re-target every 0.25 s, catch within 1.1 m
+    const t=b.get('target');guard.maxSpeed=4;mem.t=(mem.t||0)-dt;if(mem.t<=0){mem.t=.25;guard.setTarget(t.position);}
+    if(guard.position.distanceTo(t.position)<1.1){t.teleport(nav.randomPoint(rng,new THREE.Vector3(10,0,10),8)||t.position);t.stop();b.delete('target');eyes.forget(t);caught++;return 'success';}
+    return 'running';},{name:'chase'}),{abort:'both',name:'sees intruder?'}),
+  BT.blackboardCondition('lastKnown','set',BT.sequence([moveTo('lastKnown',3),
+    BT.action((ctx,b)=>{const r=KE.EQS.query({nav,generator:{type:'navRandom',center:b.get('lastKnown'),radius:7,count:24},rng,tests:[
+      KE.EQS.tests.visibility(guard.position,nav,{want:false}),KE.EQS.tests.distance(b.get('lastKnown'),{weight:.6}),{fn:()=>rng(),weight:.4}]});
+      b.set('searchPoint',r.best||b.get('lastKnown'));return 'success';},{name:'EQS: hidden spot nearby'}),
+    moveTo('searchPoint',2.4),BT.wait([.8,1.6]),
+    BT.action((ctx,b)=>{const n=b.get('searches')+1;b.set('searches',n);if(n>=3){b.delete('lastKnown');}return 'success';},{name:'give up after 3'})],{name:'search'}),{abort:'lower',name:'has lead?'}),
+  BT.sequence([BT.action((ctx,b)=>{b.set('waypointPos',waypoints[b.get('waypoint')%waypoints.length]);return 'success';},{name:'next waypoint'}),
+    moveTo('waypointPos',1.8),BT.wait([1,2.5]),BT.action((ctx,b)=>{b.set('waypoint',b.get('waypoint')+1);},{name:'advance'})],{name:'patrol'})
+],{name:'guard'}),{blackboard:bb,seed:3});
+let caught=0;
+
+/* view cone showing the current branch */
+const cone=new THREE.Mesh(new THREE.CircleGeometry(14,40,-50*Math.PI/180,100*Math.PI/180),new THREE.MeshBasicMaterial({color:0x4cd964,transparent:true,opacity:.18,depthWrite:false,side:THREE.DoubleSide}));
+cone.geometry.rotateX(-Math.PI/2);cone.geometry.rotateY(-Math.PI/2);scene.add(cone);
+
+/* ---------- input: click targets and crates ---------- */
+const ray=new THREE.Raycaster(),mouse=new THREE.Vector2(),crates=[];let down=null;
+renderer.domElement.addEventListener('pointerdown',e=>{down=[e.clientX,e.clientY];});
+renderer.domElement.addEventListener('pointerup',e=>{
+  if(!down||Math.hypot(e.clientX-down[0],e.clientY-down[1])>5)return;mouse.set(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1);ray.setFromCamera(mouse,camera);
+  const hit=ray.intersectObjects([...land,...crates.map(c=>c.mesh)],false)[0];if(!hit)return;const p=hit.point;
+  if(e.shiftKey){const i=crates.findIndex(c=>c.mesh===hit.object||Math.hypot(c.mesh.position.x-p.x,c.mesh.position.z-p.z)<1.5);
+    if(i>=0){nav.removeObstacle(crates[i].id);crates[i].mesh.geometry.dispose();scene.remove(crates[i].mesh);crates.splice(i,1);}
+    else{const m=new THREE.Mesh(new THREE.BoxGeometry(2.2,1.4,2.2),new THREE.MeshLambertMaterial({color:0xa0703e}));m.position.set(p.x,heightAt(p.x,p.z)+.7,p.z);m.castShadow=true;scene.add(m);
+      crates.push({mesh:m,id:nav.addObstacle({x:p.x,z:p.z,hx:1.1,hz:1.1})});occluders.push(m);}
+    refreshOverlay();return;}
+  const spots=KE.EQS.query({nav,generator:{type:'ring',center:p,radius:3.2,rings:3,innerRadius:.8,count:12},tests:[KE.EQS.tests.distance(p)]}).items.filter(i=>i.valid);
+  intruders.forEach((a,k)=>a.setTarget(spots.length?spots[k%spots.length].position:p));
+  KE.events.emit('noise',{position:p,loudness:1.2,source:null});
+});
+addEventListener('keydown',e=>{if(e.code==='KeyN'){showNav=!showNav;overlay.visible=showNav;}if(e.code==='KeyP')showPaths=!showPaths;if(e.code==='Space')paused=!paused;if(e.code==='KeyB')btEl.style.display=btEl.style.display==='none'?'':'none';});
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+
+/* ---------- loop ---------- */
+let paused=false,percT=0,pathLines=[],last=performance.now(),btText='',hudT=0;
+const statsEl=document.getElementById('stats'),btEl=document.getElementById('bt');if(innerWidth<900)btEl.style.display='none';
+function frame(now){
+  const dt=Math.min(.05,(now-last)/1000);last=now;
+  if(!paused){
+    crowd.update(dt);
+    percT-=dt;if(percT<=0){percT=.1;eyes.update(.1,guard,intruders);}
+    tree.tick(dt);
+    const branch=bb.get('target')?0xff3b30:bb.get('lastKnown')?0xffb020:0x4cd964;cone.material.color.set(branch);
+  }
+  cone.position.set(guard.position.x,guard.position.y+.15,guard.position.z);cone.rotation.y=Math.atan2(eyes.forward.x,eyes.forward.z);
+  crowdView.update();
+  for(const l of pathLines)l.dispose();pathLines=[];
+  if(showPaths)for(const a of crowd.agents)if(a.path.length>1&&a.state==='moving'){const l=nav.debugPath(THREE,[a.position,...a.path.slice(a.pathIndex)],{width:.08,color:a===guard?0xff3b30:0xffc21a});scene.add(l);pathLines.push(l);}
+  controls.update();renderer.render(scene,camera);
+  hudT-=dt;if(hudT<=0){hudT=.25;const s=nav.stats(),states={};for(const a of intruders)states[a.state]=(states[a.state]||0)+1;
+    statsEl.textContent=`navmesh ${s.polys} polys · ${s.islands} islands · rebuild ${nav.lastRebuild.tiles} tiles ${nav.lastRebuild.ms.toFixed(1)} ms\ncrowd ${JSON.stringify(states).replace(/[{}"]/g,'')}\nguard ${guard.state} · caught ${caught}${paused?' · PAUSED':''}`;
+    const t=tree.debugString();if(t!==btText){btText=t;btEl.textContent=t;}}
+  requestAnimationFrame(frame);
+}
+window.__aiDemo={nav,crowd,guard,tree,bb,eyes};
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
