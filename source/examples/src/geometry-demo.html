@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kitsune virtual geometry showcase</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#9fc3e0;font:13px/1.4 system-ui,sans-serif;color:#e8edf5}
+  canvas{display:block;touch-action:none}
+  #ui{position:fixed;left:12px;top:12px;right:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;pointer-events:none}
+  #ui>*{pointer-events:auto}
+  #ui button{border:1px solid #ffffff40;background:#132033cc;color:inherit;border-radius:6px;padding:5px 10px;font:inherit;cursor:pointer}
+  #ui button.on{background:#2c4a7acc;border-color:#8fb6ff90}
+  #ui label{background:#132033cc;border-radius:6px;padding:4px 10px;display:flex;gap:8px;align-items:center}
+  #stats{position:fixed;left:12px;bottom:12px;background:#132033c0;border-radius:6px;padding:6px 10px;font:12px ui-monospace,monospace;white-space:pre}
+  #hint{position:fixed;right:12px;bottom:12px;background:#13203399;border-radius:6px;padding:6px 10px;max-width:44ch;text-align:right}
+  @media (max-width:900px){#hint{display:none}}
+</style>
+</head>
+<body>
+<div id="ui"></div>
+<div id="stats">Building cluster hierarchy…</div>
+<div id="hint">Drag to orbit, scroll to zoom. The large rocks are VirtualGeometry (one ~104k-triangle source, cluster DAG cut per frame); the small ones are one InstancedLOD with octahedral impostors far away.</div>
+<!--THREE-->
+<!--KITSUNE-->
+<script>
+(async function(){'use strict';
+const T=window.THREE,KE=window.KitsuneEngine;
+const renderer=new T.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);renderer.outputEncoding=T.sRGBEncoding;renderer.toneMapping=T.ACESFilmicToneMapping;
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFSoftShadowMap;document.body.prepend(renderer.domElement);
+const scene=new T.Scene();scene.background=new T.Color(0x9fc3e0);scene.fog=new T.Fog(0x9fc3e0,50,170);
+const camera=new T.PerspectiveCamera(55,innerWidth/innerHeight,.1,400);camera.position.set(0,3.2,8);
+const controls=T.OrbitControls?new T.OrbitControls(camera,renderer.domElement):null;if(controls){controls.target.set(0,1,-10);controls.enableDamping=true;controls.maxPolarAngle=1.52;controls.update();}else camera.lookAt(0,1,-10);
+scene.add(new T.HemisphereLight(0xcfe3ff,0x4a4034,.55));
+const sun=new T.DirectionalLight(0xfff1dd,1.9);sun.position.set(14,10,3);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-22,right:22,top:22,bottom:-22,near:1,far:80});sun.shadow.bias=-.0005;sun.target.position.set(0,0,-8);scene.add(sun,sun.target);
+const ground=new T.Mesh(new T.PlaneGeometry(400,400),new T.MeshStandardMaterial({color:new T.Color(0x56663a).convertSRGBToLinear(),roughness:1}));ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;scene.add(ground);
+const stats=document.getElementById('stats'),ui=document.getElementById('ui');
+const frame=()=>new Promise(r=>requestAnimationFrame(r));await frame();
+
+/* one cluster DAG shared by all large rocks, one instanced LOD chain for the small ones */
+await KE.geometryReady();
+const rockGeo=KE.proceduralRock(T,{detail:6,seed:3}),dag=KE.VirtualGeometry.build(T,rockGeo,{clusterTriangles:128});
+const rockMat=new T.MeshStandardMaterial({vertexColors:true,roughness:.92}),rnd=KE.random(21),big=[];
+for(let i=0;i<14;i++){const vg=new KE.VirtualGeometry(T,dag,rockMat,{pixelError:1,castShadow:true,receiveShadow:true});const d=4+i*i*.8,a=(rnd()-.5)*1.6,k=1+rnd()*1.3;
+  vg.position.set(Math.sin(a)*d+(i%2?2.5:-2.5),.25*k,-Math.cos(a)*d);vg.scale.setScalar(k);vg.rotation.y=rnd()*6;scene.add(vg);big.push(vg);}
+const small=KE.proceduralRock(T,{detail:4,seed:7}),N=4000,field=new KE.InstancedLOD(T,small,rockMat,{count:N,pixelError:1.5,castShadow:true,receiveShadow:true,shadowDistance:30});
+{const m=new T.Matrix4(),q=new T.Quaternion(),s=new T.Vector3(),p=new T.Vector3(),up=new T.Vector3(0,1,0);
+  for(let i=0;i<N;i++){const d=3+Math.pow(rnd(),.7)*150,a=rnd()*Math.PI*2;p.set(Math.sin(a)*d,0,-Math.cos(a)*d);q.setFromAxisAngle(up,rnd()*6.28);const k=.15+rnd()*.35;s.set(k,k*.8,k);p.y=k*.2;field.setMatrixAt(i,m.compose(p,q,s));}}
+field.bakeImpostor(renderer,{size:1024,frames:8,pixels:40});scene.add(field.object);
+const debugMats=field.meshes.map(m=>m.material),tint=[0x3ecf6e,0xf2d13d,0xf28c28,0xe8453c,0xd13dc9].map(c=>{const m=rockMat.clone();m.vertexColors=false;m.color.setHex(c);return m;});
+
+/* controls */
+let mode='off',pixelError=1;
+const btn=(label,fn,on)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>{fn(b);};if(on)b.classList.add('on');ui.append(b);return b;};
+const modes=[['Shaded','off'],['Clusters','cluster'],['Groups','group'],['DAG levels','level']].map(([l,m])=>btn(l,b=>{mode=m;modes.forEach(x=>x.classList.toggle('on',x===b));for(const v of big)v.setDebugColors(m==='off'?false:m);field.meshes.forEach((mesh,i)=>{mesh.material=m==='off'?debugMats[i]:tint[i%tint.length];});},m==='off'));
+const label=document.createElement('label');label.innerHTML='Pixel error <input type="range" min="0.25" max="16" step="0.25" value="1"> <span>1.00</span> px';ui.append(label);
+const slider=label.querySelector('input'),out=label.querySelector('span');
+slider.oninput=()=>{pixelError=+slider.value;out.textContent=pixelError.toFixed(2);for(const v of big){v.pixelError=pixelError;v.shadowPixelError=pixelError*4;}field.pixelError=pixelError*1.5;};
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+
+let last=performance.now(),fps=0,acc=0,n=0;
+(function loop(){requestAnimationFrame(loop);const now=performance.now();acc+=now-last;n++;last=now;if(acc>500){fps=Math.round(n*1000/acc);acc=0;n=0;}
+  const h=renderer.getDrawingBufferSize(new T.Vector2()).y;for(const v of big)v.viewportHeight=h;field.viewportHeight=h;
+  if(controls)controls.update();renderer.render(scene,camera);
+  let vt=0,vf=0,cl=0;for(const v of big){const s=v.stats();vt+=s.triangles;vf+=s.sourceTriangles;cl+=s.selectedClusters;}const f=field.stats(),info=renderer.info.render;
+  stats.textContent=`${fps} fps   ${info.calls} draws   ${info.triangles.toLocaleString()} triangles rendered (incl. shadows)
+virtual geometry: ${big.length} rocks, ${cl} clusters, ${vt.toLocaleString()} / ${vf.toLocaleString()} source triangles
+instanced LOD:    ${f.visible} visible of ${f.count} (${f.culled} culled)  levels [${f.levels.join(' ')}]  impostors ${f.impostors}
+                  ${f.triangles.toLocaleString()} triangles vs ${f.fullDetailTriangles.toLocaleString()} at full detail
+DAG: ${dag.levelCount} levels, ${dag.clusterCount} clusters, ${dag.groupCount} groups, built in ${Math.round(dag.buildMs)} ms (${dag.backend})`;})();
+})();
+</script>
+</body>
+</html>
