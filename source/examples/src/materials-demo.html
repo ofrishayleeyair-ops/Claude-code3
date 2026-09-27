@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kitsune material graphs</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#11141a;font:13px/1.4 system-ui,sans-serif;color:#dfe6f3}
+  canvas{display:block;touch-action:none}
+  #ui{position:fixed;left:12px;top:12px;right:12px;display:flex;flex-wrap:wrap;gap:6px;pointer-events:none}
+  #ui button{pointer-events:auto;border:1px solid #ffffff30;background:#0d1320cc;color:inherit;border-radius:6px;padding:5px 10px;font:inherit;cursor:pointer}
+  #ui button.on{background:#2c4a7acc;border-color:#8fb6ff80}
+  #params{position:fixed;right:12px;bottom:12px;width:250px;max-height:55vh;overflow:auto;background:#0d1320d8;border:1px solid #ffffff20;border-radius:8px;padding:10px}
+  #params h3{margin:0 0 8px;font-size:13px}
+  #params label{display:grid;grid-template-columns:1fr 110px;align-items:center;gap:6px;margin:4px 0;font-size:12px}
+  #params input[type=range]{width:110px}
+  #hint{position:fixed;left:12px;bottom:12px;opacity:.7;max-width:48ch}
+  @media (max-width:700px){#hint{display:none}#params{width:auto;left:12px}}
+</style>
+</head>
+<body>
+<div id="ui"></div>
+<div id="params"></div>
+<div id="hint">Drag to orbit. Pick a library material above; its parameters are uniforms, so the sliders never recompile shaders. "Pipeline" toggles the HDR pipeline that feeds refraction and depth fade.</div>
+<!--THREE-->
+<!--KITSUNE-->
+<script>
+(function(){'use strict';
+const T=window.THREE,KE=window.KitsuneEngine,MG=KE.MaterialGraph;
+const renderer=new T.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);renderer.outputEncoding=T.sRGBEncoding;renderer.toneMapping=T.ACESFilmicToneMapping;
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFSoftShadowMap;document.body.prepend(renderer.domElement);
+const scene=new T.Scene(),camera=new T.PerspectiveCamera(45,innerWidth/innerHeight,.1,200);camera.position.set(0,1.6,4.2);KE.prepareCamera(camera);
+const controls=T.OrbitControls?new T.OrbitControls(camera,renderer.domElement):null;if(controls){controls.target.set(0,.6,0);controls.enableDamping=true;controls.maxPolarAngle=1.5;controls.update();}else camera.lookAt(0,.6,0);
+scene.environment=new T.PMREMGenerator(renderer).fromCubemap(KE.environment(T)).texture;scene.background=new T.Color(0x1a1f28);
+const sun=new T.DirectionalLight(0xfff2e0,3);sun.position.set(-3,5,3);sun.castShadow=true;sun.shadow.mapSize.set(1024,1024);Object.assign(sun.shadow.camera,{left:-4,right:4,top:4,bottom:-4});scene.add(sun,sun.target);
+const U=KE.sceneUniforms(T);U.keSunDirection.value.copy(sun.position).normalize();
+const lib=KE.materialLibrary(T);
+const floor=new T.Mesh(new T.PlaneGeometry(12,12),lib.parallaxStone({tiling:6}));floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;scene.add(floor);
+/* one hero object per material: rocks for the terrain materials, a grass clump, spheres otherwise */
+const rockGeo=(()=>{const g=new T.SphereGeometry(.6,96,64),p=g.attributes.position,v=new T.Vector3();for(let i=0;i<p.count;i++){v.fromBufferAttribute(p,i);const n=v.clone().normalize();
+  v.multiplyScalar(1+.16*Math.sin(n.x*4.1+n.y*2.3)*Math.cos(n.z*3.7)+.07*Math.sin(n.x*11+n.z*9));v.y*=.8;p.setXYZ(i,v.x,v.y,v.z);}g.computeVertexNormals();return g;})();
+const blade=(()=>{const g=new T.PlaneGeometry(.05,.5,1,5);g.translate(0,.25,0);const p=g.attributes.position;for(let i=0;i<p.count;i++){const y=p.getY(i)/.5;p.setX(i,p.getX(i)*(1-y*.9));p.setZ(i,y*y*.08);}g.computeVertexNormals();return g;})();
+const holder=new T.Group();scene.add(holder);let current=null;const rnd=KE.random(3);
+function show(name){while(holder.children.length){const o=holder.children[0];holder.remove(o);o.traverse(c=>{if(c.material&&MG.isGraphMaterial(c.material))c.material.dispose();});}
+  const mat=lib.create(name);let obj;
+  if(name==='stylizedGrass'){const n=2500,im=new T.InstancedMesh(blade,mat,n),M=new T.Matrix4(),q=new T.Quaternion(),s=new T.Vector3();
+    for(let i=0;i<n;i++){const a=rnd()*Math.PI*2,d=Math.sqrt(rnd())*1.4;q.setFromEuler(new T.Euler((rnd()-.5)*.3,rnd()*Math.PI*2,(rnd()-.5)*.3));s.setScalar(.7+rnd()*.7);M.compose(new T.Vector3(Math.cos(a)*d,0,Math.sin(a)*d),q,s);im.setMatrixAt(i,M);}obj=im;}
+  else if(['pbrTriplanar','mossyRock','snowCovered'].includes(name)){obj=new T.Mesh(rockGeo,mat);obj.position.y=.45;}
+  else if(name==='parallaxStone'){obj=new T.Mesh(new T.BoxGeometry(1,1,1),mat);obj.position.y=.5;}
+  else if(name==='hologram'){obj=new T.Mesh(new T.TorusKnotGeometry(.4,.13,160,20),mat);obj.position.y=.8;}
+  else if(name==='waterPuddle'){obj=new T.Mesh(new T.CylinderGeometry(1.4,1.4,.06,96),mat);obj.position.y=.03;}
+  else{obj=new T.Mesh(new T.SphereGeometry(.6,96,48),mat);obj.position.y=name==='forceField'?.1:.65;}
+  obj.castShadow=obj.receiveShadow=true;holder.add(obj);obj.traverse(o=>{if(o.isMesh&&MG.isGraphMaterial(o.material))MG.bind(o);});current=mat;panel(name,mat);
+  document.querySelectorAll('#ui button[data-m]').forEach(b=>b.classList.toggle('on',b.dataset.m===name));}
+function panel(name,mat){const el=document.getElementById('params');el.innerHTML=`<h3>${name}</h3>`;
+  for(const p of mat.paramInfo){if(p.type==='texture')continue;const row=document.createElement('label');row.textContent=p.label;let input;
+    if(p.type==='float'){input=document.createElement('input');input.type='range';const lo=p.min!==undefined?p.min:0,hi=p.max!==undefined?p.max:Math.max(1,p.default*2);input.min=lo;input.max=hi;input.step=(hi-lo)/200;input.value=mat.getParam(p.name);input.oninput=()=>{mat.params[p.name]=+input.value;};}
+    else if(p.type==='color'){input=document.createElement('input');input.type='color';input.value=typeof p.default==='string'?p.default:'#ffffff';input.oninput=()=>{mat.params[p.name]=input.value;};}
+    else continue;row.append(input);el.append(row);}}
+const ui=document.getElementById('ui');
+for(const name of lib.names){const b=document.createElement('button');b.textContent=name;b.dataset.m=name;b.onclick=()=>show(name);ui.append(b);}
+let pipeline=null;const pb=document.createElement('button');pb.textContent='Pipeline';pb.onclick=()=>{if(pipeline){pipeline.dispose();pipeline=null;KE.sceneUniforms(T).keHasScene.value=0;}else if(KE.Pipeline)pipeline=new KE.Pipeline(T,renderer,{sun});pb.classList.toggle('on',!!pipeline);};ui.append(pb);
+show('carPaint');
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+let last=performance.now();
+(function frame(now){requestAnimationFrame(frame);const dt=Math.min(.1,(now-last)/1000);last=now;MG.update(dt);if(controls)controls.update();
+  if(pipeline)pipeline.render(scene,camera,dt);else renderer.render(scene,camera);})(last);
+})();
+</script>
+</body>
+</html>
