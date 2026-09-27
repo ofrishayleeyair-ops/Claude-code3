@@ -13,6 +13,7 @@ The v3 renderer adds an HDR frame pipeline, a physically based sky with volumetr
 7. Shared uniforms, layers and custom translucent materials
 8. Quality settings, console variables and costs
 9. Limits
+10. KE.ProbeVolume (dynamic diffuse GI)
 
 ## 1. Frame setup
 
@@ -127,6 +128,7 @@ mesh.layers.set(KE.LAYERS.TRANSLUCENT);
 | Setting | Low | Medium | High | Ultra | Cinematic |
 |---|---|---|---|---|---|
 | pipeline (HDR post) | off | on | on | on | on |
+| gi (probe volume) | – | – | ✓ | ✓ | ✓ |
 | taa / gtao / ssr | – / – / – | ✓ / – / – | ✓ / ✓ / ✓ | ✓ / ✓ / ✓ | ✓ / ✓ / ✓ |
 | ssgi | – | – | – | ✓ | ✓ |
 | volumetrics (shafts, fog inscatter) | – | – | ✓ | ✓ | ✓ |
@@ -135,10 +137,31 @@ mesh.layers.set(KE.LAYERS.TRANSLUCENT);
 | dynamic point lights | 2 | 4 | 6 | 8 | 12 |
 | dof / motion blur | – | – | – | – | ✓ / ✓ |
 
-Console variables (`KE.cvars`, also typed into the console UI): `r.TAA`, `r.GTAO`, `r.SSR`, `r.SSGI`, `r.Bloom`, `r.Shadows`, `r.Shadow.Cascades`, `r.Shadow.Resolution`, `r.Volumetrics`, `r.Clouds`, `r.DOF`, `r.MotionBlur`, `r.AutoExposure`, `r.Pipeline`, `r.ScreenPercentage`, `r.ViewDistance`, `r.LODBias`, `r.Lights`, `foliage.Grass`, `fx.Budget`, `r.Fur`, `r.ViewMode`.
+Console variables (`KE.cvars`, also typed into the console UI): `r.GI`, `r.TAA`, `r.GTAO`, `r.SSR`, `r.SSGI`, `r.Bloom`, `r.Shadows`, `r.Shadow.Cascades`, `r.Shadow.Resolution`, `r.Volumetrics`, `r.Clouds`, `r.DOF`, `r.MotionBlur`, `r.AutoExposure`, `r.Pipeline`, `r.ScreenPercentage`, `r.ViewDistance`, `r.LODBias`, `r.Lights`, `foliage.Grass`, `fx.Budget`, `r.Fur`, `r.ViewMode`.
 
 Relative GPU cost, cheapest first: bloom and exposure (small targets) < fog/composite < GTAO < TAA < light shafts < DOF < SSGI. Cloud cost is amortised over six frames by the cube capture. No frame-time figures are claimed; measure on the target device (`KE.GPUTimer` reports GPU time where `EXT_disjoint_timer_query` is exposed).
 
 ## 9. Limits
 
-This is a forward renderer on WebGL2. There is no G-buffer: SSR is limited to translucent-layer materials (water, custom), bounce light has no albedo input, and AO multiplies all lighting rather than only indirect light. Global illumination is screen-space plus the sky light; there is no world-space probe or distance-field GI. Shadows are rasterised cascades, not virtual shadow maps. The pipeline has not been profiled on physical phones.
+This is a forward renderer on WebGL2. There is no G-buffer: SSR is limited to translucent-layer materials (water, custom), screen-space bounce light has no albedo input, and AO multiplies all lighting rather than only indirect light. World-space GI comes from the probe volume (section 10), which has no per-probe visibility data and no distance-field or surface-cache tracing. Shadows are rasterised cascades, not virtual shadow maps. The pipeline has not been profiled on physical phones.
+
+## 10. KE.ProbeVolume (dynamic diffuse GI)
+
+```js
+const gi = new KE.ProbeVolume(THREE, renderer, scene, {
+  bounds: new THREE.Box3(new THREE.Vector3(10,0,10), new THREE.Vector3(86,12,86)),
+  spacing: 7, heightAt: terrain.heightAt, faceSize: 16, probesPerFrame: 1, hysteresis: .8
+});
+gi.tag(scene);        // put significant static meshes on KE.LAYERS.GI (2)
+gi.setupScene();      // patch Standard/Physical materials
+// per frame, after sky/shadow updates and before rendering:
+gi.update(camera);
+```
+
+A grid of probes covers `bounds` (`spacing` or explicit `counts`). With `heightAt`, probes below ground are lifted `lift` units above it and dropped if they would duplicate the next layer. Each update renders `probesPerFrame` probes — six `faceSize`² faces of the GI layer plus the sky background, shadows reused, no tone mapping — nearest to the camera first, and projects each cube onto order-1 spherical harmonics on the GPU (128 Fibonacci directions). New values blend into the atlas with `hysteresis`; the first capture of a probe replaces its value. Because patched materials sample the volume while probes are captured, each refresh adds another bounce.
+
+Patched materials evaluate cosine-convolved SH irradiance at the shaded point (offset along the normal), trilinearly blending the eight surrounding probes with a wrap-shading weight toward each probe to reduce light leaking through the surface. The result replaces the sky-only diffuse image lighting (scaled by `envMapIntensity` and `strength`); specular image lighting is scaled by the probe/sky irradiance ratio so covered areas stop reflecting open sky. Uncaptured probes fall back to the sky light. Materials need `scene.environment` (the sky light) for the patch to engage.
+
+`tag(root, {minRadius:.6, filter})` skips points, lines, translucent-layer meshes, objects marked `userData.keNoGI` (the sky discs are) and meshes smaller than `minRadius`. `bake(camera)` captures every probe synchronously; `progress` reports the captured fraction; `strength` scales the result; `dispose()` restores material hooks. The `gi` setting (`r.GI`) toggles the effect.
+
+Cost per update: six small scene renders of the GI layer (draw calls equal to its mesh count), one SH pass. A 12×3×12 volume refreshed one probe per frame takes about seven seconds at 60 FPS for a full sweep, so lighting changes (time of day, lights switching on) settle gradually. Limits: no visibility/depth per probe (thin walls may leak), no specular GI beyond the sky light and SSR, dynamic objects are not captured unless tagged, and grid resolution bounds detail (use GTAO for contact-scale occlusion).

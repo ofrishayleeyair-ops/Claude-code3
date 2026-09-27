@@ -130,6 +130,8 @@ const tailG=new T.TubeGeometry(tailCurve,24,.19,12,false);const pa=tailG.attribu
 const whiskerPos=[];for(const side of [-1,1])for(let i=0;i<3;i++)whiskerPos.push(side*.12,.945-i*.017,-.735,side*(.31+i*.025),.955-i*.04,-.70);const whiskers=new T.BufferGeometry();whiskers.setAttribute('position',new T.Float32BufferAttribute(whiskerPos,3));hero.add(new T.LineSegments(whiskers,new T.LineBasicMaterial({color:0xe5d9bc,transparent:true,opacity:.54})));
 /* ---------- cascaded shadows for everything lit ---------- */
 csm=new KE.CascadedShadows(T,scene,{sun,maxFar:110,margin:40});csm.setupScene();csm.enabled=S.shadows;
+/* Probe-volume diffuse GI over the island: refreshed a probe per frame, nearest first. */
+const gi=new KE.ProbeVolume(T,renderer,scene,{bounds:new T.Box3(new T.Vector3(10,0,10),new T.Vector3(86,12,86)),spacing:7,heightAt:ground,faceSize:16,probesPerFrame:1});gi.tag(scene);gi.setupScene();
 
 /* ---------- player, input, gameplay ---------- */
 const player=KE.Physics.body({x:48,z:65,y:ground(48,65)+.35,r:.35,height:1.5,friction:.8});
@@ -174,7 +176,7 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
  if(!paused){const look=input.consumeLook();follow.rotate(look.x,look.y);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.zoom(look.zoom);}follow.update(player,dt,ground);
  wet=KE.damp(wet,raining?1:0,.6,dt);
  sky.update(dt,camera);sun.intensity*=1-wet*.6;const night=sky.night;
- csm.update(camera);lights.intensity=Math.min(1,night*1.4+wet*.3);lights.update(dt,camera);
+ csm.update(camera);gi.update(camera);lights.intensity=Math.min(1,night*1.4+wet*.3);lights.update(dt,camera);
  fog.copy(sky.fogColor);scene.fog.color.copy(fog);const f=pipeline.options.fog;f.color.copy(sky.fogColor);f.density=.0065*(1+wet*2.2);
  water.rain=wet;water.update(dt,camera,{pipeline});
  litMaterials.forEach(m=>m.envMapIntensity=1+night*.6);KE.windUniforms.uTime.value=t;KE.windUniforms.uWind.value=1+wet*1.2;lanternGlow.material.opacity=.12+night*.8;
@@ -186,8 +188,8 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
  if(++frame%20===0){const st=KE.rendererStats(renderer);document.getElementById('stats').textContent=S.showFps?`${fps} FPS · ${S.preset}${pipeline.enabled?' · Tenko '+pipeline.stats.passes+' passes':''}\n${st.calls} draws · ${(st.triangles/1000).toFixed(0)}k tris`:'';}
  }});loop.start();
 /* Expose a small debug handle for automated checks and your own development tools. */
-window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
- dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
+window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
+ dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();
 </script>
