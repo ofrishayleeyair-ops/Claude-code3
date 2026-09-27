@@ -1,8 +1,8 @@
 interface:
-  display_name: kitsune enginev2
-  short_description: Build offline 3D games with touch controls and saves
-  default_prompt: Use $kitsune-enginev2 to build a polished offline mobile game with
-    touch controls.
+  display_name: kitsune enginev3
+  short_description: Build offline single-file 3D web games with HDR rendering, physics, AI, audio and an editor
+  default_prompt: Use $kitsune-enginev3 to build a polished offline 3D game that runs
+    from a single HTML file.
   icon_small: assets/icon.svg
   icon_large: assets/icon.svg
 policy:

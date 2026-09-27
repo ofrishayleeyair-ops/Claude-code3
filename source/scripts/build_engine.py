@@ -66,8 +66,11 @@ def libs_source() -> str:
                for name in ('meshopt_simplifier.js', 'meshopt_clusterizer.js')]
     rapier = (VENDOR / 'rapier' / 'rapier.cjs').read_text(encoding='utf-8')
     rapier = rapier.replace('//# sourceMappingURL=rapier.cjs.map', '')
+    # Built games inline this file, so carry the full license texts with it (Apache-2.0 asks for a copy of the license).
+    notices = '\n\n'.join((VENDOR / d / f).read_text(encoding='utf-8').strip().replace('*/', '* /')
+                           for d, f in (('meshoptimizer', 'LICENSE.md'), ('rapier', 'LICENSE')))
     return ('/*! Third-party runtime libraries for kitsune engine: meshoptimizer 0.22 (MIT, Arseny Kapoulkine) and '
-            'Rapier 3D 0.19.3 compat build (Apache-2.0, Dimforge). See THIRD_PARTY_LICENSES.txt. */\n'
+            'Rapier 3D 0.19.3 compat build (Apache-2.0, Dimforge). License texts follow.\n\n' + notices + '\n*/\n'
             + '\n'.join(meshopt)
             + '\n/* --- @dimforge/rapier3d-compat 0.19.3 (CommonJS build wrapped as window.RAPIER) --- */\n'
             + '(function(){var module={exports:{}},exports=module.exports;\n' + rapier

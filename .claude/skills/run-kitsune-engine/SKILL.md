@@ -68,9 +68,10 @@ tmux send-keys -t ke 'quit' Enter
 | `preset low\|medium\|high\|ultra\|cinematic` | quality preset; forces render scale 1 |
 | `day <0..1>` / `rain on\|off` | time of day (.33 noon, .6 sunset, .84 night) / weather |
 | `hold <KeyCode> <ms>`, `press <key>`, `click <selector>` | input (`KeyW` forward, `Space` jump, `KeyT` advance the hour after `start`) |
-| `cvar <name> [value]` | read/set engine console variables: `r.TAA`, `r.GI`, `r.GTAO`, `r.Upscale`, `r.ViewMode lit\|ao\|depth\|bloom\|ssgi\|unlit\|lighting`, … |
+| `cvar <name> [value]` | read/set engine console variables: `r.TAA`, `r.GI`, `r.GTAO`, `r.Upscale`, `r.LocalExposure`, `r.ViewMode lit\|ao\|depth\|bloom\|ssgi\|unlit\|lighting\|localexposure`, … (booleans take 0/1, true/false, on/off) |
 | `state` / `stats` | player position and collected stones / engine version, modules, draw calls, pipeline passes |
-| `eval <js>` | evaluate in the page (`demo`, `KitsuneEngine`, `THREE`) |
+| `eval <js>` | evaluate in the page (`demo`, `KitsuneEngine`, `THREE`). `demo` also exposes `forest`, `fur`, `foxGait`, `guide` (AI wisp: `guide.tree.debugString()`), `vfx`, `physics`, `props`, `sound`, `surfaceWeather`, `world`, `editor` |
+| `press F8` / `press Backquote` | open the level editor / the developer console |
 | `viewport <w> <h>`, `wait <ms>`, `errors`, `quit` | resize, pause, list page/console errors and any network requests (should be none) |
 
 ## Engine modules without the game (direct invocation)
@@ -78,8 +79,10 @@ tmux send-keys -t ke 'quit' Enter
 Most engine changes land in `source/src/modules/NN-name.js`. `source/scripts/harness.cjs` loads Three, the add-ons, `src/core.js` and chosen module files (not the bundle) in headless Chromium; each `test_<module>.cjs` uses it. `--shots` writes screenshots to `source/.test-output/`:
 
 ```bash
-node source/scripts/test_water.cjs --shots     # also: test_pipeline, test_sky, test_shadows, test_gi
+node source/scripts/test_water.cjs --shots     # also: test_pipeline, test_sky, test_shadows, test_gi (--half: no float blending), test_weather
 ```
+
+The other modules have their own suites (`test_materials`, `test_foliage`, `test_geometry`, `test_world`, `test_physics`, `test_vfx`, `test_animation`, `test_ai`, `test_audio`, `test_editor`); each writes screenshots to `source/.test-output/`. Showcase pages for single systems are in `source/examples/src/*-demo.html`; build one with `python3 source/scripts/build.py source/examples/src/physics-demo.html /tmp/physics.html` and `launch /tmp/physics.html` (the driver waits for `window.demo` or an error card, so for these pages use `eval` and `ss` after launch times out, or open them through the harness).
 
 ## Run (human path)
 
@@ -88,6 +91,8 @@ Open `spirit-isle.html` from disk in a desktop browser with WebGL2 — it runs f
 ## Test
 
 ```bash
+node source/scripts/test_all.cjs                       # every suite in sequence (~30+ min under SwiftShader); writes verification.json
+node source/scripts/test_all.cjs --only core,build,pipeline --out /tmp/v.json   # a subset
 node source/scripts/test_core.cjs                      # 22 core tests (Node only)
 python3 source/scripts/test_build.py                   # 5 builder tests
 node source/scripts/test_browser.cjs spirit-isle.html /tmp/kitsune-browser   # full game in Chromium, ~3 min; prints JSON, exits 1 on failure
@@ -108,6 +113,7 @@ NODE_PATH=/tmp/kitsune-npm/node_modules node source/scripts/test_resources.cjs
 
 ## Troubleshooting
 
+- **A browser suite hangs or times out**: another suite or agent is probably using the CPUs; SwiftShader is CPU-bound. Run suites one at a time (`test_all.cjs` does) and close stray `headless_shell` processes (`pkill -f headless_shell`).
 - **`TypeError: renderer.getContext is not a function` from `test_demo.cjs`**: that test drives the old 2.x starter with a CPU renderer stub; the v3 starter's pipeline needs a real WebGL context. Use `test_browser.cjs` for the game.
 - **`GAME ERROR (page error while loading): Identifier 'stoneMat' has already been declared`**: the starter is one script scope, and new top-level `const`s collide with names in the scenery block (`stoneMat` and `sceneryBatch` both bit us). Rename yours and rebuild.
 - **`launch` reports `GAME ERROR` but you expected a warning only**: any uncaught exception during loading ends the wait; the page stays open, so `errors`, `eval` and `ss` still work to inspect it.
