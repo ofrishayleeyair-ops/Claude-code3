@@ -177,7 +177,7 @@ void main(){vec2 c=texture2D(tCur,vec2(.5)).rg;float cur=c.x/max(c.y,1e-5);float
 /* Final: exposure, bloom, white balance, saturation/contrast, ACES, lift/gamma/gain, lens effects, debug views. */
 const FINAL_FS=`uniform sampler2D tInput;uniform sampler2D tBloom;uniform sampler2D tExposure;uniform sampler2D tAO;uniform sampler2D tGI;uniform sampler2D tDepth;uniform sampler2D tScene;
 uniform float uAuto;uniform float uManual;uniform float uComp;uniform float uKey;uniform vec2 uExpRange;uniform float uBloom;uniform vec3 uWB;uniform float uSat;uniform float uContrast;uniform vec3 uLift;uniform vec3 uGamma;uniform vec3 uGain;
-uniform float uVignette;uniform float uGrain;uniform float uCA;uniform float uSharpen;uniform vec2 uTexel;uniform float uTime;uniform float uEncode;uniform int uDebug;uniform float uNear;uniform float uFar;varying vec2 vUv;
+uniform float uVignette;uniform float uGrain;uniform float uCA;uniform float uFlare;uniform float uSharpen;uniform vec2 uTexel;uniform float uTime;uniform float uEncode;uniform int uDebug;uniform float uNear;uniform float uFar;varying vec2 vUv;
 ${KE.GLSL.color}
 float ign(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))));}
 float linz(float d){return uNear*uFar/(uFar-d*(uFar-uNear));}
@@ -185,6 +185,8 @@ void main(){vec2 uv=vUv;vec3 c;
  if(uCA>0.){vec2 dir=(uv-.5)*uCA*.012;c=vec3(texture2D(tInput,uv+dir).r,texture2D(tInput,uv).g,texture2D(tInput,uv-dir).b);}else c=texture2D(tInput,uv).rgb;
  if(uSharpen>0.){vec3 n=texture2D(tInput,uv+vec2(0.,uTexel.y)).rgb+texture2D(tInput,uv-vec2(0.,uTexel.y)).rgb+texture2D(tInput,uv+vec2(uTexel.x,0.)).rgb+texture2D(tInput,uv-vec2(uTexel.x,0.)).rgb;c=max(c+(c*4.-n)*uSharpen*.25,c*.5);}
  c+=texture2D(tBloom,uv).rgb*uBloom;
+ if(uFlare>0.){vec2 fuv=1.-uv,gv=(vec2(.5)-fuv)*.38;vec3 fl=vec3(0.);for(int i=1;i<5;i++){vec2 o=fract(fuv+gv*float(i));float w=pow(max(1.-length(vec2(.5)-o)/.7071,0.),5.);vec3 tint=mix(vec3(1.,.72,.45),vec3(.5,.75,1.),fract(float(i)*.37));fl+=texture2D(tBloom,o).rgb*w*tint;}
+  vec2 hv=normalize(gv+1e-5)*.46;vec2 ho=fract(fuv+hv);float hw=pow(max(1.-length(vec2(.5)-ho)/.7071,0.),5.);fl+=texture2D(tBloom,ho).rgb*hw*vec3(.8,.9,1.)*.6;c+=fl*uFlare;}
  float ex=uAuto>.5?clamp(uKey/exp2(texture2D(tExposure,vec2(.5)).r),uExpRange.x,uExpRange.y):uManual;c*=ex*exp2(uComp)*uWB;
  if(uDebug==1||uDebug==2){c=uDebug==1?vec3(texture2D(tAO,uv).r):vec3(fract(log2(linz(texture2D(tDepth,uv).x))*.5));gl_FragColor=vec4(uEncode>.5?keLinearToSRGB(c):c,1.);return;}
  if(uDebug==3)c=texture2D(tBloom,uv).rgb*uBloom*ex*4.;else if(uDebug==4)c=texture2D(tGI,uv).rgb*ex;else if(uDebug==5)c=texture2D(tScene,uv).rgb*ex;else if(uDebug==6)c=vec3(keLuma(c));
@@ -206,7 +208,7 @@ KE.Pipeline=class{
     this.THREE=THREE;this.renderer=renderer;this.caps=KE.capabilities(renderer);const caps=this.caps;
     this.hdr=caps.halfRT&&o.hdr!==false;this.hdrType=this.hdr?THREE.HalfFloatType:THREE.UnsignedByteType;this.depthOK=caps.depthTexture;
     this.enabled=true;this.frame=0;this.historyValid=false;this.size=[0,0];this.internal=[0,0];this.targets=[];this.stats={passes:0,ms:0};
-    this.options={taa:true,taaBlend:.1,upscale:1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,
+    this.options={taa:true,taaBlend:.1,upscale:1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,lensFlare:.035,
       autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,fxaa:true,sharpen:.18,
       fog:{enabled:true,density:.012,falloff:.12,height:0,start:4,maxOpacity:.9,color:new THREE.Color(.55,.66,.78),inscatter:1.2,inscatterExponent:12,sky:.35,replaceSceneFog:true},
       volumetrics:true,shaftStrength:.25,volumetricFog:{enabled:true,density:.012,falloff:.22,height:0,anisotropy:.45,intensity:1,maxDistance:50,steps:20},dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
@@ -241,7 +243,7 @@ KE.Pipeline=class{
       volume:M(VOLUME_FS,{...depthU(),tShadow0:{value:null},tShadow1:{value:null},tShadow2:{value:null},tShadow3:{value:null},uShadowM0:{value:new THREE.Matrix4()},uShadowM1:{value:new THREE.Matrix4()},uShadowM2:{value:new THREE.Matrix4()},uShadowM3:{value:new THREE.Matrix4()},uSplits:{value:new THREE.Vector4()},uCascades:{value:0},
         uInvView:{value:new THREE.Matrix4()},uCamPos:{value:new THREE.Vector3()},uSunDir:{value:new THREE.Vector3(0,1,0)},uSunColor:{value:new THREE.Color()},uDensity:{value:.02},uFalloff:{value:.15},uHeight:{value:0},uG:{value:.6},uMaxDist:{value:60},uFrame:{value:0}},{STEPS:20}),
       final:M(FINAL_FS,{tInput:{value:null},tBloom:{value:null},tExposure:{value:null},tAO:{value:null},tGI:{value:null},tDepth:{value:null},tScene:{value:null},uAuto:{value:1},uManual:{value:1},uComp:{value:0},uKey:{value:.2},uExpRange:{value:new THREE.Vector2(.25,4)},
-        uBloom:{value:.05},uWB:{value:new THREE.Vector3(1,1,1)},uSat:{value:1},uContrast:{value:1},uLift:{value:new THREE.Vector3()},uGamma:{value:new THREE.Vector3(1,1,1)},uGain:{value:new THREE.Vector3(1,1,1)},uVignette:{value:.2},uGrain:{value:.01},uCA:{value:0},uSharpen:{value:0},
+        uBloom:{value:.05},uFlare:{value:0},uWB:{value:new THREE.Vector3(1,1,1)},uSat:{value:1},uContrast:{value:1},uLift:{value:new THREE.Vector3()},uGamma:{value:new THREE.Vector3(1,1,1)},uGain:{value:new THREE.Vector3(1,1,1)},uVignette:{value:.2},uGrain:{value:.01},uCA:{value:0},uSharpen:{value:0},
         uTexel:{value:new THREE.Vector2()},uTime:{value:0},uEncode:{value:1},uDebug:{value:0},uNear:{value:.1},uFar:{value:1000}}),
       fxaa:M(FXAA_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()}}),
     };
@@ -346,7 +348,7 @@ KE.Pipeline=class{
         const ad=this.m.adapt,ai=this.frame&1;ad.uniforms.tCur.value=this.lumTargets[3].texture;ad.uniforms.tPrev.value=this.adapt[ai^1].texture;ad.uniforms.uDt.value=clamp(dt,0,.25);ad.uniforms.uUp.value=o.adaptUp;ad.uniforms.uDown.value=o.adaptDown;ad.uniforms.uValid.value=this.adaptValid?1:0;this.pass(ad,this.adapt[ai]);this.adaptValid=true;expTex=this.adapt[ai].texture;}
       // 11. Final grade to the screen (or through FXAA).
       const fm=this.m.final,fu=fm.uniforms,g=o.grading;fu.tInput.value=current.texture;fu.tBloom.value=bloomTex;fu.tExposure.value=expTex;fu.tAO.value=o.gtao?this.ao[0].texture:this._white;fu.tGI.value=giTex;fu.tDepth.value=this.scene.depthTexture;fu.tScene.value=this.colorCopy.texture;
-      fu.uAuto.value=o.autoExposure?1:0;fu.uManual.value=o.exposure*(R.toneMappingExposure||1);fu.uComp.value=o.exposureCompensation;fu.uKey.value=o.exposureKey;fu.uExpRange.value.set(o.minExposure,o.maxExposure);fu.uBloom.value=o.bloom?o.bloomStrength:0;
+      fu.uAuto.value=o.autoExposure?1:0;fu.uManual.value=o.exposure*(R.toneMappingExposure||1);fu.uComp.value=o.exposureCompensation;fu.uKey.value=o.exposureKey;fu.uExpRange.value.set(o.minExposure,o.maxExposure);fu.uBloom.value=o.bloom?o.bloomStrength:0;fu.uFlare.value=o.bloom?o.lensFlare:0;
       fu.uWB.value.copy(this.whiteBalance(g.temperature,g.tint));fu.uSat.value=g.saturation;fu.uContrast.value=g.contrast;fu.uLift.value.fromArray(g.lift);fu.uGamma.value.fromArray(g.gamma);fu.uGain.value.fromArray(g.gain);fu.uVignette.value=g.vignette;fu.uGrain.value=g.grain;fu.uCA.value=g.chromaticAberration;
       fu.uSharpen.value=o.taa?o.sharpen*(IW<W?1.6:1):0;fu.uTexel.value.copy(dtexel);fu.uTime.value=(fu.uTime.value+dt)%1000;fu.uEncode.value=R.outputEncoding===T.sRGBEncoding?1:0;fu.uDebug.value=DEBUG_VIEWS[o.debugView]||0;fu.uNear.value=near;fu.uFar.value=far;
       if(o.fxaa){this.pass(fm,this.ldr);this.m.fxaa.uniforms.tSrc.value=this.ldr.texture;this.m.fxaa.uniforms.uTexel.value.copy(dtexel);this.pass(this.m.fxaa,prevTarget);}else this.pass(fm,prevTarget);
