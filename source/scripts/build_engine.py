@@ -32,8 +32,14 @@ THREE_ADDONS = [
 ]
 
 
+MODULE_FILTER = None
+
+
 def module_files():
-    return sorted((SRC / 'modules').glob('*.js'))
+    files = sorted((SRC / 'modules').glob('*.js'))
+    if MODULE_FILTER:
+        files = [f for f in files if any(f.name.startswith(prefix) for prefix in MODULE_FILTER)]
+    return files
 
 
 def engine_source() -> str:
@@ -83,7 +89,11 @@ def write(path: Path, text: str):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--engine-only', action='store_true', help='rebuild kitsune-engine.js only')
+    parser.add_argument('--modules', help='comma-separated module filename prefixes to include (development builds)')
     args = parser.parse_args()
+    global MODULE_FILTER
+    if args.modules:
+        MODULE_FILTER = [m.strip() for m in args.modules.split(',') if m.strip()]
     outputs = [('kitsune-engine.js', engine_source)]
     if not args.engine_only:
         outputs += [('three-addons.js', addons_source), ('kitsune-libs.js', libs_source)]
