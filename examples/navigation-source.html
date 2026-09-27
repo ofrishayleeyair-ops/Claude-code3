@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Kitsune v2 · One Gap</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#193442;color:#f8f5e9;font-family:system-ui,sans-serif}canvas{display:block;width:100%;height:100%;touch-action:none}button,select{font:inherit;min-height:44px;border:1px solid #8eb2b5;background:#193442;color:#fff;border-radius:9px;padding:8px 14px;cursor:pointer}button:focus-visible,select:focus-visible{outline:3px solid #ffd467;outline-offset:3px}.hud{position:fixed;z-index:8;top:max(16px,env(safe-area-inset-top));left:16px;right:16px;pointer-events:none;display:flex;justify-content:space-between;gap:16px}.card{padding:14px 18px;border:1px solid #ffffff30;background:#163340e8;border-radius:14px;max-width:440px}.card h1{font-size:21px;margin:0 0 7px}.card p{font-size:12px;line-height:1.5;margin:5px 0}.actions{display:flex;gap:8px;pointer-events:auto;align-items:start}.primary{background:#efc55d;color:#23313b;border-color:#efc55d}.help{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);font-size:11px;max-width:50%;text-align:center;pointer-events:none;text-shadow:0 1px 5px #000}#settings{position:fixed;z-index:12;inset:50% auto auto 50%;transform:translate(-50%,-50%);width:min(390px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;box-shadow:0 20px 100px #0008;pointer-events:auto}#settings h2{margin:0 0 18px;font-size:20px}#settings label{display:block;margin:14px 0}#settings select{width:100%;margin-top:8px}#settings .actions{flex-wrap:wrap}#settings p{color:#d5e0dc}#settings[hidden]{display:none}#message{min-height:2.8em}#error{position:fixed;z-index:20;inset:16px;background:#17313e;padding:26px;overflow:auto}#error[hidden]{display:none}.ke-stick{bottom:42px;width:96px;height:96px}.ke-jump{bottom:42px;width:64px;height:64px}
+@media(max-width:580px){.hud{gap:8px}.card{padding:11px 12px}.card h1{font-size:17px}.card p{font-size:11px}.actions{flex-direction:column}button{padding:8px 10px;font-size:12px}#settings .actions{flex-direction:row}.help{bottom:8px;font-size:9px;max-width:42%}.intro{display:none}}
+@media(max-height:430px){.intro{display:none}.hud{top:8px}.card{padding:8px 12px}.card h1{font-size:16px}.ke-stick{bottom:20px}.ke-jump{bottom:20px}}
+</style></head><body>
+<div class="hud"><section class="card"><h1>One Gap <small>· Kitsune v2</small></h1><p class="intro">Guide the cube to the gold target.<br>The blue grid route crosses the wall’s only gap.</p><p id="status" role="status">Ready. Follow the route or steer manually.</p></section><div class="actions"><button id="navigate" class="primary">Follow route</button><button id="open-settings" aria-controls="settings" aria-expanded="false">Settings</button></div></div>
+<div class="help">WASD / arrows · Space to jump<br>Drag to look · Wheel / pinch to zoom<br>Touch: left stick + right drag + jump</div>
+<section id="settings" class="card" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden><h2 id="settings-title">Paused</h2><label>Graphics quality<select id="quality"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label><p>Quality changes rendering resolution and shadows immediately.</p><div class="actions"><button id="save">Save</button><button id="load">Load</button><button id="reset">Reset</button></div><p id="message" role="status" aria-live="polite">Progress saves on this device.</p><button id="resume" class="primary">Resume play</button></section>
+<div id="error" hidden role="alert"></div>
+<!--THREE-->
+<!--KITSUNE-->
+<script id="game-core">
+/* Game-specific model. KE owns the fixed-step loop, terrain, physics, A*, and storage. */
+window.createGridExample=function(KE,T){
+  const width=13,height=9,wallX=6,gapZ=6,start=[1,1],goal=[11,1],radius=.25;
+  const world=(x,z)=>({x:x+1,z:z+1});
+  const cell=(x,z)=>[Math.floor(x-.5),Math.floor(z-.5)];
+  const walkable=(x,z)=>x>=0&&x<width&&z>=0&&z<height&&(x!==wallX||z===gapZ);
+  const solid=(x,z)=>!walkable(...cell(x,z));
+  const clear=(x,z)=>[[0,0],[radius,0],[-radius,0],[0,radius],[0,-radius]].every(([dx,dz])=>!solid(x+dx,z+dz));
+  const terrainMaterial=new T.MeshLambertMaterial({color:0x588d78});
+  const terrain=KE.terrain(T,{w:width+1,h:height+1,sub:2,chunk:8,
+    height:(i,j)=>.035*i+.11*Math.sin(j*.6)*Math.cos(i*.35),
+    weights:()=>[1,0,0,0,0,0,0,0],material:terrainMaterial});
+  const ground=terrain.heightAt,spawn=world(...start),target=world(...goal);
+  const player=KE.Physics.body({...spawn,y:ground(spawn.x,spawn.z)+radius,r:radius,height:.5,friction:0,airDrag:0});
+  const store=new KE.SaveStore('kitsune-v2-one-gap-example',1);
+  let path=[],index=0,autopilot=false,arrived=false;
+  const plan=()=>{path=KE.findPath({width,height,start:cell(player.x,player.z),goal,walkable});index=0;return path.length>0;};
+  function follow(){autopilot=plan();arrived=false;return autopilot;}
+  function step(dt,manual={x:0,z:0},jump=false){
+    let vx=0,vz=0;
+    if(Math.hypot(manual.x,manual.z)>.01){autopilot=false;arrived=false;vx=manual.x*2.4;vz=manual.z*2.4;}
+    else if(autopilot){
+      while(index<path.length){const p=world(...path[index]),dx=p.x-player.x,dz=p.z-player.z,d=Math.hypot(dx,dz);if(d<.035){index++;continue;}const speed=Math.min(2.2,d/dt);vx=dx/d*speed;vz=dz/d*speed;break;}
+      if(index===path.length)autopilot=false;
+    }
+    player.vx=vx;player.vz=vz;
+    if(jump&&player.grounded){player.vy=5.5;player.grounded=false;}
+    KE.Physics.step([player],dt,solid,ground);
+    if(Math.hypot(player.x-target.x,player.z-target.z)<.08&&player.grounded){arrived=true;autopilot=false;}
+  }
+  const snapshot=()=>({x:player.x,z:player.z,autopilot,arrived});
+  const valid=s=>s&&Number.isFinite(s.x)&&Number.isFinite(s.z)&&typeof s.autopilot==='boolean'&&typeof s.arrived==='boolean'&&clear(s.x,s.z)&&(!s.arrived||Math.hypot(s.x-target.x,s.z-target.z)<.08);
+  function restore(s){if(!valid(s))return false;Object.assign(player,{x:s.x,z:s.z,y:ground(s.x,s.z)+radius,vx:0,vy:0,vz:0,grounded:true});arrived=s.arrived;plan();autopilot=s.autopilot&&path.length>0&&!arrived;return true;}
+  function save(){return store.save('main',snapshot());}
+  function load(){const result=store.load('main',{validate:valid});if(result.ok&&result.found)restore(result.data);return result;}
+  function reset(){restore({...spawn,autopilot:false,arrived:false});}
+  plan();
+  return{width,height,wallX,gapZ,start,goal,world,cell,walkable,solid,clear,terrain,terrainMaterial,ground,player,target,step,follow,snapshot,valid,restore,save,load,reset,
+    get path(){return path;},get autopilot(){return autopilot;},get arrived(){return arrived;},get waypoint(){return index;},
+    dispose(){terrain.dispose();terrainMaterial.dispose();}};
+};
+</script>
+<script id="game-ui">
+(()=>{'use strict';
+const KE=window.KitsuneEngine,T=window.THREE,$=id=>document.getElementById(id);
+const fail=error=>{console.error(error);$('error').hidden=false;$('error').textContent='The game could not run: '+String(error.message||error)+'. Open this self-contained HTML in a browser with WebGL enabled.';};
+try{
+KE.applyPreset('medium',{auto:false});
+const renderer=new T.WebGLRenderer({antialias:true});document.body.prepend(renderer.domElement);renderer.setSize(innerWidth,innerHeight);renderer.toneMapping=T.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
+const scene=new T.Scene();scene.background=new T.Color(0xbddad9);
+const camera=new T.PerspectiveCamera(55,innerWidth/innerHeight,.1,120),sun=new T.DirectionalLight(0xfff0d2,1.15),hemi=new T.HemisphereLight(0xd3edff,0x385944,.85);
+sun.position.set(2,18,8);sun.target.position.set(7,0,5);Object.assign(sun.shadow.camera,{left:-15,right:15,top:15,bottom:-15,near:1,far:50});sun.shadow.bias=-.0006;sun.shadow.normalBias=.03;scene.add(sun,sun.target,hemi);
+const model=window.createGridExample(KE,T);model.terrain.forEach(m=>scene.add(m));
+function mesh(geometry,material,x,y,z){const m=new T.Mesh(geometry,material);m.position.set(x,y,z);m.castShadow=m.receiveShadow=true;scene.add(m);return m;}
+const wallMaterial=new T.MeshLambertMaterial({color:0x374f61}),wallGeometry=new T.BoxGeometry(1,1.35,1),cubeMaterial=new T.MeshLambertMaterial({color:0xfbede0});
+for(let z=0;z<model.height;z++)if(z!==model.gapZ){const p=model.world(model.wallX,z);mesh(wallGeometry,wallMaterial,p.x,model.ground(p.x,p.z)+.675,p.z);}
+const cube=mesh(new T.BoxGeometry(.5,.5,.5),cubeMaterial,0,0,0);
+const target=mesh(new T.TorusGeometry(.35,.065,6,24),new T.MeshBasicMaterial({color:0xffd35e}),model.target.x,model.ground(model.target.x,model.target.z)+.1,model.target.z);target.rotation.x=-Math.PI/2;
+const flag=mesh(new T.OctahedronGeometry(.23,0),new T.MeshLambertMaterial({color:0xffd35e,emissive:0x5b3900}),model.target.x,model.ground(model.target.x,model.target.z)+.72,model.target.z);
+const gridPositions=[];for(let z=0;z<model.height;z++)for(let x=0;x<model.width;x++)if(model.walkable(x,z)){const p=model.world(x,z);for(const [dx,dz] of [[.35,0],[-.35,0],[0,.35],[0,-.35]])gridPositions.push(p.x+dx,model.ground(p.x+dx,p.z+dz)+.015,p.z+dz);}
+const gridGeometry=new T.BufferGeometry();gridGeometry.setAttribute('position',new T.Float32BufferAttribute(gridPositions,3));scene.add(new T.LineSegments(gridGeometry,new T.LineBasicMaterial({color:0xa9c6b1,transparent:true,opacity:.24})));
+let route=null;const routeMaterial=new T.LineBasicMaterial({color:0x87e8fa});
+function drawRoute(){if(route){scene.remove(route);route.geometry.dispose();}const points=model.path.map(([x,z])=>{const p=model.world(x,z);return new T.Vector3(p.x,model.ground(p.x,p.z)+.045,p.z);});route=new T.Line(new T.BufferGeometry().setFromPoints(points),routeMaterial);scene.add(route);}
+drawRoute();
+const input=new KE.Input(renderer.domElement),follow=new KE.FollowCamera(T,camera,{distance:14,yaw:.3,pitch:.9,height:0,minDistance:5,maxDistance:25});
+let loop,disposed=false,contextLost=false;const panel=$('settings');
+function resize(){renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();if(loop&&loop.paused)render(0,0,loop.time);}
+function quality(){KE.applyRendererSettings(T,renderer,camera,sun,scene);resize();}
+function render(alpha,dt,time){cube.position.set(model.player.x,model.player.y,model.player.z);const look=input.consumeLook();follow.rotate(look.x,look.y);follow.zoom(look.zoom);follow.update(model.player,dt,model.ground);flag.rotation.y=time;flag.position.y=model.ground(model.target.x,model.target.z)+.72+Math.sin(time*2)*.08;cubeMaterial.color.setHex(model.arrived?0xffd35e:0xfbede0);renderer.render(scene,camera);}
+function status(){const text=model.arrived?'Target reached! Reset to try again.':model.autopilot?'Following the grid route through the gap…':'Ready. Follow the route or steer manually.';if($('status').textContent!==text)$('status').textContent=text;}
+loop=new KE.Loop({onError:fail,update(dt){const axes=input.movement(),move=follow.movement(axes.x,axes.z);model.step(dt,move,input.consume('Space'));status();},render});
+function setPanel(open){panel.hidden=!open;$('open-settings').setAttribute('aria-expanded',String(open));input.setEnabled(!open&&!contextLost);loop.pause(open||contextLost);(open?$('resume'):$('open-settings')).focus();}
+$('navigate').onclick=()=>{if(!panel.hidden||contextLost)return;model.follow();drawRoute();status();};
+$('open-settings').onclick=()=>setPanel(panel.hidden);$('resume').onclick=()=>setPanel(false);
+$('quality').value='medium';$('quality').onchange=()=>{KE.applyPreset($('quality').value,{auto:false});quality();};
+$('save').onclick=()=>{const r=model.save();$('message').textContent=r.ok?'Progress saved on this device.':'Save failed: '+r.error;};
+$('load').onclick=()=>{const r=model.load();$('message').textContent=!r.ok?'Load failed: '+r.error:!r.found?'No saved progress yet.':'Progress restored.';if(r.ok&&r.found){follow.initialized=false;drawRoute();status();render(0,0,loop.time);}};
+$('reset').onclick=()=>{model.reset();follow.initialized=false;drawRoute();status();render(0,0,loop.time);$('message').textContent='Cube returned to its starting cell.';};
+const keys=e=>{if(e.code==='Escape'){e.preventDefault();setPanel(panel.hidden);}if(e.code==='Tab'&&!panel.hidden){const focusable=[...panel.querySelectorAll('button,select')],first=focusable[0],last=focusable[focusable.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}};
+const lost=e=>{e.preventDefault();contextLost=true;loop.pause();input.setEnabled(false);$('status').textContent='Graphics paused while the browser restores WebGL.';};
+const restored=()=>{contextLost=false;quality();input.setEnabled(panel.hidden);loop.pause(!panel.hidden);status();};
+window.addEventListener('resize',resize);window.addEventListener('keydown',keys);renderer.domElement.addEventListener('webglcontextlost',lost);renderer.domElement.addEventListener('webglcontextrestored',restored);
+function dispose(){if(disposed)return;disposed=true;loop.dispose();input.dispose();window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);renderer.domElement.removeEventListener('webglcontextlost',lost);renderer.domElement.removeEventListener('webglcontextrestored',restored);window.removeEventListener('pagehide',pagehide);model.terrain.dispose();KE.disposeObject(scene);model.terrainMaterial.dispose();renderer.dispose();renderer.domElement.remove();}
+const pagehide=e=>{if(!e.persisted)dispose();};window.addEventListener('pagehide',pagehide);
+quality();loop.start();
+// Expose state for inspection without starting any second animation loop.
+window.gridExample={model,loop,input,follow,renderer,dispose};
+}catch(error){fail(error);}
+})();
+</script></body></html>

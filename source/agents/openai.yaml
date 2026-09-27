@@ -1,0 +1,14 @@
+interface:
+  display_name: kitsune enginev2
+  short_description: Build offline 3D games with touch controls and saves
+  default_prompt: Use $kitsune-enginev2 to build a polished offline mobile game with
+    touch controls.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

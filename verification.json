@@ -1,0 +1,58 @@
+{
+  "product": "kitsune enginev2",
+  "runtime_version": "2.1.0",
+  "visual_edition": "Verdant",
+  "three_revision": "128",
+  "core_checks": 22,
+  "build_checks": 5,
+  "navigation_example_checks": 13,
+  "visual_resource_checks": 17,
+  "native_shader_programs": 8,
+  "shader_environment": "Mesa llvmpipe OpenGL ES through native EGL; full browser renderer not exercised",
+  "cpu_resource_checks": "Passed textures, material hooks, sky, water, grass, particles, camera, input and lifecycle checks",
+  "demo_cpu_checks": [
+    "Complete scene construction",
+    "Fixed-step keyboard movement",
+    "All quality presets",
+    "Night and rain state",
+    "Finite geometry",
+    "Static batch reduction",
+    "Scene disposal"
+  ],
+  "static_scenery_batching": {
+    "source_meshes": 217,
+    "batches": 24,
+    "draw_calls_saved": 193
+  },
+  "browser_status": "Not run; full rendered scene, mobile controls and FPS remain unverified",
+  "limitations": [
+    "UE5 feature or visual equivalence has not been established",
+    "No measured performance multiplier",
+    "Upright actor and height-field physics",
+    "Static grid navigation",
+    "Baked terrain-depth water and static sky IBL",
+    "HDR and depth effects depend on GPU extensions"
+  ],
+  "sha256": {
+    "SKILL.md": "9c548e6bc28466d7f0d71a9c2807a17f607a9a278b84fa67fde0336a4a6efd13",
+    "assets/starter.html": "8e1b81fc64e9a4baaea0f9094dcd03905790203901f7813ed81b239279f1ab65",
+    "assets/icon.svg": "8936b24f674a1250d999e2c2b5901374fb4240426f32bd1ae340c352a90d617d",
+    "assets/surface-atlas.png": "9173b0355619d0cc049fe017335113f99dd1e2e2e38b0f2ff9c373ef524d6b7e",
+    "assets/kitsune-engine.js": "547be6633279426af20fae21fd10984d00073276a0a0d33f315f96bcc619382a",
+    "assets/THIRD_PARTY_LICENSES.txt": "b398918bcfa0ed20be5628b88c174abbb1a35c4fd9557298ea2bc0f7a6eca8e1",
+    "assets/three.min.js": "9274bbcec8d96168626c732b5d31c775aa8cfb7eaa0599bec0c175908a2c1ce2",
+    "agents/openai.yaml": "ae37966048031e154a71b21a9f4816faa6225188bcbe63f75cbd8cebb93c3a84",
+    "references/runtime-api.md": "3eaa4ba9a195e01a3870e75ba1648d804e3196d7c3ea4f2c3afaf41e1889865e",
+    "references/rendering.md": "ce7396b35d2ae000d442748b8c93d275a2b596404d519c2ff0cdfa18340c3d6e",
+    "references/legacy-rendering.md": "33e027555e285089941ca40f951c87686dbe67f10165fc72b03e73c7a0fc0812",
+    "references/integration.md": "286bc5d4a8e9d0fc2232da9e9b7cdd1096afc96faee994763861ab0fc353d4db",
+    "references/visual-edition.md": "ae92fb5c6e8250d0d66a1aaddf43cdf26302b114e4b1dd11b883408f4bafbf96",
+    "scripts/test_resources.cjs": "7c5256d3733a5fea18966bd110130093e9946f44118747b61c37c87c9c217a2f",
+    "scripts/test_browser.cjs": "311d8e5bfdba05ef0b168d6a28469bd3793e4718a98324bf5d2720d9d872a80d",
+    "scripts/test_core.cjs": "118342ec36215413a99742a2bbbda0c41c9fcab210cb201f762e6603430bb9f6",
+    "scripts/test_demo.cjs": "ee28c8221970ed5dc591cd12db397a07036c2d57b59badd5f00e45c51d17e59d",
+    "scripts/test_visuals.cjs": "632dc3f7d4fbbdaa71a5eb172a1c8e68144fae1b46540ce2e6fe9ba1da625ffc",
+    "scripts/test_build.py": "548089fee2bed3b3c0bf3259329b03f4b50dccf623086394907f9a0528df378c",
+    "scripts/build.py": "eb214b277e0092701f0258b60b5450e9c8fda4caec3b1d2c14f9a3a834abc35a"
+  }
+}
