@@ -1,6 +1,6 @@
 {
   "enabledPlugins": {
-    "ecc@ecc": true
+    "ecc@ecc": false
   },
   "extraKnownMarketplaces": {
     "ecc": {
