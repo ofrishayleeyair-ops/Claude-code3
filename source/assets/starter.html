@@ -129,7 +129,7 @@ const tailCurve=new T.CatmullRomCurve3([new T.Vector3(0,0,0),new T.Vector3(.06,.
 const tailG=new T.TubeGeometry(tailCurve,24,.19,12,false);const pa=tailG.attributes.position;for(let i=0;i<=24;i++){const c=tailCurve.getPointAt(i/24),radius=Math.sin((i/24*.86+.09)*Math.PI)*.94+.08;for(let j=0;j<=12;j++){const k=i*13+j;pa.setXYZ(k,c.x+(pa.getX(k)-c.x)*radius,c.y+(pa.getY(k)-c.y)*radius,c.z+(pa.getZ(k)-c.z)*radius);}}tailG.computeVertexNormals();mesh(tailG,orange,0,0,0,foxTail);orb(.13,cream,.21,.44,.89,.7,1.12,1.12,foxTail);
 const whiskerPos=[];for(const side of [-1,1])for(let i=0;i<3;i++)whiskerPos.push(side*.12,.945-i*.017,-.735,side*(.31+i*.025),.955-i*.04,-.70);const whiskers=new T.BufferGeometry();whiskers.setAttribute('position',new T.Float32BufferAttribute(whiskerPos,3));hero.add(new T.LineSegments(whiskers,new T.LineBasicMaterial({color:0xe5d9bc,transparent:true,opacity:.54})));
 /* ---------- cascaded shadows for everything lit ---------- */
-csm=new KE.CascadedShadows(T,scene,{sun,maxFar:110,margin:40});csm.setupScene();csm.enabled=S.shadows;
+csm=new KE.CascadedShadows(T,scene,{sun,maxFar:110,margin:40});csm.setupScene();csm.enabled=S.shadows;pipeline.setShadowSource(csm);
 /* Probe-volume diffuse GI over the island: refreshed a probe per frame, nearest first. */
 const gi=new KE.ProbeVolume(T,renderer,scene,{bounds:new T.Box3(new T.Vector3(10,0,10),new T.Vector3(86,12,86)),spacing:7,heightAt:ground,faceSize:16,probesPerFrame:1});gi.tag(scene);gi.setupScene();
 

@@ -85,7 +85,7 @@ const LINEAR_DEPTH_FS=`${DEPTH_GLSL}varying vec2 vUv;void main(){float d=rawDept
 
 /* Lighting composite: AO, indirect bounce, exponential height fog with directional inscattering, light shafts. */
 const COMPOSITE_FS=`${DEPTH_GLSL}
-uniform sampler2D tColor;uniform sampler2D tAO;uniform sampler2D tGI;uniform sampler2D tShafts;uniform mat4 uInvView;uniform vec3 uCamPos;uniform vec2 uHalfTexel;
+uniform sampler2D tColor;uniform sampler2D tAO;uniform sampler2D tGI;uniform sampler2D tShafts;uniform sampler2D tVol;uniform float uVol;uniform mat4 uInvView;uniform vec3 uCamPos;uniform vec2 uHalfTexel;
 uniform float uAO;uniform float uGI;uniform float uShafts;uniform vec3 uShaftColor;
 uniform float uFog;uniform float uFogDensity;uniform float uFogFalloff;uniform float uFogHeight;uniform float uFogStart;uniform float uFogMax;uniform vec3 uFogColor;uniform vec3 uSunDir;uniform vec3 uSunColor;uniform float uInscatterExp;uniform float uInscatter;uniform float uFogSky;
 varying vec2 vUv;
@@ -101,6 +101,7 @@ void main(){vec3 c=texture2D(tColor,vUv).rgb;float d=rawDepth(vUv);
    vec3 inscatter=uFogColor+uSunColor*pow(max(dot(rd,uSunDir),0.),uInscatterExp)*uInscatter;c=c*T+inscatter*(1.-T);}
  }else if(uFog>0.&&uFogSky>0.){vec3 vp=viewPosAt(vUv,.9999);vec3 rd=normalize((uInvView*vec4(vp,0.)).xyz);float hz=1.-smoothstep(0.,.25,rd.y);vec3 inscatter=uFogColor+uSunColor*pow(max(dot(rd,uSunDir),0.),uInscatterExp)*uInscatter;c=mix(c,inscatter,hz*uFogSky*uFogMax);}
  if(uShafts>0.)c+=texture2D(tShafts,vUv).rgb*uShaftColor*uShafts;
+ if(uVol>0.)c+=texture2D(tVol,vUv).rgb*uVol;
  gl_FragColor=vec4(c,1.);}`;
 
 /* Light shafts: bright sky near the sun, radially blurred toward the sun's screen position (two chained passes). */
@@ -111,6 +112,20 @@ const SHAFT_BLUR_FS=`uniform sampler2D tSrc;uniform vec2 uSunUV;uniform float uS
 float ign(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))));}
 void main(){vec2 delta=(vUv-uSunUV)*uStep/24.;vec2 uv=vUv-delta*ign(gl_FragCoord.xy+uFrame);vec3 acc=vec3(0.);float decay=1.;
  for(int i=0;i<24;i++){acc+=texture2D(tSrc,uv).rgb*decay;decay*=.96;uv-=delta;}gl_FragColor=vec4(acc/12.,1.);}`;
+
+/* Shadowed volumetric fog: march the view ray through exponential height fog, testing sun visibility in the
+   cascaded shadow maps at each step, with a Henyey-Greenstein phase. Half resolution, jittered per frame. */
+const VOLUME_FS=`${DEPTH_GLSL}
+#include <packing>
+uniform sampler2D tShadow0;uniform sampler2D tShadow1;uniform sampler2D tShadow2;uniform sampler2D tShadow3;uniform mat4 uShadowM0;uniform mat4 uShadowM1;uniform mat4 uShadowM2;uniform mat4 uShadowM3;uniform vec4 uSplits;uniform float uCascades;
+uniform mat4 uInvView;uniform vec3 uCamPos;uniform vec3 uSunDir;uniform vec3 uSunColor;uniform float uDensity;uniform float uFalloff;uniform float uHeight;uniform float uG;uniform float uMaxDist;uniform float uFrame;varying vec2 vUv;
+float shadowAt(sampler2D m,mat4 M,vec3 p){vec4 c=M*vec4(p,1.);c.xyz/=c.w;if(c.x<0.||c.y<0.||c.x>1.||c.y>1.||c.z>1.)return 1.;return step(c.z,unpackRGBAToDepth(texture2D(m,c.xy))+.0015);}
+float visibility(vec3 p,float z){if(uCascades<.5)return 1.;if(z<uSplits.x)return shadowAt(tShadow0,uShadowM0,p);if(uCascades>1.5&&z<uSplits.y)return shadowAt(tShadow1,uShadowM1,p);if(uCascades>2.5&&z<uSplits.z)return shadowAt(tShadow2,uShadowM2,p);if(uCascades>3.5&&z<uSplits.w)return shadowAt(tShadow3,uShadowM3,p);return 1.;}
+void main(){vec2 uv=snapUV(vUv);float d=rawDepth(uv);vec3 vp=viewPosAt(uv,min(d,.99999));float dist=min(length(vp),uMaxDist);vec3 dirV=normalize(vp);vec3 dirW=normalize((uInvView*vec4(dirV,0.)).xyz);
+ float cosT=dot(dirW,uSunDir),g2=uG*uG,phase=.0795775*(1.-g2)/pow(max(1.+g2-2.*uG*cosT,1e-4),1.5);float stepLen=dist/float(STEPS);float j=ign(gl_FragCoord.xy+uFrame*7.13);
+ vec3 acc=vec3(0.);float T=1.;for(int i=0;i<STEPS;i++){float t=(float(i)+j)*stepLen;vec3 p=uCamPos+dirW*t;float dens=uDensity*exp(-uFalloff*max(p.y-uHeight,0.));float ext=dens*stepLen;
+  float vis=visibility(p,t*-dirV.z);acc+=T*vis*dens*stepLen;T*=exp(-ext);}
+ gl_FragColor=vec4(uSunColor*acc*phase,d>=1.?uFar:-vp.z);}`;
 
 /* Temporal AA: 3x3 YCoCg variance clipping, depth-dilated camera reprojection, Catmull-Rom history, Karis weighting. */
 const TAA_FS=`uniform sampler2D tCurrent;uniform sampler2D tHistory;uniform sampler2D tDepth;uniform mat4 uInvProjU;uniform mat4 uInvView;uniform mat4 uPrevViewProj;uniform vec2 uTexel;uniform vec2 uCurTexel;uniform float uBlend;uniform float uValid;varying vec2 vUv;
@@ -194,7 +209,7 @@ KE.Pipeline=class{
     this.options={taa:true,taaBlend:.1,upscale:1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,
       autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,fxaa:true,sharpen:.18,
       fog:{enabled:true,density:.012,falloff:.12,height:0,start:4,maxOpacity:.9,color:new THREE.Color(.55,.66,.78),inscatter:1.2,inscatterExponent:12,sky:.35,replaceSceneFog:true},
-      volumetrics:true,shaftStrength:.25,dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
+      volumetrics:true,shaftStrength:.25,volumetricFog:{enabled:true,density:.012,falloff:.22,height:0,anisotropy:.45,intensity:1,maxDistance:50,steps:20},dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
       grading:{saturation:1.05,contrast:1.04,temperature:0,tint:0,lift:[0,0,0],gamma:[1,1,1],gain:[1,1,1],vignette:.22,grain:.012,chromaticAberration:.15},sun:null,debugView:'lit'};
     this.set(o);
     this.uniforms=KE.sceneUniforms(THREE);this.quad=new KE.FullScreenQuad(THREE);
@@ -209,7 +224,7 @@ KE.Pipeline=class{
       blur:M(BILATERAL_FS,{tSrc:{value:null},uDir:{value:new THREE.Vector2()},uDepthChannel:{value:0}}),
       ssgi:M(SSGI_FS,{...depthU(),tPrevColor:{value:null},uProj:{value:new THREE.Matrix4()},uInvView:{value:new THREE.Matrix4()},uPrevViewProj:{value:this.prevViewProj},uFrame:{value:0},uGIRadius:{value:4}},{RAYS:2,STEPS:10}),
       ssgiTemporal:M(SSGI_TEMPORAL_FS,{...depthU(),tCurrent:{value:null},tHistory:{value:null},uInvView:{value:new THREE.Matrix4()},uPrevViewProj:{value:this.prevViewProj},uValid:{value:0}}),
-      composite:M(COMPOSITE_FS,{...depthU(),tColor:{value:null},tAO:{value:null},tGI:{value:null},tShafts:{value:null},uInvView:{value:new THREE.Matrix4()},uCamPos:{value:new THREE.Vector3()},uHalfTexel:{value:new THREE.Vector2()},
+      composite:M(COMPOSITE_FS,{...depthU(),tColor:{value:null},tAO:{value:null},tGI:{value:null},tShafts:{value:null},tVol:{value:null},uVol:{value:0},uInvView:{value:new THREE.Matrix4()},uCamPos:{value:new THREE.Vector3()},uHalfTexel:{value:new THREE.Vector2()},
         uAO:{value:0},uGI:{value:0},uShafts:{value:0},uShaftColor:{value:new THREE.Color(1,.9,.7)},uFog:{value:0},uFogDensity:{value:.01},uFogFalloff:{value:.1},uFogHeight:{value:0},uFogStart:{value:0},uFogMax:{value:1},
         uFogColor:{value:new THREE.Color()},uSunDir:{value:new THREE.Vector3(0,1,0)},uSunColor:{value:new THREE.Color()},uInscatterExp:{value:8},uInscatter:{value:1},uFogSky:{value:0}}),
       shaftMask:M(SHAFT_MASK_FS,{tColor:{value:null},tDepth:{value:null},uSunUV:{value:new THREE.Vector2()},uAspect:{value:1},uThreshold:{value:1}}),
@@ -223,6 +238,8 @@ KE.Pipeline=class{
       lum:M(LUM_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()}}),
       reduce:M(REDUCE_FS,{tSrc:{value:null},uTexel:{value:new THREE.Vector2()}}),
       adapt:M(ADAPT_FS,{tCur:{value:null},tPrev:{value:null},uDt:{value:.016},uUp:{value:2},uDown:{value:1},uValid:{value:0}}),
+      volume:M(VOLUME_FS,{...depthU(),tShadow0:{value:null},tShadow1:{value:null},tShadow2:{value:null},tShadow3:{value:null},uShadowM0:{value:new THREE.Matrix4()},uShadowM1:{value:new THREE.Matrix4()},uShadowM2:{value:new THREE.Matrix4()},uShadowM3:{value:new THREE.Matrix4()},uSplits:{value:new THREE.Vector4()},uCascades:{value:0},
+        uInvView:{value:new THREE.Matrix4()},uCamPos:{value:new THREE.Vector3()},uSunDir:{value:new THREE.Vector3(0,1,0)},uSunColor:{value:new THREE.Color()},uDensity:{value:.02},uFalloff:{value:.15},uHeight:{value:0},uG:{value:.6},uMaxDist:{value:60},uFrame:{value:0}},{STEPS:20}),
       final:M(FINAL_FS,{tInput:{value:null},tBloom:{value:null},tExposure:{value:null},tAO:{value:null},tGI:{value:null},tDepth:{value:null},tScene:{value:null},uAuto:{value:1},uManual:{value:1},uComp:{value:0},uKey:{value:.2},uExpRange:{value:new THREE.Vector2(.25,4)},
         uBloom:{value:.05},uWB:{value:new THREE.Vector3(1,1,1)},uSat:{value:1},uContrast:{value:1},uLift:{value:new THREE.Vector3()},uGamma:{value:new THREE.Vector3(1,1,1)},uGain:{value:new THREE.Vector3(1,1,1)},uVignette:{value:.2},uGrain:{value:.01},uCA:{value:0},uSharpen:{value:0},
         uTexel:{value:new THREE.Vector2()},uTime:{value:0},uEncode:{value:1},uDebug:{value:0},uNear:{value:.1},uFar:{value:1000}}),
@@ -252,10 +269,12 @@ KE.Pipeline=class{
     this.colorCopy=this.target(IW,IH);this.linearDepth=this.target(IW,IH,{type:this.caps.floatRT?T.FloatType:this.hdrType,format:this.caps.webgl2?T.RedFormat:T.RGBAFormat,filter:T.NearestFilter});
     this.lit=this.target(IW,IH);this.taa=[this.target(W,H),this.target(W,H)];this.post=[this.target(W,H),this.target(W,H)];this.ldr=this.target(W,H,{type:T.UnsignedByteType});
     this.ao=[this.target(w2,h2),this.target(w2,h2)];this.gi=[this.target(w2,h2),this.target(w2,h2)];this.giHist=[this.target(w2,h2),this.target(w2,h2)];
-    this.shafts=[this.target(w2,h2),this.target(w2,h2)];this.dofBlur=this.target(dw2,dh2);
+    this.shafts=[this.target(w2,h2),this.target(w2,h2)];this.vol=[this.target(w2,h2),this.target(w2,h2)];this.dofBlur=this.target(dw2,dh2);
     this.bloomMips=[];let bw=dw2,bh=dh2;for(let i=0;i<6&&bw>=4&&bh>=4;i++){this.bloomMips.push(this.target(bw,bh));bw>>=1;bh>>=1;}
     this.lumTargets=[64,16,4,1].map(n=>this.target(n,n,{type:this.caps.floatRT?T.FloatType:this.hdrType,filter:T.NearestFilter}));this.adapt=[0,1].map(()=>this.target(1,1,{type:this.caps.floatRT?T.FloatType:this.hdrType,filter:T.NearestFilter}));
     this.historyValid=false;this.adaptValid=false;this.giValid=false;}
+  /* Use a KE.CascadedShadows (or any object with lights[] and splits[]) for shadowed volumetric fog. */
+  setShadowSource(csm){this.shadowSource=csm||null;return this;}
   resetHistory(){this.historyValid=false;this.giValid=false;return this;}
   get textures(){return {sceneColor:this.colorCopy&&this.colorCopy.texture,sceneDepth:this.linearDepth&&this.linearDepth.texture,depth:this.scene&&this.scene.depthTexture,output:this.taa&&this.taa[this.frame&1].texture};}
   pass(material,target){this.quad.render(this.renderer,target,material);this.stats.passes++;}
@@ -296,10 +315,17 @@ KE.Pipeline=class{
         const facing=this._fwd.dot(this._sunWorld),vis=clamp((facing-.1)*2.5,0,1)*clamp(1-Math.max(Math.abs(s.x),Math.abs(s.y))*.45,0,1)*clamp(this._sunWorld.y*6,0,1);
         if(vis>.01){const sx=s.x*.5+.5,sy=s.y*.5+.5,mk=this.m.shaftMask;mk.uniforms.tColor.value=this.scene.texture;mk.uniforms.tDepth.value=this.scene.depthTexture;mk.uniforms.uSunUV.value.set(sx,sy);mk.uniforms.uAspect.value=IW/IH;mk.uniforms.uThreshold.value=this.hdr?1.5:.8;this.pass(mk,this.shafts[0]);
           const b=this.m.shaftBlur;b.uniforms.uSunUV.value.set(sx,sy);b.uniforms.uFrame.value=this.frame%64;b.uniforms.tSrc.value=this.shafts[0].texture;b.uniforms.uStep.value=.55;this.pass(b,this.shafts[1]);b.uniforms.tSrc.value=this.shafts[1].texture;b.uniforms.uStep.value=.22;this.pass(b,this.shafts[0]);shaftsOn=vis;}}
+      // 5b. Shadowed volumetric fog from the cascaded shadow maps.
+      let volOn=0;const vf=o.volumetricFog;if(o.volumetrics&&vf.enabled&&sun&&this.depthOK){const v=this.m.volume,vu=v.uniforms;this.bindDepth(v,near,far,texel);let nc=0;
+        const cs=this.shadowSource,lightsC=cs?cs.lights:[sun];for(let i=0;i<Math.min(4,lightsC.length);i++){const l=lightsC[i];if(!l.castShadow||!l.shadow||!l.shadow.map)break;vu['tShadow'+i].value=l.shadow.map.texture;vu['uShadowM'+i].value.copy(l.shadow.matrix);nc++;}
+        const sp=cs&&cs.splits&&cs.splits.length>1?cs.splits:[0,vf.maxDistance];vu.uSplits.value.set(sp[1]||1e9,sp[2]||1e9,sp[3]||1e9,sp[4]||1e9);if(!cs&&nc)vu.uSplits.value.x=1e9;vu.uCascades.value=R.shadowMap.enabled?nc:0;
+        vu.uInvView.value.copy(camera.matrixWorld);vu.uCamPos.value.setFromMatrixPosition(camera.matrixWorld);vu.uSunDir.value.copy(this._sunWorld);vu.uSunColor.value.copy(sun.color).multiplyScalar(sun.intensity*vf.intensity);
+        vu.uDensity.value=vf.density;vu.uFalloff.value=vf.falloff;vu.uHeight.value=vf.height;vu.uG.value=vf.anisotropy;vu.uMaxDist.value=vf.maxDistance;vu.uFrame.value=this.frame%64;if(v.defines.STEPS!==vf.steps){v.defines.STEPS=vf.steps;v.needsUpdate=true;}
+        if(vu.uSunColor.value.r+vu.uSunColor.value.g+vu.uSunColor.value.b>.01){this.pass(v,this.vol[0]);this.blur(this.vol,halfTexel,1);volOn=1;}}
       // 6. Lighting composite with height fog.
       const c=this.m.composite,cu=c.uniforms,f=o.fog;this.bindDepth(c,near,far,texel);cu.tColor.value=this.scene.texture;cu.tAO.value=o.gtao?this.ao[0].texture:this._white;cu.tGI.value=giTex;cu.tShafts.value=this.shafts[0].texture;cu.uInvView.value.copy(camera.matrixWorld);cu.uCamPos.value.setFromMatrixPosition(camera.matrixWorld);cu.uHalfTexel.value.copy(halfTexel);
-      cu.uAO.value=o.gtao?o.aoStrength:0;cu.uGI.value=o.ssgi?o.giStrength:0;cu.uShafts.value=shaftsOn*o.shaftStrength;cu.uFog.value=f.enabled&&this.depthOK?1:0;Object.assign(cu.uFogDensity,{value:f.density});cu.uFogFalloff.value=f.falloff;cu.uFogHeight.value=f.height;cu.uFogStart.value=f.start;cu.uFogMax.value=f.maxOpacity;cu.uFogColor.value.copy(f.color);
-      cu.uSunDir.value.copy(this._sunWorld.lengthSq()?this._sunWorld:this._v3.set(0,1,0));if(sun){cu.uSunColor.value.copy(sun.color).multiplyScalar(sun.intensity*(o.volumetrics?1:.35));cu.uShaftColor.value.copy(sun.color).multiplyScalar(sun.intensity);}else cu.uSunColor.value.setRGB(0,0,0);cu.uInscatter.value=f.inscatter;cu.uInscatterExp.value=f.inscatterExponent;cu.uFogSky.value=f.sky;
+      cu.uAO.value=o.gtao?o.aoStrength:0;cu.uGI.value=o.ssgi?o.giStrength:0;cu.uShafts.value=shaftsOn*o.shaftStrength*(volOn?.5:1);cu.tVol.value=this.vol[0].texture;cu.uVol.value=volOn;cu.uFog.value=f.enabled&&this.depthOK?1:0;Object.assign(cu.uFogDensity,{value:f.density});cu.uFogFalloff.value=f.falloff;cu.uFogHeight.value=f.height;cu.uFogStart.value=f.start;cu.uFogMax.value=f.maxOpacity;cu.uFogColor.value.copy(f.color);
+      cu.uSunDir.value.copy(this._sunWorld.lengthSq()?this._sunWorld:this._v3.set(0,1,0));if(sun){cu.uSunColor.value.copy(sun.color).multiplyScalar(sun.intensity*(volOn?.25:o.volumetrics?1:.35));cu.uShaftColor.value.copy(sun.color).multiplyScalar(sun.intensity);}else cu.uSunColor.value.setRGB(0,0,0);cu.uInscatter.value=f.inscatter;cu.uInscatterExp.value=f.inscatterExponent;cu.uFogSky.value=f.sky;
       this.pass(c,this.lit);let current=this.lit;
       // 7. Temporal anti-aliasing.
       if(o.taa){const a=this.m.taa,u=a.uniforms,wi=this.frame&1;u.tCurrent.value=this.lit.texture;u.tHistory.value=this.taa[wi^1].texture;u.tDepth.value=this.scene.depthTexture;u.uInvView.value.copy(camera.matrixWorld);u.uTexel.value.copy(dtexel);u.uCurTexel.value.copy(texel);u.uBlend.value=o.taaBlend*(IW<W?.8:1);u.uValid.value=frameValid?1:0;this.pass(a,this.taa[wi]);current=this.taa[wi];this.historyValid=true;}
