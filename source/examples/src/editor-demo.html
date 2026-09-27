@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tenko Editor demo</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#101114;font:13px system-ui,-apple-system,"Segoe UI",sans-serif;color:#e6e8ec}
+  canvas{display:block}
+  #hud{position:fixed;left:12px;bottom:12px;background:rgba(12,13,16,.72);border:1px solid #ffffff1a;border-radius:6px;padding:8px 12px;line-height:1.55;pointer-events:none}
+  #hud b{color:#fff}#hud kbd{font:11px ui-monospace,monospace;background:#ffffff14;border-radius:3px;padding:0 4px}
+  #coins{position:fixed;right:14px;top:12px;font-size:20px;font-weight:700;color:#f2c14e;text-shadow:0 1px 2px #000}
+</style>
+</head>
+<body>
+<div id="hud"><b>Tenko Editor demo</b><br><kbd>F8</kbd> editor · <kbd>`</kbd> console · game: <kbd>WASD</kbd> move the blue capsule into the coins</div>
+<div id="coins"></div>
+<!--THREE-->
+<!--KITSUNE-->
+<script>
+(async () => {
+  const T = window.THREE, KE = window.KitsuneEngine;
+  const renderer = new T.WebGLRenderer({antialias:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+  renderer.outputEncoding = T.sRGBEncoding; renderer.toneMapping = T.ACESFilmicToneMapping;
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = T.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+  KE.ConsoleUI.setRenderer(renderer);
+
+  /* scene: gradient sky, dark ground, soft fill */
+  const scene = new T.Scene(), sky = document.createElement('canvas'); sky.width = 2; sky.height = 256;
+  { const g = sky.getContext('2d'), gr = g.createLinearGradient(0, 0, 0, 256); gr.addColorStop(0, '#4f6f98'); gr.addColorStop(.62, '#9fb4cb'); gr.addColorStop(1, '#c3cdd6'); g.fillStyle = gr; g.fillRect(0, 0, 2, 256); }
+  const skyTex = new T.CanvasTexture(sky); skyTex.encoding = T.sRGBEncoding; scene.background = skyTex; scene.fog = new T.Fog(0x9fb0c2, 30, 90);
+  const camera = new T.PerspectiveCamera(55, innerWidth / innerHeight, .1, 500); camera.position.set(8, 5.5, 11); camera.lookAt(0, .6, 0); KE.prepareCamera(camera);
+  const ground = new T.Mesh(new T.PlaneGeometry(80, 80), new T.MeshStandardMaterial({color:0x2c2f33, roughness:.92}));
+  ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+  scene.add(new T.HemisphereLight(0xcfe0ff, 0x3a342c, .45));
+
+  /* optional systems, each guarded */
+  let physics = null, vfx = null, audio = null, pipeline = null;
+  try { if (KE.Physics3D) { physics = await KE.Physics3D.create(T, {}); const floor = new T.Object3D(); floor.position.y = -.05; scene.add(floor); physics.addBox(floor, {type:'fixed', halfExtents:[40, .05, 40]}); } } catch (e) { console.warn('physics unavailable:', e.message); physics = null; }
+  try { if (KE.VFX) vfx = new KE.VFX(T, renderer, scene); } catch (e) { vfx = null; }
+  try { if (KE.Pipeline && KE.settings.pipeline) { pipeline = new KE.Pipeline(T, renderer, {}); pipeline.options.fog.color.set(0x9fb0c2); pipeline.options.fog.density = .006; } } catch (e) { pipeline = null; }
+  const world = new KE.GameWorld(T, scene, {physics, vfx, camera, renderer});
+  addEventListener('pointerdown', () => { if (!audio && KE.AudioEngine) { try { audio = world.audio = new KE.AudioEngine(); audio.unlock && audio.unlock(); } catch (e) {} } }, {once:true});
+
+  /* a small level */
+  world.spawn({name:'Sun', class:'DirectionalLight', transform:{position:[4, 8, 3], rotation:[-35, 0, 25]}, components:[{type:'DirectionalLight', intensity:2.2, shadowArea:12, shadowMapSize:2048}]});
+  world.spawn({name:'Crate', prefab:'Crate', transform:{position:[-1.6, .5, .4], rotation:[0, 20, 0]}});
+  world.spawn({name:'Crate_Small', prefab:'Crate', transform:{position:[-2.7, .3, 1.4], rotation:[0, -15, 0], scale:[.6, .6, .6]}});
+  world.spawn({name:'Boulder', prefab:'Boulder', transform:{position:[2.4, .35, -1.2]}});
+  world.spawn({name:'Lamp', prefab:'Lamp', transform:{position:[.6, 0, -2.2]}});
+  for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2; world.spawn({name:'Coin', prefab:'Coin', transform:{position:[Math.cos(a) * 4.5, .8, Math.sin(a) * 4.5]}}); }
+  world.spawn({name:'Pillar', prefab:'Cylinder', transform:{position:[-3.2, 1, -2.6]}, components:[{type:'StaticMesh', mesh:{primitive:'cylinder', params:{height:2, radius:.35}, material:{color:'#c9c2b4'}}}]});
+  world.spawn({name:'Fill', class:'PointLight', transform:{position:[-1, 2.2, 2.6]}, components:[{type:'PointLight', intensity:3, color:'#9ec8ff', range:7}]});
+  world.spawn({name:'Sign', class:'TextRender', transform:{position:[0, 0, -4]}, components:[{type:'TextLabel', text:'Tenko Editor', size:.45, offset:[0, 2.4, 0]}]});
+  world.spawn({name:'PlayerStart', class:'PlayerStart', transform:{position:[0, .1, 3]}});
+  world.spawn({name:'Spinner', prefab:'Torus', transform:{position:[-.5, 1.35, -.9], rotation:[90, 0, 0]}, components:[
+    {type:'StaticMesh', mesh:{primitive:'torus', params:{radius:.45, tube:.12, segments:40}, material:{color:'#e0a43a', metalness:.8, roughness:.3}}}, {type:'Rotator', speed:[0, 0, 90]},
+    {type:'Blueprint', graph:{variables:{hits:0}, events:{BeginPlay:[{op:'Print', text:'Spinner ready'}, {op:'SetTimer', seconds:.5, loop:true, event:'Blink'}],
+      Custom:{Blink:[{op:'SetVar', name:'hits', expr:'hits + 1'}, {op:'Branch', if:'hits % 2 == 0', then:[{op:'SetLight', target:'Fill', intensity:6}], else:[{op:'SetLight', target:'Fill', intensity:1}]}]}}}}]});
+
+  /* player: spawned at the PlayerStart when play begins (both in the game and in Play In Editor) */
+  let player = null;
+  const spawnPlayer = w => { const s = w.getPlayerStart(); player = w.spawn({name:'Player', tags:['player'], transform:{position:s ? s.position.toArray().map((v, i) => i === 1 ? .75 : v) : [0, .75, 3]},
+    components:[{type:'StaticMesh', mesh:{primitive:'capsule', params:{radius:.35, height:1.5}, material:{color:'#4c8fe8', roughness:.4}}}]}); player.transient = true; };
+  const removePlayer = () => { if (player && player.alive) world.destroy(player); player = null; };
+
+  const keys = new Set(); addEventListener('keydown', e => keys.add(e.code)); addEventListener('keyup', e => keys.delete(e.code));
+  const coinsEl = document.getElementById('coins'), v = new T.Vector3();
+  const render = dt => { if (pipeline) pipeline.render(scene, camera, dt); else renderer.render(scene, camera); };
+  const movePlayer = dt => { if (!player || !player.alive) return; v.set((keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0), 0, (keys.has('KeyS') ? 1 : 0) - (keys.has('KeyW') ? 1 : 0));
+    if (v.lengthSq()) player.object.position.addScaledVector(v.normalize(), 4 * dt); };
+
+  const editor = new KE.Editor(T, {renderer, scene, camera, world, render,
+    onPlay: w => spawnPlayer(w), onStop: () => { player = null; },
+    /* the game plays on a copy: leaving the editor snapshots the level, returning restores it */
+    onOpen: () => { if (world.playing) { removePlayer(); world.endPlay(); if (snapshot) KE.Level.load(world, snapshot); } },
+    onClose: () => { snapshot = KE.Level.serialize(world); world.beginPlay(); spawnPlayer(world); }});
+  let snapshot = null;
+  editor.open();
+
+  /* game loop: runs only while the editor is closed */
+  let last = performance.now();
+  const frame = t => { requestAnimationFrame(frame); const dt = Math.min(.1, (t - last) / 1000); last = t; if (editor.isOpen) return;
+    movePlayer(dt); world.update(dt);
+    if (player && player.alive) { v.copy(player.object.position); camera.position.lerp(v.clone().add(new T.Vector3(0, 6, 8)), 1 - Math.exp(-4 * dt)); camera.lookAt(v); }
+    coinsEl.textContent = world.vars.coins ? '● ' + world.vars.coins : ''; render(dt); };
+  requestAnimationFrame(frame);
+  addEventListener('resize', () => { if (editor.isOpen) return; renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
+})();
+</script>
+</body>
+</html>

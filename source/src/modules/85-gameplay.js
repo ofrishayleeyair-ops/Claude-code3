@@ -18,6 +18,9 @@ const has=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
 const round6=v=>{const r=Math.round(v*1e6)/1e6;return r===0?0:r;};
 const clone=v=>v===undefined?undefined:JSON.parse(JSON.stringify(v));
 const NAME_RE=/^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+/* Back references stored on userData are non-enumerable so Object3D.clone()/copy() and GLTFExporter,
+   which JSON-serialize userData, never meet the circular actor graph. */
+const backRef=(o,key,value)=>{Object.defineProperty(o.userData,key,{value,enumerable:false,configurable:true,writable:true});return o;};
 
 /* Deep-copies plain JSON data: finite numbers, bounded strings, arrays and plain objects only.
    Drops prototype keys, functions, non-finite numbers and anything past the depth/node budget. */
@@ -163,7 +166,7 @@ class Component{
 class Actor{
   constructor(world,id,name,className){
     this.world=world;this.id=id;this.name=name;this.className=className;this.alive=true;this.pendingKill=false;this.prefab=null;
-    this.object=new world.THREE.Group();this.object.name=name;this.object.userData.keActor=this;
+    this.object=new world.THREE.Group();this.object.name=name;backRef(this.object,'keActor',this);
     this.components=[];this.tags=new TagSet(this);this.parent=null;this.children=[];this._radius=-1;
   }
   get position(){return this.object.position;}
@@ -332,10 +335,10 @@ KE.GameWorld=class{
     actor.alive=false;actor.pendingKill=false;this._tickDirty=true;this.events.emit('destroy',actor);
   }
   clear(){for(const a of this.actors.slice())if(!a.parent)this.destroy(a);for(const a of this.actors.slice())this.destroy(a);}
-  /* Reparent keeping the world transform (editor use). parent=null attaches to the scene. */
-  attach(actor,parent){if(!actor||!actor.alive)return false;if(parent){for(let p=parent;p;p=p.parent)if(p===actor)return false;}
+  /* Reparent; keepWorld (default) preserves the world transform, otherwise the local transform is kept. parent=null attaches to the scene. */
+  attach(actor,parent,{keepWorld=true}={}){if(!actor||!actor.alive||actor.world!==this)return false;if(parent){if(!parent.alive||parent.world!==this)return false;for(let p=parent;p;p=p.parent)if(p===actor)return false;}
     if(actor.parent){const s=actor.parent.children;s.splice(s.indexOf(actor),1);}actor.parent=parent||null;if(parent)parent.children.push(actor);
-    (parent?parent.object:this.scene).attach(actor.object);this.events.emit('changed',actor,'parent');return true;}
+    const to=parent?parent.object:this.scene;if(keepWorld)to.attach(actor.object);else to.add(actor.object);actor._radius=-1;this.events.emit('changed',actor,'parent');return true;}
   /* Move an actor within world.actors (outliner/draw order). */
   reorder(actor,index){const i=this.actors.indexOf(actor);if(i<0)return false;this.actors.splice(i,1);this.actors.splice(clamp(index|0,0,this.actors.length),0,actor);this._tickDirty=true;this.events.emit('reorder',actor);return true;}
   /* ----- play lifecycle ----- */
@@ -518,7 +521,7 @@ reg('StaticMesh',{label:'Static Mesh',category:'Rendering',icon:'mesh',help:'Pro
     const T=world.THREE,m=props.mesh,inst={object:null,geoKey:null,material:null,owned:false,handle:null,simple:false};
     if(m.primitive==='gltf'){
       const asset=m.asset&&world.getAsset(m.asset);
-      if(asset){const src=asset.object;inst.object=T.SkeletonUtils&&T.SkeletonUtils.clone?T.SkeletonUtils.clone(src):src.clone(true);inst.object.traverse(o=>{if(o.isMesh){o.castShadow=props.castShadow&&shadowsOn();o.receiveShadow=props.receiveShadow;o.userData.keComponent=comp;}});}
+      if(asset){const src=asset.object;inst.object=T.SkeletonUtils&&T.SkeletonUtils.clone?T.SkeletonUtils.clone(src):src.clone(true);inst.object.traverse(o=>{if(o.isMesh){o.castShadow=props.castShadow&&shadowsOn();o.receiveShadow=props.receiveShadow;backRef(o,'keComponent',comp);}});}
       else{if(m.asset)world.warnOnce('asset:'+m.asset,actor.name+': glTF asset "'+m.asset+'" is not loaded; showing a placeholder');
         inst.geoKey='placeholder';const g=world._acquireGeometry('placeholder',()=>new T.BoxGeometry(1,1,1));inst.material=new T.MeshStandardMaterial({color:0x8a6fbf,wireframe:true});inst.owned=true;inst.object=new T.Mesh(g,inst.material);}
     }else{
@@ -527,7 +530,7 @@ reg('StaticMesh',{label:'Static Mesh',category:'Rendering',icon:'mesh',help:'Pro
       const r=createMaterial(T,m.material,world,actor.name);inst.material=r.material;inst.owned=r.owned;inst.handle=r.handle||null;inst.simple=!!r.simple;
       inst.object=new T.Mesh(g,inst.material);inst.object.castShadow=props.castShadow&&shadowsOn();inst.object.receiveShadow=props.receiveShadow;
     }
-    inst.object.userData.keComponent=comp;vecSet(inst.object.position,props.offset);actor.object.add(inst.object);return inst;},
+    backRef(inst.object,'keComponent',comp);vecSet(inst.object.position,props.offset);actor.object.add(inst.object);return inst;},
   update(inst,props,key){
     if(key==='castShadow'||key==='receiveShadow'){inst.object.traverse(o=>{if(o.isMesh){o.castShadow=props.castShadow&&shadowsOn();o.receiveShadow=props.receiveShadow;}});return true;}
     if(key==='offset'){vecSet(inst.object.position,props.offset);return true;}
@@ -604,14 +607,15 @@ reg('TriggerVolume',{label:'Trigger Volume',category:'Volumes',icon:'trigger',
     return inst;},
   beginPlay(inst){inst.overlaps.clear();inst.done=false;const w=inst.world,ph=w.physics,p=inst.props;if(!ph)return;
     const fn=p.shape==='sphere'?'addSphere':'addBox';if(typeof ph[fn]!=='function')return;
-    try{inst.sensor=ph[fn](inst.actor.object,{type:'fixed',sensor:true,size:p.size.slice(),halfExtents:p.size.map(v=>v/2),radius:p.radius});w._trackBody(inst.sensor,inst.actor,true);}catch(e){w.warn(inst.actor.name+': trigger sensor failed, using overlap tests: '+e.message);inst.sensor=null;}},
+    const s=inst.actor.object.getWorldScale(w._v1),k=Math.max(Math.abs(s.x),Math.abs(s.y),Math.abs(s.z));
+    try{inst.sensor=ph[fn](inst.actor.object,{type:'kinematic',sensor:true,halfExtents:[p.size[0]*Math.abs(s.x)/2,p.size[1]*Math.abs(s.y)/2,p.size[2]*Math.abs(s.z)/2],radius:p.radius*k});w._trackBody(inst.sensor,inst.actor,true);}catch(e){w.warn(inst.actor.name+': trigger sensor failed, using overlap tests: '+e.message);inst.sensor=null;}},
   endPlay(inst){const w=inst.world;if(inst.sensor){w._trackBody(inst.sensor,inst.actor,false);try{w.physics&&w.physics.remove?w.physics.remove(inst.sensor):inst.sensor.dispose&&inst.sensor.dispose();}catch(e){}inst.sensor=null;}inst.overlaps.clear();},
   dispose(inst){inst.world._triggers.delete(inst);if(inst.debug){inst.debug.parent.remove(inst.debug);inst.debug.geometry.dispose();inst.debug.material.dispose();}}});
 
 /* ParticleEmitter: KE.VFX adapter; without VFX a small KE.Particles fallback keeps it visible. */
 const FALLBACK_FX={fire:[0xff7a2a,40,2.5],smoke:[0x9a9a9a,14,1.2],sparks:[0xffd27a,30,-9],magic:[0x9d7bff,26,.5],dust:[0xc9b48f,10,-.5],fireflies:[0xd9ff6a,6,.2],rain:[0x9fc4ff,60,-18],snow:[0xffffff,30,-1.5],embers:[0xff9540,16,1.5],fountain:[0x7ad0ff,50,-9]};
 reg('ParticleEmitter',{label:'Particle Emitter',category:'Effects',icon:'fx',
-  schema:{preset:{type:'string',default:'fire',maxLength:64,suggest:()=>{const s=new Set(Object.keys(FALLBACK_FX));return [...s];}},autoPlay:{type:'bool',default:true,label:'Auto Activate'},
+  schema:{preset:{type:'string',default:'fire',maxLength:64,suggest:()=>[...new Set([...(KE.VFX&&KE.VFX.presets?Object.keys(KE.VFX.presets):[]),...Object.keys(FALLBACK_FX)])]},autoPlay:{type:'bool',default:true,label:'Auto Activate'},
     scale:{type:'number',default:1,min:.01,max:100,step:.1},overrides:{type:'json',default:{}},offset:{type:'vec3',default:[0,0,0],label:'Relative Location'}},
   create(actor,props,world){return {actor,world,props,emitter:null,fallback:null,acc:0,pos:new world.THREE.Vector3(),playing:false};},
   beginPlay(inst){if(inst.props.autoPlay)fxStart(inst);},
@@ -632,11 +636,11 @@ function fxStop(inst){inst.playing=false;if(inst.emitter){try{inst.emitter.stop&
 /* AudioSource: KE.AudioEngine adapter (KE.Synth sources); legacy KE.Audio.tone() as a fallback. */
 function playSound(world,synth,params,{position=null,follow=null,loop=false,bus='sfx',volume=1}={}){
   const a=world.audio;if(!a){world.warnOnce('noaudio','Sounds are silent: the world has no audio engine (pass {audio} to GameWorld)');return null;}
-  try{if(typeof a.play==='function'){let src=synth;const fn=safeMember(KE.Synth,synth);if(typeof fn==='function')src=fn.call(KE.Synth,params||{});return a.play(src,{position:position||undefined,follow:follow||undefined,loop,bus,volume});}
+  try{if(typeof a.play==='function'){const src=KE.Synth&&typeof KE.Synth.has==='function'&&KE.Synth.has(synth)?{synth,params:params||{}}:synth;return a.play(src,{position:position||undefined,follow:follow||undefined,loop,bus,volume});}
     if(typeof a.tone==='function'){const n=params&&Number.isFinite(params.frequency)?params.frequency:660;a.tone(n,params&&params.duration||.15);return null;}}
   catch(e){world.warn('Sound "'+synth+'" failed: '+e.message);}return null;}
 reg('AudioSource',{label:'Audio Source',category:'Audio',icon:'audio',
-  schema:{synth:{type:'string',default:'chime',maxLength:64,label:'Sound',suggest:()=>KE.Synth?Object.keys(KE.Synth).filter(k=>typeof KE.Synth[k]==='function'):[]},params:{type:'json',default:{}},
+  schema:{synth:{type:'string',default:'chime',maxLength:64,label:'Sound',suggest:()=>KE.Synth&&typeof KE.Synth.names==='function'?KE.Synth.names():[]},params:{type:'json',default:{}},
     autoPlay:{type:'bool',default:true},loop:{type:'bool',default:false},spatial:{type:'bool',default:true},volume:{type:'number',default:1,min:0,max:4,step:.05},bus:{type:'string',default:'sfx',maxLength:32}},
   create(actor,props,world){return {actor,world,props,voice:null};},
   beginPlay(inst){if(inst.props.autoPlay)audioPlay(inst);},
@@ -675,7 +679,7 @@ function drawLabel(T,p,tex){const c=tex?tex.image:document.createElement('canvas
   g.fillStyle=p.color;g.textAlign='center';g.textBaseline='middle';lines.forEach((l,i)=>g.fillText(l,c.width/2,px*.2+px*1.2*(i+.5)));
   if(tex){tex.needsUpdate=true;return tex;}const t=new T.CanvasTexture(c);t.encoding=T.sRGBEncoding;t.anisotropy=4;return t;}
 reg('TextLabel',{label:'Text Render',category:'Rendering',icon:'text',schema:{text:{type:'text',default:'Text',maxLength:200},color:{type:'color',default:'#ffffff'},background:{type:'color',default:'#101418'},backgroundOpacity:{type:'number',default:.55,min:0,max:1,step:.05},size:{type:'number',default:.5,min:.01,max:100,step:.05,label:'World Height'},offset:{type:'vec3',default:[0,1,0],label:'Relative Location'},depthTest:{type:'bool',default:true}},
-  create(actor,p,world,comp){const T=world.THREE,tex=drawLabel(T,p),mat=new T.SpriteMaterial({map:tex,transparent:true,depthTest:p.depthTest,toneMapped:false}),s=new T.Sprite(mat);s.userData.keComponent=comp;
+  create(actor,p,world,comp){const T=world.THREE,tex=drawLabel(T,p),mat=new T.SpriteMaterial({map:tex,transparent:true,depthTest:p.depthTest,toneMapped:false}),s=new T.Sprite(mat);backRef(s,'keComponent',comp);
     const inst={sprite:s,tex,mat};sizeLabel(inst,p);vecSet(s.position,p.offset);actor.object.add(s);return inst;},
   update(inst,p,key){if(key==='offset'){vecSet(inst.sprite.position,p.offset);return true;}if(key==='size'){sizeLabel(inst,p);return true;}if(key==='depthTest'){inst.mat.depthTest=p.depthTest;return true;}drawLabel(null,p,inst.tex);sizeLabel(inst,p);return true;},
   dispose(inst){if(inst.sprite.parent)inst.sprite.parent.remove(inst.sprite);inst.tex.dispose();inst.mat.dispose();}});
