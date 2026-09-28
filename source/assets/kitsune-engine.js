@@ -828,9 +828,9 @@ KE.cvars.register('r.ProfileGPU',{type:'boolean',help:'Per-pass GPU timings thro
 KE.sceneUniforms=THREE=>{if(KE._sceneUniforms)return KE._sceneUniforms;return KE._sceneUniforms={
   keSceneColor:{value:null},keSceneDepth:{value:null},keHasScene:{value:0},keResolution:{value:new THREE.Vector2(1,1)},keNearFar:{value:new THREE.Vector2(.1,1000)},
   keInvProjection:{value:new THREE.Matrix4()},keProjection:{value:new THREE.Matrix4()},keViewMatrix:{value:new THREE.Matrix4()},keInvView:{value:new THREE.Matrix4()},
-  keTime:{value:0},keFrame:{value:0},keSSR:{value:1},keSunDirection:{value:new THREE.Vector3(.3,.8,.2).normalize()},keSunColor:{value:new THREE.Color(1,1,1)},keExposure:{value:1}};};
+  keTime:{value:0},keFrame:{value:0},keSSR:{value:1},kePrevViewProj:{value:new THREE.Matrix4()},kePrevView:{value:new THREE.Matrix4()},kePrevScene:{value:0},keSunDirection:{value:new THREE.Vector3(.3,.8,.2).normalize()},keSunColor:{value:new THREE.Color(1,1,1)},keExposure:{value:1}};};
 /* GLSL declarations matching KE.sceneUniforms; merge the uniform objects into a material with Object.assign(material.uniforms, KE.sceneUniforms(THREE)). */
-KE.GLSL_SCENE_DECL='uniform sampler2D keSceneColor;uniform sampler2D keSceneDepth;uniform float keHasScene;uniform vec2 keResolution;uniform vec2 keNearFar;uniform mat4 keInvProjection;uniform mat4 keProjection;uniform mat4 keViewMatrix;uniform mat4 keInvView;uniform float keTime;uniform float keFrame;uniform float keSSR;uniform vec3 keSunDirection;uniform vec3 keSunColor;uniform float keExposure;';
+KE.GLSL_SCENE_DECL='uniform sampler2D keSceneColor;uniform sampler2D keSceneDepth;uniform float keHasScene;uniform vec2 keResolution;uniform vec2 keNearFar;uniform mat4 keInvProjection;uniform mat4 keProjection;uniform mat4 keViewMatrix;uniform mat4 keInvView;uniform float keTime;uniform float keFrame;uniform float keSSR;uniform mat4 kePrevViewProj;uniform mat4 kePrevView;uniform float kePrevScene;uniform vec3 keSunDirection;uniform vec3 keSunColor;uniform float keExposure;';
 
 /* ---------- full-screen pass helper ---------- */
 KE.FullScreenQuad=class{
@@ -907,6 +907,22 @@ KE.GLSL.ssr=`vec4 keTraceSSR(vec3 vpos,vec3 vnormal,float roughness,float jitter
  if(hitUV.x<0.)return vec4(0.);
  vec2 e=smoothstep(0.,.12,hitUV)*smoothstep(1.,.88,hitUV);float conf=e.x*e.y*(1.-smoothstep(.3,.7,roughness))*smoothstep(.2,-.1,dir.z);
  return vec4(texture2D(keSceneColor,hitUV).rgb,conf);}`;
+
+/* Screen-space reflections for opaque materials, traced in world space against the previous frame's scene colour and
+   linear depth (still bound while the current frame's opaque pass draws). kePrevViewProj/kePrevView are the matrices that
+   frame was rendered with; kePrevScene is 0 on the first frame and after resizes. Returns rgb + confidence. */
+KE.GLSL.ssrPrev=`vec4 keTraceSSRPrev(vec3 wpos,vec3 wnormal,float roughness,float jitter){
+ if(kePrevScene<.5||keSSR<.5||roughness>.6)return vec4(0.);
+ vec3 camPos=keInvView[3].xyz;vec3 R=reflect(normalize(wpos-camPos),normalize(wnormal));
+ float stepLen=.3;vec3 p=wpos+wnormal*.04+R*stepLen*(.5+jitter);vec2 hit=vec2(-1.);
+ for(int i=0;i<28;i++){vec4 c=kePrevViewProj*vec4(p,1.);if(c.w<=0.)break;vec2 uv=c.xy/c.w*.5+.5;if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.)break;
+  float rayZ=-(kePrevView*vec4(p,1.)).z;float diff=rayZ-texture2D(keSceneDepth,uv).r;
+  if(diff>0.&&diff<.5+stepLen*1.6){vec3 a=p-R*stepLen,b=p;for(int j=0;j<5;j++){vec3 m=(a+b)*.5;vec4 cm=kePrevViewProj*vec4(m,1.);vec2 um=cm.xy/cm.w*.5+.5;if(-(kePrevView*vec4(m,1.)).z>texture2D(keSceneDepth,um).r)b=m;else a=m;}
+   vec4 cb=kePrevViewProj*vec4(b,1.);hit=cb.xy/cb.w*.5+.5;break;}
+  p+=R*stepLen;stepLen*=1.13;}
+ if(hit.x<0.)return vec4(0.);
+ vec2 e=smoothstep(0.,.1,hit)*smoothstep(1.,.9,hit);float conf=e.x*e.y*(1.-smoothstep(.15,.6,roughness));
+ return vec4(texture2D(keSceneColor,hit).rgb,conf);}`;
 
 const GTAO_FS=`${DEPTH_GLSL}
 uniform float uRadius;uniform float uProjScale;uniform float uFrame;uniform float uPower;varying vec2 vUv;
@@ -1100,7 +1116,7 @@ KE.Pipeline=class{
       volumetrics:true,shaftStrength:.25,volumetricFog:{enabled:true,density:.012,falloff:.22,height:0,anisotropy:.45,intensity:1,maxDistance:50,steps:20},dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
       grading:{saturation:1.05,contrast:1.04,temperature:0,tint:0,lift:[0,0,0],gamma:[1,1,1],gain:[1,1,1],vignette:.22,grain:.012,chromaticAberration:.15},sun:null,debugView:'lit'};
     this.set(o);
-    this.uniforms=KE.sceneUniforms(THREE);this.quad=new KE.FullScreenQuad(THREE);this.gpu=new KE.GPUTimer(renderer,{name:'pipeline'});
+    this.uniforms=KE.sceneUniforms(THREE);this.quad=new KE.FullScreenQuad(THREE);this.gpu=new KE.GPUTimer(renderer,{name:'pipeline'});this._prevVP=new THREE.Matrix4();this._prevV=new THREE.Matrix4();this._prevOK=false;
     this.proj=new THREE.Matrix4();this.invProj=new THREE.Matrix4();this.invProjU=new THREE.Matrix4();this.viewProj=new THREE.Matrix4();this.prevViewProj=new THREE.Matrix4();
     this._v2=new THREE.Vector2();this._v3=new THREE.Vector3();this._fwd=new THREE.Vector3();this._sunWorld=new THREE.Vector3();this._fogColor=new THREE.Color();
     const M=(fs,u,defines={})=>new THREE.ShaderMaterial({vertexShader:VS,fragmentShader:fs,uniforms:u,defines,depthTest:false,depthWrite:false,toneMapped:false});
@@ -1186,7 +1202,7 @@ KE.Pipeline=class{
   render(scene,camera,dt=1/60){
     const R=this.renderer,T=this.THREE,o=this.options,U=this.uniforms;
     const G=this.gpu;G.frame();if(this.enabled)this._dynamicResolution(dt);
-    if(!this.enabled){KE.prepareCamera(camera);G.begin('Scene (direct)');R.render(scene,camera);G.end();return;}
+    if(!this.enabled){U.kePrevScene.value=0;this._prevOK=false;KE.prepareCamera(camera);G.begin('Scene (direct)');R.render(scene,camera);G.end();return;}
     const t0=performance.now();this.setSize();const [W,H]=this.size,[IW,IH]=this.internal;this.frame++;this.stats.passes=0;
     const prevTarget=R.getRenderTarget(),prevTone=R.toneMapping,prevAutoClear=R.autoClear,prevInfo=R.info.autoReset,prevFog=scene.fog,prevBg=scene.background,prevMask=camera.layers.mask;
     R.info.autoReset=false;R.info.reset();
@@ -1198,6 +1214,7 @@ KE.Pipeline=class{
     const near=camera.near,far=camera.far,texel=this._v2.set(1/IW,1/IH),dtexel=(this._dt||(this._dt=new T.Vector2())).set(1/W,1/H),frameValid=this.historyValid;
     Object.assign(U.keNearFar.value,{x:near,y:far});U.keResolution.value.set(IW,IH);U.keProjection.value.copy(this.proj);U.keInvProjection.value.copy(this.invProj);U.keViewMatrix.value.copy(camera.matrixWorldInverse);U.keInvView.value.copy(camera.matrixWorld);U.keTime.value+=dt;U.keFrame.value=this.frame;
     const sun=o.sun;if(sun){this._sunWorld.copy(sun.position).sub(sun.target.position).normalize();U.keSunDirection.value.copy(this._sunWorld);U.keSunColor.value.copy(sun.color).multiplyScalar(sun.intensity);}
+    U.kePrevScene.value=this._prevOK&&this.depthOK?1:0;U.kePrevViewProj.value.copy(this._prevVP);U.kePrevView.value.copy(this._prevV);
     try{
       // 1. Opaque scene into the HDR target (linear, no tone mapping), without the translucent layer.
       G.begin('Scene (opaque)');
@@ -1208,6 +1225,7 @@ KE.Pipeline=class{
       this.m.copy.uniforms.tSrc.value=this.scene.texture;this.pass(this.m.copy,this.colorCopy);
       if(this.depthOK){this.bindDepth(this.m.linearDepth,near,far,texel);this.pass(this.m.linearDepth,this.linearDepth);}
       U.keSceneColor.value=this.colorCopy.texture;U.keSceneDepth.value=this.depthOK?this.linearDepth.texture:null;U.keHasScene.value=this.depthOK?1:0;
+      this._prevVP.multiplyMatrices(this.proj,camera.matrixWorldInverse);this._prevV.copy(camera.matrixWorldInverse);this._prevOK=true;
       // 3. Translucent layer drawn over the opaque result with depth testing.
       G.begin('Translucent');
       camera.layers.mask=TRANSLUCENT_BIT;scene.background=null;const sm=R.shadowMap,au=sm.autoUpdate,nu=sm.needsUpdate;sm.autoUpdate=false;sm.needsUpdate=false;R.autoClear=false;R.setRenderTarget(this.scene);R.render(scene,camera);sm.autoUpdate=au;sm.needsUpdate=nu;
@@ -1284,10 +1302,10 @@ KE.Pipeline=class{
   blur(pair,halfTexel,channel){const b=this.m.blur;b.uniforms.uDepthChannel.value=channel;b.uniforms.tSrc.value=pair[0].texture;b.uniforms.uDir.value.set(halfTexel.x,0);this.pass(b,pair[1]);b.uniforms.tSrc.value=pair[1].texture;b.uniforms.uDir.value.set(0,halfTexel.y);this.pass(b,pair[0]);}
   /* Approximate white balance multiplier from temperature (-1 cool .. +1 warm) and tint (-1 green .. +1 magenta). */
   whiteBalance(t,tint){const v=this._wb||(this._wb=new this.THREE.Vector3());v.set(1+t*.18-tint*.04,1-Math.abs(t)*.02+tint*.12*-1,1-t*.22-tint*.04);const l=v.x*.2126+v.y*.7152+v.z*.0722;return v.multiplyScalar(1/l);}
-  disposeTargets(){for(const t of this.targets){if(t.depthTexture)t.depthTexture.dispose();t.dispose();}this.targets.length=0;this.size=[0,0];this.internal=[0,0];}
+  disposeTargets(){this._prevOK=false;for(const t of this.targets){if(t.depthTexture)t.depthTexture.dispose();t.dispose();}this.targets.length=0;this.size=[0,0];this.internal=[0,0];}
   dispose(){this.gpu.dispose();this.disposeTargets();for(const m of Object.values(this.m))m.dispose();this.quad.dispose();this._black.dispose();this._white.dispose();if(this.onSettings)this.onSettings();const U=this.uniforms;U.keSceneColor.value=null;U.keSceneDepth.value=null;U.keHasScene.value=0;this.enabled=false;}
 };
-KE.registerModule('pipeline',{provides:['Pipeline','GLSL.ssr']});
+KE.registerModule('pipeline',{provides:['Pipeline','GLSL.ssr','GLSL.ssrPrev']});
 })();
 
 /* ===== module: 12-sky.js ===== */
@@ -3801,7 +3819,7 @@ vec2 keWxRipple(vec2 p,float t){vec2 g=vec2(0.);
  return g*.55;}`;
 
 /* Injected before emissive: diffuseColor, roughnessFactor, metalnessFactor and the view-space normal are final. */
-const FRAG_MAIN=`{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWxN,0.)).xyz);
+const FRAG_MAIN=`float keWxPudOut=0.;{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWxN,0.)).xyz);
  float keExposed=smoothstep(-.35,.45,keUp);
  float keWet=keWxWet*keExposed*keWxPorosityScale;
  /* puddles: flat ground, low-frequency noise mask whose threshold drops as the puddle level rises */
@@ -3810,7 +3828,7 @@ const FRAG_MAIN=`{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWx
  /* snow: upward faces with a noisy slope threshold; snow sits on top of puddles and wet ground */
  float keSn=keWxNoise(vKeWxPos.xz*1.7)*.6+keWxNoise(vKeWxPos.xz*7.3)*.4;
  float keTh=mix(1.25,.36,keWxSnow);float keSnow=smoothstep(keTh,keTh+.18,keUp*.85+keSn*.3)*step(.001,keWxSnow);
- kePud*=1.-keSnow;keWet*=1.-keSnow;
+ kePud*=1.-keSnow;keWet*=1.-keSnow;keWxPudOut=kePud;
  float keFm=metalnessFactor;
  diffuseColor.rgb*=mix(1.,mix(.42,1.,1.-keWxPorosity),keWet*(1.-keFm));
  roughnessFactor=mix(roughnessFactor,max(.2,roughnessFactor*.5),keWet);
@@ -3825,9 +3843,15 @@ const FRAG_MAIN=`{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWx
   normal=normalize(mix(normal,keSnowN,keSnow*.8));}
 }`;
 
+/* Puddle reflections: after lighting, the puddle's indirect specular is replaced (by Fresnel and puddle weight) with a
+   screen-space reflection traced against the previous frame (KE.GLSL.ssrPrev from the pipeline module). */
+const FRAG_LATE=`if(keWxPudOut>.01){vec3 keWn=inverseTransformDirection(normal,viewMatrix);vec4 keR=keTraceSSRPrev(vKeWxPos,keWn,.04,fract(52.9829189*fract(dot(gl_FragCoord.xy,vec2(.06711056,.00583715)))));
+ float keF=.02+.98*pow(1.-clamp(dot(normal,normalize(vViewPosition)),0.,1.),5.);reflectedLight.indirectSpecular=mix(reflectedLight.indirectSpecular,keR.rgb*keF,keR.a*keWxPudOut);}`;
+const SSR_UNIFORMS=[['sampler2D','keSceneColor'],['sampler2D','keSceneDepth'],['mat4','keInvView'],['float','keSSR'],['mat4','kePrevViewProj'],['mat4','kePrevView'],['float','kePrevScene']];
+
 KE.SurfaceWeather=class{
-  constructor(THREE,{wetness=0,puddles=0,snow=0,rain=0,puddleScale=.18,puddleCoverage=1,porosity=.6,snowColor=0xf2f5fa,wetRate=.08,dryRate=.012,puddleRate=.025,drainRate=.008,snowRate=.02,meltRate=.01,ripples=null}={}){
-    this.THREE=THREE;Object.assign(this,{wetRate,dryRate,puddleRate,drainRate,snowRate,meltRate});
+  constructor(THREE,{wetness=0,puddles=0,snow=0,rain=0,puddleScale=.18,puddleCoverage=1,porosity=.6,reflections=true,snowColor=0xf2f5fa,wetRate=.08,dryRate=.012,puddleRate=.025,drainRate=.008,snowRate=.02,meltRate=.01,ripples=null}={}){
+    this.THREE=THREE;this.reflections=reflections;Object.assign(this,{wetRate,dryRate,puddleRate,drainRate,snowRate,meltRate});
     this.uniforms={keWxWet:{value:clamp(wetness,0,1)},keWxPuddles:{value:clamp(puddles,0,1)},keWxSnow:{value:clamp(snow,0,1)},keWxRain:{value:clamp(rain,0,1)},keWxTime:{value:0},
       keWxPuddleScale:{value:puddleScale},keWxRipples:{value:1},keWxPorosity:{value:clamp(porosity,0,1)},keWxCoverage:{value:clamp(puddleCoverage,0,2)},keWxSnowColor:{value:new THREE.Color(snowColor).convertSRGBToLinear()}};
     this._ripplesOverride=ripples;this.materials=new Set();this.restore=new Map();
@@ -3838,13 +3862,16 @@ KE.SurfaceWeather=class{
   setupMaterial(m){
     if(!m||this.materials.has(m)||!m.isMeshStandardMaterial||m.userData.keNoWeather||m.transparent)return m;
     const prev=m.onBeforeCompile,ownKey=Object.prototype.hasOwnProperty.call(m,'customProgramCacheKey')?m.customProgramCacheKey:null,prevKey=m.customProgramCacheKey.bind(m),U=this.uniforms;
-    const porosity=Number.isFinite(m.userData.kePorosity)?clamp(m.userData.kePorosity,0,1):1;
+    const porosity=Number.isFinite(m.userData.kePorosity)?clamp(m.userData.kePorosity,0,1):1,ssr=this.reflections&&!!(KE.GLSL&&KE.GLSL.ssrPrev&&KE.sceneUniforms);
     this.restore.set(m,{prev,ownKey});
     m.onBeforeCompile=(sh,r)=>{if(prev)prev.call(m,sh,r);Object.assign(sh.uniforms,U);
       if(!/#include <defaultnormal_vertex>/.test(sh.vertexShader)||!/#include <project_vertex>/.test(sh.vertexShader)||!/#include <emissivemap_fragment>/.test(sh.fragmentShader))throw new Error('KE.SurfaceWeather: unexpected Standard material shader (Three.js r128 required)');
       sh.vertexShader=VERT_PARS+'\n'+sh.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\n'+VERT_MAIN);
-      sh.fragmentShader=FRAG_PARS+'\n#define keWxPorosityScale '+porosity.toFixed(3)+'\n'+sh.fragmentShader.replace('#include <emissivemap_fragment>',FRAG_MAIN+'\n#include <emissivemap_fragment>');};
-    m.customProgramCacheKey=()=>prevKey()+':ke-wx'+porosity.toFixed(3);m.needsUpdate=true;this.materials.add(m);return m;}
+      sh.fragmentShader=FRAG_PARS+'\n#define keWxPorosityScale '+porosity.toFixed(3)+'\n'+sh.fragmentShader.replace('#include <emissivemap_fragment>',FRAG_MAIN+'\n#include <emissivemap_fragment>');
+      if(ssr&&/#include <lights_fragment_end>/.test(sh.fragmentShader)){const SU=KE.sceneUniforms(this.THREE);let decl='';
+        for(const [type,name] of SSR_UNIFORMS){if(!sh.uniforms[name])sh.uniforms[name]=SU[name];if(!new RegExp('uniform\\s+'+type+'\\s+'+name+'\\b').test(sh.fragmentShader))decl+='uniform '+type+' '+name+';';}
+        sh.fragmentShader=decl+'\n'+(/keTraceSSRPrev/.test(sh.fragmentShader)?'':KE.GLSL.ssrPrev+'\n')+sh.fragmentShader.replace('#include <lights_fragment_end>','#include <lights_fragment_end>\n'+FRAG_LATE);}};
+    m.customProgramCacheKey=()=>prevKey()+':ke-wx'+porosity.toFixed(3)+(ssr?':ssr':'');m.needsUpdate=true;this.materials.add(m);return m;}
   setupScene(root){root.traverse(o=>{if(o.material&&!o.userData.keNoWeather)for(const m of [o.material].flat())this.setupMaterial(m);});return this;}
   /* Direct control, all 0..1. */
   set({wetness,puddles,snow,rain}={}){const U=this.uniforms;if(wetness!==undefined)U.keWxWet.value=clamp(+wetness||0,0,1);if(puddles!==undefined)U.keWxPuddles.value=clamp(+puddles||0,0,1);

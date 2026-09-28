@@ -30,7 +30,7 @@ vec2 keWxRipple(vec2 p,float t){vec2 g=vec2(0.);
  return g*.55;}`;
 
 /* Injected before emissive: diffuseColor, roughnessFactor, metalnessFactor and the view-space normal are final. */
-const FRAG_MAIN=`{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWxN,0.)).xyz);
+const FRAG_MAIN=`float keWxPudOut=0.;{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWxN,0.)).xyz);
  float keExposed=smoothstep(-.35,.45,keUp);
  float keWet=keWxWet*keExposed*keWxPorosityScale;
  /* puddles: flat ground, low-frequency noise mask whose threshold drops as the puddle level rises */
@@ -39,7 +39,7 @@ const FRAG_MAIN=`{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWx
  /* snow: upward faces with a noisy slope threshold; snow sits on top of puddles and wet ground */
  float keSn=keWxNoise(vKeWxPos.xz*1.7)*.6+keWxNoise(vKeWxPos.xz*7.3)*.4;
  float keTh=mix(1.25,.36,keWxSnow);float keSnow=smoothstep(keTh,keTh+.18,keUp*.85+keSn*.3)*step(.001,keWxSnow);
- kePud*=1.-keSnow;keWet*=1.-keSnow;
+ kePud*=1.-keSnow;keWet*=1.-keSnow;keWxPudOut=kePud;
  float keFm=metalnessFactor;
  diffuseColor.rgb*=mix(1.,mix(.42,1.,1.-keWxPorosity),keWet*(1.-keFm));
  roughnessFactor=mix(roughnessFactor,max(.2,roughnessFactor*.5),keWet);
@@ -54,9 +54,15 @@ const FRAG_MAIN=`{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWx
   normal=normalize(mix(normal,keSnowN,keSnow*.8));}
 }`;
 
+/* Puddle reflections: after lighting, the puddle's indirect specular is replaced (by Fresnel and puddle weight) with a
+   screen-space reflection traced against the previous frame (KE.GLSL.ssrPrev from the pipeline module). */
+const FRAG_LATE=`if(keWxPudOut>.01){vec3 keWn=inverseTransformDirection(normal,viewMatrix);vec4 keR=keTraceSSRPrev(vKeWxPos,keWn,.04,fract(52.9829189*fract(dot(gl_FragCoord.xy,vec2(.06711056,.00583715)))));
+ float keF=.02+.98*pow(1.-clamp(dot(normal,normalize(vViewPosition)),0.,1.),5.);reflectedLight.indirectSpecular=mix(reflectedLight.indirectSpecular,keR.rgb*keF,keR.a*keWxPudOut);}`;
+const SSR_UNIFORMS=[['sampler2D','keSceneColor'],['sampler2D','keSceneDepth'],['mat4','keInvView'],['float','keSSR'],['mat4','kePrevViewProj'],['mat4','kePrevView'],['float','kePrevScene']];
+
 KE.SurfaceWeather=class{
-  constructor(THREE,{wetness=0,puddles=0,snow=0,rain=0,puddleScale=.18,puddleCoverage=1,porosity=.6,snowColor=0xf2f5fa,wetRate=.08,dryRate=.012,puddleRate=.025,drainRate=.008,snowRate=.02,meltRate=.01,ripples=null}={}){
-    this.THREE=THREE;Object.assign(this,{wetRate,dryRate,puddleRate,drainRate,snowRate,meltRate});
+  constructor(THREE,{wetness=0,puddles=0,snow=0,rain=0,puddleScale=.18,puddleCoverage=1,porosity=.6,reflections=true,snowColor=0xf2f5fa,wetRate=.08,dryRate=.012,puddleRate=.025,drainRate=.008,snowRate=.02,meltRate=.01,ripples=null}={}){
+    this.THREE=THREE;this.reflections=reflections;Object.assign(this,{wetRate,dryRate,puddleRate,drainRate,snowRate,meltRate});
     this.uniforms={keWxWet:{value:clamp(wetness,0,1)},keWxPuddles:{value:clamp(puddles,0,1)},keWxSnow:{value:clamp(snow,0,1)},keWxRain:{value:clamp(rain,0,1)},keWxTime:{value:0},
       keWxPuddleScale:{value:puddleScale},keWxRipples:{value:1},keWxPorosity:{value:clamp(porosity,0,1)},keWxCoverage:{value:clamp(puddleCoverage,0,2)},keWxSnowColor:{value:new THREE.Color(snowColor).convertSRGBToLinear()}};
     this._ripplesOverride=ripples;this.materials=new Set();this.restore=new Map();
@@ -67,13 +73,16 @@ KE.SurfaceWeather=class{
   setupMaterial(m){
     if(!m||this.materials.has(m)||!m.isMeshStandardMaterial||m.userData.keNoWeather||m.transparent)return m;
     const prev=m.onBeforeCompile,ownKey=Object.prototype.hasOwnProperty.call(m,'customProgramCacheKey')?m.customProgramCacheKey:null,prevKey=m.customProgramCacheKey.bind(m),U=this.uniforms;
-    const porosity=Number.isFinite(m.userData.kePorosity)?clamp(m.userData.kePorosity,0,1):1;
+    const porosity=Number.isFinite(m.userData.kePorosity)?clamp(m.userData.kePorosity,0,1):1,ssr=this.reflections&&!!(KE.GLSL&&KE.GLSL.ssrPrev&&KE.sceneUniforms);
     this.restore.set(m,{prev,ownKey});
     m.onBeforeCompile=(sh,r)=>{if(prev)prev.call(m,sh,r);Object.assign(sh.uniforms,U);
       if(!/#include <defaultnormal_vertex>/.test(sh.vertexShader)||!/#include <project_vertex>/.test(sh.vertexShader)||!/#include <emissivemap_fragment>/.test(sh.fragmentShader))throw new Error('KE.SurfaceWeather: unexpected Standard material shader (Three.js r128 required)');
       sh.vertexShader=VERT_PARS+'\n'+sh.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\n'+VERT_MAIN);
-      sh.fragmentShader=FRAG_PARS+'\n#define keWxPorosityScale '+porosity.toFixed(3)+'\n'+sh.fragmentShader.replace('#include <emissivemap_fragment>',FRAG_MAIN+'\n#include <emissivemap_fragment>');};
-    m.customProgramCacheKey=()=>prevKey()+':ke-wx'+porosity.toFixed(3);m.needsUpdate=true;this.materials.add(m);return m;}
+      sh.fragmentShader=FRAG_PARS+'\n#define keWxPorosityScale '+porosity.toFixed(3)+'\n'+sh.fragmentShader.replace('#include <emissivemap_fragment>',FRAG_MAIN+'\n#include <emissivemap_fragment>');
+      if(ssr&&/#include <lights_fragment_end>/.test(sh.fragmentShader)){const SU=KE.sceneUniforms(this.THREE);let decl='';
+        for(const [type,name] of SSR_UNIFORMS){if(!sh.uniforms[name])sh.uniforms[name]=SU[name];if(!new RegExp('uniform\\s+'+type+'\\s+'+name+'\\b').test(sh.fragmentShader))decl+='uniform '+type+' '+name+';';}
+        sh.fragmentShader=decl+'\n'+(/keTraceSSRPrev/.test(sh.fragmentShader)?'':KE.GLSL.ssrPrev+'\n')+sh.fragmentShader.replace('#include <lights_fragment_end>','#include <lights_fragment_end>\n'+FRAG_LATE);}};
+    m.customProgramCacheKey=()=>prevKey()+':ke-wx'+porosity.toFixed(3)+(ssr?':ssr':'');m.needsUpdate=true;this.materials.add(m);return m;}
   setupScene(root){root.traverse(o=>{if(o.material&&!o.userData.keNoWeather)for(const m of [o.material].flat())this.setupMaterial(m);});return this;}
   /* Direct control, all 0..1. */
   set({wetness,puddles,snow,rain}={}){const U=this.uniforms;if(wetness!==undefined)U.keWxWet.value=clamp(+wetness||0,0,1);if(puddles!==undefined)U.keWxPuddles.value=clamp(+puddles||0,0,1);

@@ -2,7 +2,7 @@
    node scripts/test_weather.cjs [--shots] */
 const {openPage}=require('./harness.cjs');const path=require('path');const shots=process.argv.includes('--shots');
 (async()=>{
- const {page,close,outDir}=await openPage({modules:['src/modules/00-core-v3.js','src/modules/12-sky.js','src/modules/14-shadows.js','src/modules/26-weather.js'],viewport:{width:640,height:400},name:'weather'});
+ const {page,close,outDir}=await openPage({modules:['src/modules/00-core-v3.js','src/modules/10-pipeline.js','src/modules/12-sky.js','src/modules/14-shadows.js','src/modules/26-weather.js'],viewport:{width:640,height:400},name:'weather'});
  await page.evaluate(()=>{
   const T=THREE,KE=KitsuneEngine;KE.applyPreset('high');KE.setSettings({clouds:0});
   const renderer=new T.WebGLRenderer({antialias:true});renderer.setSize(innerWidth,innerHeight);renderer.outputEncoding=T.sRGBEncoding;renderer.toneMapping=T.ACESFilmicToneMapping;renderer.shadowMap.enabled=true;document.body.append(renderer.domElement);
@@ -48,6 +48,12 @@ const {openPage}=require('./harness.cjs');const path=require('path');const shots
    for(let i=0;i<400;i++)w.update(.5,{raining:false,snowing:false});return {early:log[0],wet,after1,dry:{w:w.wetness,p:w.puddles,s:w.snow}};});
   console.log('  ',JSON.stringify(r));if(!(r.early.w>.3&&r.early.p<r.early.w))throw Error('wetting order wrong');if(!(r.wet.w>.99&&r.wet.p>.2&&r.wet.rain>.9))throw Error('rain did not wet/fill');
   if(!(r.after1.w<r.wet.w))throw Error('not drying');if(!(r.dry.w<.01&&r.dry.p<.01&&r.dry.s<.01))throw Error('did not fully dry/melt');});
+ await test('puddles reflect the scene through the pipeline (previous-frame SSR)',async()=>{const r=await page.evaluate(()=>{const {T,KE,renderer,scene,camera,wx}=t;
+   const wall=new T.Mesh(new T.BoxGeometry(5,3,.3),new T.MeshStandardMaterial({color:0x220000,emissive:0xff2010,emissiveIntensity:2.5}));wall.position.set(0,1.5,-7);scene.add(wall);
+   wx.set({wetness:1,puddles:1,rain:0,snow:0});wx.uniforms.keWxCoverage.value=2;const pipe=new KE.Pipeline(T,renderer,{sun:null,fog:{enabled:false}});pipe.set({volumetrics:false,bloom:false,taa:false,autoExposure:false,exposure:.6});
+   const U=KE.sceneUniforms(T),measure=on=>{U.keSSR.value=on?1:0;for(let i=0;i<3;i++){t.sky.update(1/30,camera);t.csm.update(camera);pipe.render(scene,camera,1/60);}U.keSSR.value=on?1:0;const c=t.at(0,.02,-4.2,.04);return c;};
+   const off=measure(false),on=measure(true),ok={prevScene:U.kePrevScene.value,hasFn:!!KE.GLSL.ssrPrev};t.cleanupSSR=()=>{pipe.dispose();scene.remove(wall);wall.geometry.dispose();wall.material.dispose();wx.uniforms.keWxCoverage.value=1;};return {on,off,...ok};});
+  if(shots)await shot('ssr');await page.evaluate(()=>t.cleanupSSR());console.log('  ',JSON.stringify(r));const red=c=>c[0]-(c[1]+c[2])/2;if(!(r.prevScene===1&&r.hasFn))throw Error('previous frame not published');if(!(red(r.on)>red(r.off)+6))throw Error('no red reflection in the puddle');});
  await test('dispose restores material hooks',async()=>{const r=await page.evaluate(()=>{t.wx.dispose();t.frame(1);return window.ground.material.customProgramCacheKey();});if(String(r).includes('ke-wx'))throw Error(r);});
  await close();
 })().catch(e=>{console.error(e);process.exit(1);});
