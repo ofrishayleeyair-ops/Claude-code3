@@ -1,0 +1,213 @@
+# kitsune HD pack: credits
+
+Every asset here comes from [Poly Haven](https://polyhaven.com) and is licensed CC0 1.0 (public domain).
+Thanks to the artists who scanned and published them:
+
+- [Forest Ground 01](https://polyhaven.com/a/forrest_ground_01) (texture, 4k): Rob Tuytel
+- [Brown Mud Leaves 01](https://polyhaven.com/a/brown_mud_leaves_01) (texture, 4k): Rob Tuytel
+- [Coast Sand 01](https://polyhaven.com/a/coast_sand_01) (texture, 4k): Rob Tuytel
+- [Forest Ground 04](https://polyhaven.com/a/forest_ground_04) (texture, 4k): Rob Tuytel, Rico Cilliers
+- [River Small Rocks](https://polyhaven.com/a/river_small_rocks) (texture, 4k): Rob Tuytel, Rico Cilliers
+- [Mossy Rock](https://polyhaven.com/a/mossy_rock) (texture, 4k): Rob Tuytel
+- [Rock Face 03](https://polyhaven.com/a/rock_face_03) (texture, 4k): Dario Barresi, Rico Cilliers
+- [Snow 02](https://polyhaven.com/a/snow_02) (texture, 4k): Rob Tuytel
+- [Japanese Cedar Bark](https://polyhaven.com/a/japanese_cedar_bark) (texture, 4k): Charlotte Baglioni
+- [Sakura Bark](https://polyhaven.com/a/sakura_bark) (texture, 2k): Charlotte Baglioni
+- [Trident Maple Bark](https://polyhaven.com/a/trident_maple_bark) (texture, 2k): Charlotte Baglioni
+- [Japanese Zelkova Bark](https://polyhaven.com/a/japanese_zelkova_bark) (texture, 2k): Charlotte Baglioni
+- [Metasequoia Bark](https://polyhaven.com/a/metasequoia_bark) (texture, 2k): Charlotte Baglioni
+- [Pine Bark](https://polyhaven.com/a/pine_bark) (texture, 2k): Dimitrios Savva
+- [Hinoki Planks](https://polyhaven.com/a/hinoki_planks) (texture, 4k): Charlotte Baglioni
+- [Dark Wooden Planks](https://polyhaven.com/a/dark_wooden_planks) (texture, 2k): Amal Kumar
+- [Raw Plank Wall](https://polyhaven.com/a/raw_plank_wall) (texture, 2k): Dimitrios Savva
+- [Grey Roof Tiles 02](https://polyhaven.com/a/grey_roof_tiles_02) (texture, 2k): Rob Tuytel
+- [Rock Wall 02](https://polyhaven.com/a/rock_wall_02) (texture, 2k): Rob Tuytel
+- [Grassy Cobblestone](https://polyhaven.com/a/grassy_cobblestone) (texture, 2k): Dario Barresi, Charlotte Baglioni
+- [Rock Moss Set 01](https://polyhaven.com/a/rock_moss_set_01) (model, 2k): Kless Gyzen
+- [Rock Moss Set 02](https://polyhaven.com/a/rock_moss_set_02) (model, 2k): Kless Gyzen
+- [Boulder 01](https://polyhaven.com/a/boulder_01) (model, 2k): Rico Cilliers
+- [Rock 07](https://polyhaven.com/a/rock_07) (model, 2k): Jenelle van Heerden
+- [Rock 09](https://polyhaven.com/a/rock_09) (model, 2k): Jenelle van Heerden
+- [Stone 01](https://polyhaven.com/a/stone_01) (model, 2k): Dario Barresi, Rico Cilliers
+- [Coast Rocks 05](https://polyhaven.com/a/coast_rocks_05) (model, 2k): Rob Tuytel
+- [Rock Face 01](https://polyhaven.com/a/rock_face_01) (model, 2k): Dario Barresi
+- [Namaqualand Boulder 02](https://polyhaven.com/a/namaqualand_boulder_02) (model, 2k): Greg Zaal, Rico Cilliers
+- [Fern 02](https://polyhaven.com/a/fern_02) (model, 2k): Rob Tuytel, Rico Cilliers
+- [Shrub 01](https://polyhaven.com/a/shrub_01) (model, 2k): Rico Cilliers
+- [Shrub 04](https://polyhaven.com/a/shrub_04) (model, 2k): Rico Cilliers
+- [Grass Medium 01](https://polyhaven.com/a/grass_medium_01) (model, 2k): Rob Tuytel, Rico Cilliers
+- [Moss 01](https://polyhaven.com/a/moss_01) (model, 2k): Rob Tuytel
+- [Celandine 01](https://polyhaven.com/a/celandine_01) (model, 2k): Rob Tuytel, Rico Cilliers
+- [Nettle Plant](https://polyhaven.com/a/nettle_plant) (model, 2k): Rob Tuytel, Rico Cilliers
+- [Weed Plant 02](https://polyhaven.com/a/weed_plant_02) (model, 2k): Rob Tuytel, Rico Cilliers
+- [Tree Stump 01](https://polyhaven.com/a/tree_stump_01) (model, 2k): Rob Tuytel
+- [Tree Stump 02](https://polyhaven.com/a/tree_stump_02) (model, 2k): Rob Tuytel
+- [Dead Tree Trunk](https://polyhaven.com/a/dead_tree_trunk) (model, 2k): Rob Tuytel
+- [Dead Tree Trunk 02](https://polyhaven.com/a/dead_tree_trunk_02) (model, 2k): Jenelle van Heerden, Rico Cilliers
+- [Pine Roots](https://polyhaven.com/a/pine_roots) (model, 2k): Rob Tuytel
+- [Root Cluster 01](https://polyhaven.com/a/root_cluster_01) (model, 2k): Jenelle van Heerden, Rico Cilliers
+- [Bark Debris 01](https://polyhaven.com/a/bark_debris_01) (model, 2k): Greg Zaal, Jenelle van Heerden
+- [Dry Branches Medium 01](https://polyhaven.com/a/dry_branches_medium_01) (model, 2k): Rico Cilliers
+- [Wooden Lantern 01](https://polyhaven.com/a/wooden_lantern_01) (model, 2k): James Ray Cock
+- [Stone Fire Pit](https://polyhaven.com/a/stone_fire_pit) (model, 2k): Sebastian Platen
+- [Modular Wooden Pier](https://polyhaven.com/a/modular_wooden_pier) (model, 2k): Rico Cilliers
+- [Kloofendal 48d Partly Cloudy (Pure Sky)](https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky) (hdri, 4k): Greg Zaal, Jarod Guest
+- [Lilienstein](https://polyhaven.com/a/lilienstein) (hdri, 4k): Andreas Mischok
+- [The Sky Is On Fire](https://polyhaven.com/a/the_sky_is_on_fire) (hdri, 4k): Greg Zaal, Rico Cilliers
+- [Kloppenheim 06 (Pure Sky)](https://polyhaven.com/a/kloppenheim_06_puresky) (hdri, 4k): Greg Zaal, Jarod Guest
+- [Spruit Sunrise](https://polyhaven.com/a/spruit_sunrise) (hdri, 4k): Greg Zaal
+- [Belfast Sunset (Pure Sky)](https://polyhaven.com/a/belfast_sunset_puresky) (hdri, 4k): Greg Zaal, Dimitrios Savva, Jarod Guest
+- [Venice Sunset](https://polyhaven.com/a/venice_sunset) (hdri, 4k): Greg Zaal
+- [Autumn Field (Pure Sky)](https://polyhaven.com/a/autumn_field_puresky) (hdri, 4k): Jarod Guest, Sergej Majboroda
+- [Noon Grass](https://polyhaven.com/a/noon_grass) (hdri, 4k): Greg Zaal
+- [Meadow 2](https://polyhaven.com/a/meadow_2) (hdri, 4k): Sergej Majboroda
+- [Rogland Clear Night](https://polyhaven.com/a/rogland_clear_night) (hdri, 4k): Greg Zaal
+- [Dikhololo Night](https://polyhaven.com/a/dikhololo_night) (hdri, 4k): Greg Zaal
+- [Overcast Soil (Pure Sky)](https://polyhaven.com/a/overcast_soil_puresky) (hdri, 4k): Jarod Guest, Sergej Majboroda
+- [Citrus Orchard Road (Pure Sky)](https://polyhaven.com/a/citrus_orchard_road_puresky) (hdri, 4k): Dimitrios Savva, Jarod Guest
+- [Kiara 1 Dawn](https://polyhaven.com/a/kiara_1_dawn) (hdri, 4k): Greg Zaal
+- [Golden Gate Hills](https://polyhaven.com/a/golden_gate_hills) (hdri, 4k): Dimitrios Savva, Jarod Guest
+- [Moonless Golf](https://polyhaven.com/a/moonless_golf) (hdri, 4k): Greg Zaal
+- [Satara Night](https://polyhaven.com/a/satara_night) (hdri, 4k): Greg Zaal
+- [Kloppenheim 02](https://polyhaven.com/a/kloppenheim_02) (hdri, 4k): Greg Zaal
+- [Spiaggia di Mondello](https://polyhaven.com/a/spiaggia_di_mondello) (hdri, 4k): Andreas Mischok
+- [Sunflowers (Pure Sky)](https://polyhaven.com/a/sunflowers_puresky) (hdri, 4k): Jarod Guest, Sergej Majboroda
+- [Rural Asphalt Road](https://polyhaven.com/a/rural_asphalt_road) (hdri, 4k): Alexander Scholten
+- [Shanghai Bund](https://polyhaven.com/a/shanghai_bund) (hdri, 4k): Greg Zaal
+- [Red Brick 03](https://polyhaven.com/a/red_brick_03) (texture, 4k): Rob Tuytel
+- [Medieval Blocks 03](https://polyhaven.com/a/medieval_blocks_03) (texture, 4k): Rob Tuytel
+- [Castle Brick 02 Red](https://polyhaven.com/a/castle_brick_02_red) (texture, 4k): Rob Tuytel
+- [Stone Brick Wall 001](https://polyhaven.com/a/stone_brick_wall_001) (texture, 4k): Dimitrios Savva, Rico Cilliers
+- [Concrete Floor Worn 001](https://polyhaven.com/a/concrete_floor_worn_001) (texture, 4k): Dimitrios Savva, Rico Cilliers
+- [Painted Plaster Wall](https://polyhaven.com/a/painted_plaster_wall) (texture, 4k): Amal Kumar
+- [White Plaster 02](https://polyhaven.com/a/white_plaster_02) (texture, 4k): Rob Tuytel
+- [Gravel Embedded Concrete](https://polyhaven.com/a/gravel_embedded_concrete) (texture, 4k): Charlotte Baglioni
+- [Weathered Brown Planks](https://polyhaven.com/a/weathered_brown_planks) (texture, 4k): Dimitrios Savva, Rico Cilliers
+- [Wood Floor](https://polyhaven.com/a/wood_floor) (texture, 4k): Dimitrios Savva
+- [Rough Wood](https://polyhaven.com/a/rough_wood) (texture, 4k): Rob Tuytel
+- [Wood Table 001](https://polyhaven.com/a/wood_table_001) (texture, 4k): Dimitrios Savva, Rico Cilliers
+- [Metal Plate](https://polyhaven.com/a/metal_plate) (texture, 4k): Rob Tuytel
+- [Green Metal Rust](https://polyhaven.com/a/green_metal_rust) (texture, 4k): Rob Tuytel
+- [Rust Coarse 01](https://polyhaven.com/a/rust_coarse_01) (texture, 4k): Dimitrios Savva, Rico Cilliers
+- [Corrugated Iron](https://polyhaven.com/a/corrugated_iron) (texture, 4k): Jenelle van Heerden, Dimitrios Savva
+- [Brown Leather](https://polyhaven.com/a/brown_leather) (texture, 4k): Rob Tuytel
+- [Denim Fabric](https://polyhaven.com/a/denim_fabric) (texture, 4k): Rob Tuytel
+- [Clay Roof Tiles 02](https://polyhaven.com/a/clay_roof_tiles_02) (texture, 4k): Amal Kumar
+- [Roof Slates 03](https://polyhaven.com/a/roof_slates_03) (texture, 4k): Rob Tuytel
+- [Thatch Roof Angled](https://polyhaven.com/a/thatch_roof_angled) (texture, 4k): Rob Tuytel, Dimitrios Savva
+- [Stone Embedded Tiles](https://polyhaven.com/a/stone_embedded_tiles) (texture, 4k): Dimitrios Savva
+- [Terrazzo Tiles](https://polyhaven.com/a/terrazzo_tiles) (texture, 4k): Amal Kumar
+- [Checkered Pavement Tiles](https://polyhaven.com/a/checkered_pavement_tiles) (texture, 4k): Amal Kumar
+- [Cobblestone Floor 04](https://polyhaven.com/a/cobblestone_floor_04) (texture, 4k): Rob Tuytel
+- [Mossy Cobblestone](https://polyhaven.com/a/mossy_cobblestone) (texture, 4k): Sơn Nguyễn
+- [Cobblestone Large 01](https://polyhaven.com/a/cobblestone_large_01) (texture, 4k): Rob Tuytel
+- [Asphalt 02](https://polyhaven.com/a/asphalt_02) (texture, 4k): Rob Tuytel
+- [Aerial Rocks 02](https://polyhaven.com/a/aerial_rocks_02) (texture, 4k): Rob Tuytel
+- [Aerial Grass Rock](https://polyhaven.com/a/aerial_grass_rock) (texture, 4k): Rob Tuytel
+- [Rocks Ground 02](https://polyhaven.com/a/rocks_ground_02) (texture, 4k): Rob Tuytel
+- [Lichen Rock](https://polyhaven.com/a/lichen_rock) (texture, 4k): Rico Cilliers
+- [Cliff Side](https://polyhaven.com/a/cliff_side) (texture, 4k): James Ray Cock, Jenelle van Heerden, Dario Barresi
+- [Dry Riverbed Rock](https://polyhaven.com/a/dry_riverbed_rock) (texture, 4k): Amal Kumar
+- [Snow Field Aerial](https://polyhaven.com/a/snow_field_aerial) (texture, 4k): Rob Tuytel
+- [Forest Leaves 02](https://polyhaven.com/a/forest_leaves_02) (texture, 4k): Rob Tuytel
+- [Coast Sand Rocks 02](https://polyhaven.com/a/coast_sand_rocks_02) (texture, 4k): Rob Tuytel
+- [Sparse Grass](https://polyhaven.com/a/sparse_grass) (texture, 4k): Amal Kumar
+- [Grass Path 2](https://polyhaven.com/a/grass_path_2) (texture, 4k): Rob Tuytel
+- [Red Brick](https://polyhaven.com/a/red_brick) (texture, 4k): Rob Tuytel
+- [Brick Wall 001](https://polyhaven.com/a/brick_wall_001) (texture, 4k): Rob Tuytel, Dimitrios Savva
+- [Sandstone Blocks 05](https://polyhaven.com/a/sandstone_blocks_05) (texture, 4k): Rob Tuytel
+- [Beige Wall 001](https://polyhaven.com/a/beige_wall_001) (texture, 4k): Dimitrios Savva, Rico Cilliers
+- [Concrete Floor 02](https://polyhaven.com/a/concrete_floor_02) (texture, 4k): Rob Tuytel
+- [Grey Plaster](https://polyhaven.com/a/grey_plaster) (texture, 4k): Rob Tuytel
+- [Laminate Floor 02](https://polyhaven.com/a/laminate_floor_02) (texture, 4k): Dario Barresi, Charlotte Baglioni
+- [Wood Cabinet Worn Long](https://polyhaven.com/a/wood_cabinet_worn_long) (texture, 4k): Dimitrios Savva, Rico Cilliers
+- [Oak Veneer 01](https://polyhaven.com/a/oak_veneer_01) (texture, 4k): Jenelle van Heerden
+- [Rusty Metal 02](https://polyhaven.com/a/rusty_metal_02) (texture, 4k): Rob Tuytel
+- [Blue Metal Plate](https://polyhaven.com/a/blue_metal_plate) (texture, 4k): Rob Tuytel
+- [Roof 09](https://polyhaven.com/a/roof_09) (texture, 4k): Rob Tuytel
+- [Ceramic Roof 01](https://polyhaven.com/a/ceramic_roof_01) (texture, 4k): Rob Tuytel
+- [Roof Tiles 14](https://polyhaven.com/a/roof_tiles_14) (texture, 4k): Rob Tuytel
+- [Grey Cartago 01](https://polyhaven.com/a/grey_cartago_01) (texture, 4k): Lucas Sánchez Ros, Jenelle van Heerden
+- [Granite Tile 03](https://polyhaven.com/a/granite_tile_03) (texture, 4k): Charlotte Baglioni
+- [Worn Tile Floor](https://polyhaven.com/a/worn_tile_floor) (texture, 4k): Dimitrios Savva
+- [Cobblestone Floor 08](https://polyhaven.com/a/cobblestone_floor_08) (texture, 4k): Rob Tuytel
+- [Patterned Cobblestone](https://polyhaven.com/a/patterned_cobblestone) (texture, 4k): Rob Tuytel
+- [Asphalt 01](https://polyhaven.com/a/asphalt_01) (texture, 4k): Dario Barresi, Charlotte Baglioni
+- [Aerial Rocks 04](https://polyhaven.com/a/aerial_rocks_04) (texture, 4k): Rob Tuytel
+- [Rock Boulder Dry](https://polyhaven.com/a/rock_boulder_dry) (texture, 4k): Dimitrios Savva, Rico Cilliers
+- [Rocks Ground 05](https://polyhaven.com/a/rocks_ground_05) (texture, 4k): Rob Tuytel
+- [Gray Rocks](https://polyhaven.com/a/gray_rocks) (texture, 4k): Dimitrios Savva
+- [Snow 03](https://polyhaven.com/a/snow_03) (texture, 4k): Rob Tuytel
+- [Sand 01](https://polyhaven.com/a/sand_01) (texture, 4k): Rob Tuytel
+- [Leaves Forest Ground](https://polyhaven.com/a/leaves_forest_ground) (texture, 4k): Dario Barresi, Dimitrios Savva
+- [Mud Forest](https://polyhaven.com/a/mud_forest) (texture, 4k): eye-candy.xyz
+- [Brown Mud Dry](https://polyhaven.com/a/brown_mud_dry) (texture, 4k): Rob Tuytel
+- [Forest Floor](https://polyhaven.com/a/forest_floor) (texture, 4k): eye-candy.xyz
+- [Lantern 01](https://polyhaven.com/a/Lantern_01) (model, 2k): Rajil Jose Macatangay
+- [Brass Diya Lantern](https://polyhaven.com/a/brass_diya_lantern) (model, 2k): Bhargav Kubal
+- [Chinese Chandelier](https://polyhaven.com/a/chinese_chandelier) (model, 2k): Kirill Sannikov
+- [Street Lamp 01](https://polyhaven.com/a/street_lamp_01) (model, 2k): Josh Dean
+- [Barrel_01](https://polyhaven.com/a/Barrel_01) (model, 2k): Jorge Camacho
+- [Wooden Crate 01](https://polyhaven.com/a/wooden_crate_01) (model, 2k): James Ray Cock
+- [Wine Barrel 01](https://polyhaven.com/a/wine_barrel_01) (model, 2k): James Ray Cock
+- [Treasure Chest](https://polyhaven.com/a/treasure_chest) (model, 2k): Rico Cilliers
+- [Antique Ceramic Vase 01](https://polyhaven.com/a/antique_ceramic_vase_01) (model, 2k): James Ray Cock
+- [Ceramic Vase 01](https://polyhaven.com/a/ceramic_vase_01) (model, 2k): James Ray Cock
+- [Cardboard Box 01](https://polyhaven.com/a/cardboard_box_01) (model, 2k): Rahul Chaudhary
+- [Tea Set 01](https://polyhaven.com/a/tea_set_01) (model, 2k): James Ray Cock, Rico Cilliers, Jurita Burger
+- [Chess Set](https://polyhaven.com/a/chess_set) (model, 2k): Riley Queen
+- [Horse Statue 01](https://polyhaven.com/a/horse_statue_01) (model, 2k): Rico Cilliers
+- [Marble Bust 01](https://polyhaven.com/a/marble_bust_01) (model, 2k): Rico Cilliers
+- [Alarm Clock 01](https://polyhaven.com/a/alarm_clock_01) (model, 2k): Yann Kervran, James Ray Cock
+- [Camera 01](https://polyhaven.com/a/Camera_01) (model, 2k): Rajil Jose Macatangay
+- [Wooden Table 02](https://polyhaven.com/a/wooden_table_02) (model, 2k): Serhii Khromov
+- [Round Wooden Table 01](https://polyhaven.com/a/round_wooden_table_01) (model, 2k): Ulan Cabanilla
+- [Outdoor Table Chair Set 01](https://polyhaven.com/a/outdoor_table_chair_set_01) (model, 2k): James Ray Cock
+- [Wooden Picnic Table](https://polyhaven.com/a/wooden_picnic_table) (model, 2k): Ulan Cabanilla
+- [Rockingchair 01](https://polyhaven.com/a/Rockingchair_01) (model, 2k): Jorge Camacho
+- [Gothic Cabinet 01](https://polyhaven.com/a/GothicCabinet_01) (model, 2k): Kirill Sannikov
+- [Sofa 02](https://polyhaven.com/a/sofa_02) (model, 2k): Kirill Sannikov
+- [Arm Chair 01](https://polyhaven.com/a/ArmChair_01) (model, 2k): Kirill Sannikov
+- [Wooden Hammer 01](https://polyhaven.com/a/wooden_hammer_01) (model, 2k): James Ray Cock
+- [Rusted Spade 01](https://polyhaven.com/a/rusted_spade_01) (model, 2k): Blemonade
+- [Watering Can Metal 01](https://polyhaven.com/a/watering_can_metal_01) (model, 2k): Charles Nderitu
+- [Metal Tool Chest](https://polyhaven.com/a/metal_tool_chest) (model, 2k): Yann Kervran, John Hutcheson
+- [Crowbar 01](https://polyhaven.com/a/crowbar_01) (model, 2k): Alexander Otterbeck
+- [Large Castle Door](https://polyhaven.com/a/large_castle_door) (model, 2k): Tina
+- [Concrete Road Barrier](https://polyhaven.com/a/concrete_road_barrier) (model, 2k): Amal Kumar
+- [Fire Hydrant](https://polyhaven.com/a/fire_hydrant) (model, 2k): Gonçalo Felício
+- [Utility Box 01](https://polyhaven.com/a/utility_box_01) (model, 2k): James Ray Cock
+- [Island Tree 02](https://polyhaven.com/a/island_tree_02) (model, 2k): Rob Tuytel, Rico Cilliers
+- [Dandelion 01](https://polyhaven.com/a/dandelion_01) (model, 2k): Rob Tuytel, Rico Cilliers
+- [Grass Medium 02](https://polyhaven.com/a/grass_medium_02) (model, 2k): Rico Cilliers
+- [Potted Plant 02](https://polyhaven.com/a/potted_plant_02) (model, 2k): Rico Cilliers
+- [Potted Plant 04](https://polyhaven.com/a/potted_plant_04) (model, 2k): James Ray Cock
+- [Shrub 02](https://polyhaven.com/a/shrub_02) (model, 2k): Rico Cilliers
+- [Shrub 03](https://polyhaven.com/a/shrub_03) (model, 2k): Rico Cilliers
+- [Namaqualand Boulder 03](https://polyhaven.com/a/namaqualand_boulder_03) (model, 2k): Jenelle van Heerden, Dario Barresi
+- [Coast Land Rocks 04](https://polyhaven.com/a/coast_land_rocks_04) (model, 2k): Rob Tuytel, Rico Cilliers
+- [Rock Face 02](https://polyhaven.com/a/rock_face_02) (model, 2k): Dario Barresi, Rico Cilliers
+- [Mountainside](https://polyhaven.com/a/mountainside) (model, 2k): Dario Barresi, Rico Cilliers
+- [Food Apple 01](https://polyhaven.com/a/food_apple_01) (model, 2k): Oliver Harries
+- [Barrel 02](https://polyhaven.com/a/Barrel_02) (model, 2k): Jorge Camacho
+- [Barrel 03](https://polyhaven.com/a/barrel_03) (model, 2k): Serhii Khromov
+- [Brass Vase 03](https://polyhaven.com/a/brass_vase_03) (model, 2k): Rico Cilliers
+- [Metal Trash Can](https://polyhaven.com/a/metal_trash_can) (model, 2k): GurJas Studios
+- [Ceramic Vase 02](https://polyhaven.com/a/ceramic_vase_02) (model, 2k): James Ray Cock
+- [Sofa 03](https://polyhaven.com/a/sofa_03) (model, 2k): Fran Calvente
+- [Green Chair 01](https://polyhaven.com/a/GreenChair_01) (model, 2k): Kirill Sannikov
+- [Ottoman 01](https://polyhaven.com/a/Ottoman_01) (model, 2k): Caspian Fortune
+- [Plastic Monobloc Chair 01](https://polyhaven.com/a/plastic_monobloc_chair_01) (model, 2k): Kuutti Siitonen
+- [School Chair 01](https://polyhaven.com/a/SchoolChair_01) (model, 2k): Ethan Place
+- [Mid Century Lounge Chair](https://polyhaven.com/a/mid_century_lounge_chair) (model, 2k): Kuutti Siitonen
+- [Street Lamp 02](https://polyhaven.com/a/street_lamp_02) (model, 2k): Josh Dean
+- [Brass Candleholders](https://polyhaven.com/a/brass_candleholders) (model, 2k): Tina
+- [Wooden Candlestick](https://polyhaven.com/a/wooden_candlestick) (model, 2k): Josh Dean
+- [Vintage Oil Lamp](https://polyhaven.com/a/vintage_oil_lamp) (model, 2k): Monsta3D
+- [Concrete Road Barrier 02](https://polyhaven.com/a/concrete_road_barrier_02) (model, 2k): Amal Kumar
+- [Utility Box 02](https://polyhaven.com/a/utility_box_02) (model, 2k): James Ray Cock
+- [Island Tree 01](https://polyhaven.com/a/island_tree_01) (model, 2k): Rob Tuytel, Rico Cilliers
+- [Quiver Tree 01](https://polyhaven.com/a/quiver_tree_01) (model, 2k): James Ray Cock, Dario Barresi, Rico Cilliers
+- [Dead Quiver Trunk](https://polyhaven.com/a/dead_quiver_trunk) (model, 2k): James Ray Cock, Dario Barresi, Rico Cilliers
+- [Namaqualand Boulder 05](https://polyhaven.com/a/namaqualand_boulder_05) (model, 2k): Jenelle van Heerden, Dario Barresi
+- [Coast Rocks 01](https://polyhaven.com/a/coast_rocks_01) (model, 2k): Rob Tuytel, Rico Cilliers
