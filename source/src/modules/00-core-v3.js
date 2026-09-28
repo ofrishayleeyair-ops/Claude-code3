@@ -34,7 +34,7 @@ const V3={
   ultra:    {pipeline:true, gi:true, taa:true, gtao:true, ssr:true, ssgi:true, volumetrics:true, clouds:2,dof:false,motionBlur:false,autoExposure:true, cascades:4,lod:1.25,fur:true, vfx:1,  lights:8,upscale:1,dynamicRes:false},
 };
 for(const [name,extra] of Object.entries(V3))Object.assign(KE.PRESETS[name],extra);
-KE.PRESETS.cinematic={...KE.PRESETS.ultra,preset:'cinematic',scale:1.6,shadowRes:2048,tex:512,grass:20000,view:220,aniso:16,dof:true,motionBlur:true,lod:1.5,lights:12};
+KE.PRESETS.cinematic={...KE.PRESETS.ultra,preset:'cinematic',scale:1.6,shadowRes:2048,tex:512,grass:20000,view:220,aniso:16,dof:false,motionBlur:false,lod:1.5,lights:12};/* no gameplay depth of field or motion blur: they blurred the whole landscape behind the player; photo modes enable DOF themselves */
 KE.PRESET_ORDER=['cinematic','ultra','high','medium','low'];
 const BOOL_V3=['pipeline','gi','taa','gtao','ssr','ssgi','volumetrics','dof','motionBlur','autoExposure','fur','dynamicRes'];
 const NUM_V3=[['upscale',.5,1,false],['clouds',0,2,true],['cascades',1,4,true],['lod',.25,2,false],['vfx',0,1,false],['lights',0,16,true]];

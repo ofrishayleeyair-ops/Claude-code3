@@ -572,35 +572,44 @@ const keReliefGLSL=`vec3 keReliefNormal(vec3 pos,vec3 n,float h,float strength){
 KE.splatMaterial=(THREE,mats,o={})=>{
  if(!mats.heightMaps)return KE.legacyRendering.splatMaterial(THREE,mats,o);
  const m=new THREE.MeshStandardMaterial({vertexColors:true,roughness:.92,metalness:0});m.extensions={derivatives:true};m.userData.keTextures=[...mats,...mats.heightMaps];
- m.onBeforeCompile=sh=>{mats.forEach((t,i)=>sh.uniforms['keTile'+i]={value:t});sh.uniforms.keHA={value:mats.heightMaps[0]};sh.uniforms.keHB={value:mats.heightMaps[1]};sh.uniforms.keScale={value:o.scale||.38};sh.uniforms.keRelief={value:o.relief===undefined?.34:o.relief};
+ m.onBeforeCompile=sh=>{mats.forEach((t,i)=>sh.uniforms['keTile'+i]={value:t});sh.uniforms.keHA={value:mats.heightMaps[0]};sh.uniforms.keHB={value:mats.heightMaps[1]};sh.uniforms.keHTexel={value:2/mats.heightMaps[0].image.width};sh.uniforms.keScale={value:o.scale||.38};sh.uniforms.keRelief={value:o.relief===undefined?.34:o.relief};
  sh.vertexShader='attribute vec4 splatA;attribute vec4 splatB;varying vec4 kA;varying vec4 kB;varying vec3 kWorld;varying vec3 kNormal;\n'+sh.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\nkA=splatA;kB=splatB;kWorld=(modelMatrix*vec4(position,1.)).xyz;kNormal=normalize(mat3(modelMatrix)*objectNormal);');
- sh.fragmentShader=`${Array.from({length:8},(_,i)=>'uniform sampler2D keTile'+i+';').join('\n')}\nuniform sampler2D keHA;uniform sampler2D keHB;uniform float keScale;uniform float keRelief;varying vec4 kA;varying vec4 kB;varying vec3 kWorld;varying vec3 kNormal;\n${keReliefGLSL}\n`+sh.fragmentShader;
+ sh.fragmentShader=`${Array.from({length:8},(_,i)=>'uniform sampler2D keTile'+i+';').join('\n')}\nuniform sampler2D keHA;uniform sampler2D keHB;uniform float keHTexel;uniform float keScale;uniform float keRelief;varying vec4 kA;varying vec4 kB;varying vec3 kWorld;varying vec3 kNormal;\n${keReliefGLSL}\n`+sh.fragmentShader;
  sh.fragmentShader=sh.fragmentShader.replace('#include <map_fragment>',`
  vec2 kuv=kWorld.xz*keScale;vec4 khA=texture2D(keHA,kuv),khB=texture2D(keHB,kuv);
  vec4 ka=pow(max(kA,vec4(0.))*mix(vec4(.62),vec4(1.45),khA),vec4(1.5));vec4 kb=pow(max(kB,vec4(0.))*mix(vec4(.62),vec4(1.45),khB),vec4(1.5));float ksum=dot(ka,vec4(1.))+dot(kb,vec4(1.))+1e-6;ka/=ksum;kb/=ksum;
  vec3 kn=pow(abs(normalize(kNormal)),vec3(4.));kn/=kn.x+kn.y+kn.z;
  vec3 cliff=texture2D(keTile4,kWorld.zy*keScale*.65).rgb*kn.x+texture2D(keTile4,kuv).rgb*kn.y+texture2D(keTile4,kWorld.xy*keScale*.65).rgb*kn.z;
  vec3 kcol=texture2D(keTile0,kuv).rgb*ka.x+texture2D(keTile1,kuv).rgb*ka.y+texture2D(keTile2,kuv).rgb*ka.z+texture2D(keTile3,kuv).rgb*ka.w+cliff*kb.x+texture2D(keTile5,kuv).rgb*kb.y+texture2D(keTile6,kuv).rgb*kb.z+texture2D(keTile7,kuv).rgb*kb.w;
- float kmacro=sin(kWorld.x*.17+sin(kWorld.z*.11))*sin(kWorld.z*.2)*.055;
+ /* macro variation: the tiles' own luma sampled at 1/14 and 1/53 scale, centred on its mean (the 1x1 mip), breaks up tiling over tens of metres */
+ vec4 kmA=texture2D(keHA,kWorld.xz*keScale*.071+vec2(.31,.17)),kmB=texture2D(keHA,kWorld.xz*keScale*.019+vec2(.63,.41)),kmM=texture2D(keHA,vec2(.5),16.);
+ float kmacro=clamp((kmA.x-kmM.x)*1.6+(kmB.z-kmM.z)*1.3,-.3,.3);
  diffuseColor.rgb*=pow(max(kcol,vec3(0.)),vec3(2.2))*(1.0+kmacro);
  float kHeight=dot(khA,ka)+dot(khB,kb);
- `).replace('#include <normal_fragment_maps>','#include <normal_fragment_maps>\nnormal=keReliefNormal(-vViewPosition,normal,kHeight,keRelief);');
+ /* relief from texture-space differences two texels apart: smooth, and it fades by itself where coarser mips are sampled */
+ vec2 kte=vec2(keHTexel,0.);vec3 kGrad=vec3(dot(texture2D(keHA,kuv+kte),ka)+dot(texture2D(keHB,kuv+kte),kb)-kHeight,0.,dot(texture2D(keHA,kuv+kte.yx),ka)+dot(texture2D(keHB,kuv+kte.yx),kb)-kHeight);
+ `).replace('#include <normal_fragment_maps>','#include <normal_fragment_maps>\n{vec3 kgv=(viewMatrix*vec4(kGrad,0.)).xyz;normal=normalize(normal-keRelief*30.*(kgv-normal*dot(kgv,normal)));}');
  };
- m.customProgramCacheKey=()=> 'ke-terrain-detail-2.1';return m;
+ m.customProgramCacheKey=()=> 'ke-terrain-detail-3.0';return m;
 };
 KE.detailTextures=(THREE,size=512)=>{if(KE._detailTex&&KE._detailTex.size===size)return KE._detailTex.maps;const maps={};for(const kind of ['bark','roof','leaf','plaster','lacquer','stone','wood','rock','fur'])maps[kind]=KE.paintTile(THREE,kind,size);KE._detailTex={size,maps};return maps;};
 KE.surface=(THREE,kind,o={})=>{
  const maps=KE.detailTextures(THREE,o.textureSize||KE.settings.tex||512),map=maps[kind]||maps.stone,m=new THREE.MeshStandardMaterial({color:o.color===undefined?0xffffff:o.color,roughness:o.roughness===undefined?.87:o.roughness,metalness:o.metalness||0,emissive:o.emissive||0,side:o.side||THREE.FrontSide});m.extensions={derivatives:true};m.userData.keTextures=[map];
- m.onBeforeCompile=sh=>{sh.uniforms.keDetail={value:map};sh.uniforms.keSurfaceScale={value:o.scale||.75};sh.uniforms.keSurfaceBump={value:o.bump===undefined?.16:o.bump};
+ m.onBeforeCompile=sh=>{sh.uniforms.keDetail={value:map};sh.uniforms.keDetailTexel={value:2/((map.image&&map.image.width)||512)};sh.uniforms.keSurfaceScale={value:o.scale||.75};sh.uniforms.keSurfaceBump={value:o.bump===undefined?.16:o.bump};
  sh.vertexShader='varying vec3 ksWorld;varying vec3 ksNormal;\n'+sh.vertexShader.replace('#include <begin_vertex>',`#include <begin_vertex>
  vec4 ksp=vec4(transformed,1.);vec3 ksn=objectNormal;
  #ifdef USE_INSTANCING
  ksp=instanceMatrix*ksp;ksn=mat3(instanceMatrix)*ksn;
  #endif
  ksWorld=(modelMatrix*ksp).xyz;ksNormal=normalize(mat3(modelMatrix)*ksn);`);
- sh.fragmentShader=`uniform sampler2D keDetail;uniform float keSurfaceScale;uniform float keSurfaceBump;varying vec3 ksWorld;varying vec3 ksNormal;${keReliefGLSL}\n`+sh.fragmentShader;
- sh.fragmentShader=sh.fragmentShader.replace('#include <map_fragment>',`vec3 ksBlend=pow(abs(normalize(ksNormal)),vec3(4.));ksBlend/=ksBlend.x+ksBlend.y+ksBlend.z;vec3 ksSample=texture2D(keDetail,ksWorld.zy*keSurfaceScale).rgb*ksBlend.x+texture2D(keDetail,ksWorld.xz*keSurfaceScale).rgb*ksBlend.y+texture2D(keDetail,ksWorld.xy*keSurfaceScale).rgb*ksBlend.z;diffuseColor.rgb*=pow(max(ksSample,vec3(0.)),vec3(2.2))*1.8;float ksH=dot(ksSample,vec3(.299,.587,.114));`).replace('#include <normal_fragment_maps>','#include <normal_fragment_maps>\nnormal=keReliefNormal(-vViewPosition,normal,ksH,keSurfaceBump);');};
- m.color.convertSRGBToLinear();m.customProgramCacheKey=()=> 'ke-surface-detail-2.1';return m;
+ sh.fragmentShader=`uniform sampler2D keDetail;uniform float keDetailTexel;uniform float keSurfaceScale;uniform float keSurfaceBump;varying vec3 ksWorld;varying vec3 ksNormal;${keReliefGLSL}\n`+sh.fragmentShader;
+ /* triplanar detail; relief from texture-space luma differences two texels apart on each plane (smooth and mip-aware) */
+ sh.fragmentShader=sh.fragmentShader.replace('#include <map_fragment>',`vec3 ksBlend=pow(abs(normalize(ksNormal)),vec3(4.));ksBlend/=ksBlend.x+ksBlend.y+ksBlend.z;const vec3 ksY=vec3(.299,.587,.114);vec2 kse=vec2(keDetailTexel,0.);
+ vec2 ksu=ksWorld.zy*keSurfaceScale,ksv=ksWorld.xz*keSurfaceScale,ksw=ksWorld.xy*keSurfaceScale;vec3 ksa=texture2D(keDetail,ksu).rgb,ksb=texture2D(keDetail,ksv).rgb,ksc=texture2D(keDetail,ksw).rgb;
+ vec3 ksSample=ksa*ksBlend.x+ksb*ksBlend.y+ksc*ksBlend.z;diffuseColor.rgb*=pow(max(ksSample,vec3(0.)),vec3(2.2))*1.8;
+ float ha=dot(ksa,ksY),hb=dot(ksb,ksY),hc=dot(ksc,ksY);
+ vec3 ksGrad=ksBlend.x*vec3(0.,dot(texture2D(keDetail,ksu+kse.yx).rgb,ksY)-ha,dot(texture2D(keDetail,ksu+kse).rgb,ksY)-ha)+ksBlend.y*vec3(dot(texture2D(keDetail,ksv+kse).rgb,ksY)-hb,0.,dot(texture2D(keDetail,ksv+kse.yx).rgb,ksY)-hb)+ksBlend.z*vec3(dot(texture2D(keDetail,ksw+kse).rgb,ksY)-hc,dot(texture2D(keDetail,ksw+kse.yx).rgb,ksY)-hc,0.);`).replace('#include <normal_fragment_maps>','#include <normal_fragment_maps>\n{vec3 ksg=(viewMatrix*vec4(ksGrad,0.)).xyz;normal=normalize(normal-keSurfaceBump*30.*(ksg-normal*dot(ksg,normal)));}');};
+ m.color.convertSRGBToLinear();m.customProgramCacheKey=()=> 'ke-surface-detail-3.0';return m;
 };
 // Alpha-tested leaf sprays produce irregular silhouettes rather than solid green balls.
 KE.leafSprayTexture=(THREE)=>{

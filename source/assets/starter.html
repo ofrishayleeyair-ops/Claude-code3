@@ -73,7 +73,12 @@ for(const z of [49,37]){const y=ground(48,z),g=new T.Group();g.position.set(48,y
  const ropeCurve=new T.CatmullRomCurve3([new T.Vector3(-2.1,3.85,.36),new T.Vector3(0,3.5,.36),new T.Vector3(2.1,3.85,.36)]);g.add(new T.Mesh(new T.TubeGeometry(ropeCurve,30,.052,7,false),KE.surface(T,'wood',{color:0xedcda2,scale:3,bump:.1,textureSize:detailSize})));
  for(const x of [-1.2,-.5,.5,1.2]){const paper=mesh(new T.PlaneGeometry(.12,.55),new T.MeshStandardMaterial({color:0xf5eccf,side:T.DoubleSide,roughness:1}),x,3.36,.38,g);paper.rotation.z=x*.15;}
 }
-for(let z=30;z<70;z+=1.1){const x=48+Math.sin(z*.13)*2,y=ground(x,z),m=mesh(new T.CylinderGeometry(.62,.69,.14,8),stoneMat,x,y+.05,z);m.rotation.y=rng()*6.28;}
+/* Stepping stones: flattened sculpted rocks (KE.proceduralRock) in three shapes, one instanced draw each. */
+const pathSpots=[];for(let z=30;z<70;z+=1.1){const x=48+Math.sin(z*.13)*2;pathSpots.push([x,ground(x,z),z,rng()*6.28]);}
+if(has('geometry')){const detail=S.preset==='low'?2:S.preset==='medium'?3:4,pathMat=KE.surface(T,'rock',{color:0xffffff,scale:.9,textureSize:detailSize,bump:.12});pathMat.vertexColors=true;
+ for(let v=0;v<3;v++){const set=pathSpots.filter((p,i)=>i%3===v),im=new T.InstancedMesh(KE.proceduralRock(T,{detail,seed:31+v*17,flatten:.9,roughness:.26,color:0xd3cfc2,moss:false}),pathMat,set.length);
+  set.forEach(([x,y,z,a],i)=>{dummy.position.set(x,y+.02,z);dummy.rotation.set(0,a,0);dummy.scale.set(.66,.16,.6);dummy.updateMatrix();im.setMatrixAt(i,dummy.matrix);});im.castShadow=im.receiveShadow=true;im.name='path-stones';scene.add(im);}}
+else for(const [x,y,z,a] of pathSpots)mesh(new T.CylinderGeometry(.62,.69,.14,8),stoneMat,x,y+.05,z).rotation.y=a;
 /* Roof surface is genuinely curved geometry, with separate ridge, rafters and tile caps. */
 const shrine=new T.Group();shrine.position.set(48,ground(48,28),28);staticScenery.add(shrine);
 mesh(new T.BoxGeometry(5.6,.48,4.5),stoneMat,0,.24,0,shrine);mesh(new T.BoxGeometry(4.6,.22,3.7),wood,0,.58,0,shrine);
@@ -113,7 +118,15 @@ treePoints.forEach(([x,z,s],i)=>{const y=ground(x,z);dummy.rotation.set(0,rng()*
 });
 for(const m of [trunks,branches,canopies,sprays]){m.castShadow=m.receiveShadow=true;scene.add(m);}
 }
-const rocks=new T.InstancedMesh(new T.IcosahedronGeometry(1,2),rockMat,90);for(let i=0;i<90;i++){const a=rng()*6.283,r=25+rng()*9,x=48+Math.sin(a)*r,z=49+Math.cos(a)*r,s=.25+rng()*1.4;dummy.position.set(x,ground(x,z)+s*.25,z);dummy.scale.set(s*1.6,s*.8,s);dummy.rotation.set(rng(),rng()*3,rng()*.5);dummy.updateMatrix();rocks.setMatrixAt(i,dummy.matrix);}rocks.castShadow=rocks.receiveShadow=true;scene.add(rocks);
+/* Shoreline boulders: sculpted procedural rocks with mossy tops in four shapes. Each shape is a KE.InstancedLOD whose levels
+   are the same rock at lower tessellation, so near boulders keep their full silhouette and distant ones cost a few hundred triangles. */
+const rockSpots=[],rockFields=[];for(let i=0;i<90;i++){const a=rng()*6.283,r=25+rng()*9,x=48+Math.sin(a)*r,z=49+Math.cos(a)*r,s=.25+rng()*1.4;rockSpots.push([x,z,s,rng(),rng()*3,rng()]);}
+if(has('geometry')){const top={low:2,medium:3,high:4}[S.preset]||5,shoreMat=KE.surface(T,'rock',{color:0xffffff,scale:.5,textureSize:detailSize,bump:.18});shoreMat.vertexColors=true;
+ for(let v=0;v<4;v++){const set=rockSpots.filter((p,i)=>i%4===v),lods=[];for(let d=top;d>=Math.max(1,top-3);d--){const geometry=KE.proceduralRock(T,{detail:d,seed:101+v*37,roughness:.38,color:0xbdb9ad,moss:0x5d6e36});lods.push({geometry,error:.6/geometry.userData.rock.frequency});}
+  const field=new KE.InstancedLOD(T,lods,shoreMat,{count:set.length,pixelError:1.5,castShadow:true,receiveShadow:true,shadowDistance:70});
+  set.forEach(([x,z,s,a,b,c],i)=>{dummy.position.set(x,ground(x,z)+s*.18,z);dummy.rotation.set((a-.5)*.35,b,(c-.5)*.35);dummy.scale.set(s*1.35,s*.95,s*1.1);dummy.updateMatrix();field.setMatrixAt(i,dummy.matrix);});
+  field.object.name='shore-rocks';scene.add(field.object);rockFields.push(field);}}
+else{const rocks=new T.InstancedMesh(new T.IcosahedronGeometry(1,2),rockMat,90);rockSpots.forEach(([x,z,s,a,b,c],i)=>{dummy.position.set(x,ground(x,z)+s*.25,z);dummy.scale.set(s*1.6,s*.8,s);dummy.rotation.set(a,b,c*.5);dummy.updateMatrix();rocks.setMatrixAt(i,dummy.matrix);});rocks.castShadow=rocks.receiveShadow=true;scene.add(rocks);}
 /* Fern fronds and small flower heads add readable close-range detail. */
 if(has('foliage')&&KE.fernClump){
  /* Ferns and wildflowers (foliage module): real frond geometry with translucent, wind-driven foliage shading; detail by preset. */
@@ -353,7 +366,7 @@ try{renderer.compile(scene,camera);}catch(e){}
 loop.start();
 /* Expose a small debug handle for automated checks and your own development tools. */
 window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,sound,world,editor,guide,setPhoto,startFinale,banners,playIntro:()=>playIntro(()=>{},true),skipIntro:endIntro,isIntro:()=>!!intro,introSeek:t=>{if(intro)intro.seq.seek(t);},getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
- dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();stopFinale();banners.forEach(b=>b.dispose());if(guide)guide.dispose();if(editor)editor.dispose();if(world)world.dispose();if(sound)sound.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
+ dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();stopFinale();banners.forEach(b=>b.dispose());if(guide)guide.dispose();if(editor)editor.dispose();if(world)world.dispose();if(sound)sound.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();rockFields.forEach(f=>{f.dispose();f.lods.forEach(l=>l.geometry.dispose());f.material.dispose();});csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();
 </script>

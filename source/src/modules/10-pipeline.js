@@ -147,16 +147,16 @@ void main(){vec2 uv=snapUV(vUv);float d=rawDepth(uv);vec3 vp=viewPosAt(uv,min(d,
 const TAA_FS=`uniform sampler2D tCurrent;uniform sampler2D tHistory;uniform sampler2D tDepth;uniform mat4 uInvProjU;uniform mat4 uInvView;uniform mat4 uPrevViewProj;uniform vec2 uTexel;uniform vec2 uCurTexel;uniform float uBlend;uniform float uValid;varying vec2 vUv;
 ${KE.GLSL.color}
 vec3 tm(vec3 c){return c/(1.+max(c.r,max(c.g,c.b)));}vec3 itm(vec3 c){return c/max(1.-max(c.r,max(c.g,c.b)),1e-4);}
-vec3 catmull(sampler2D t,vec2 uv){vec2 sz=1./uTexel;vec2 sp=uv*sz;vec2 tp=floor(sp-.5)+.5;vec2 f=sp-tp;vec2 w0=f*(-.5+f*(1.-.5*f)),w1=1.+f*f*(-2.5+1.5*f),w2=f*(.5+f*(2.-1.5*f)),w3=f*f*(-.5+.5*f);vec2 w12=w1+w2;vec2 o12=w2/w12;
+vec3 catmull(sampler2D t,vec2 uv,vec2 uTexel){vec2 sz=1./uTexel;vec2 sp=uv*sz;vec2 tp=floor(sp-.5)+.5;vec2 f=sp-tp;vec2 w0=f*(-.5+f*(1.-.5*f)),w1=1.+f*f*(-2.5+1.5*f),w2=f*(.5+f*(2.-1.5*f)),w3=f*f*(-.5+.5*f);vec2 w12=w1+w2;vec2 o12=w2/w12;
  vec2 t0=(tp-1.)*uTexel,t3=(tp+2.)*uTexel,t12=(tp+o12)*uTexel;vec3 r=texture2D(t,vec2(t12.x,t0.y)).rgb*w12.x*w0.y+texture2D(t,vec2(t0.x,t12.y)).rgb*w0.x*w12.y+texture2D(t,t12).rgb*w12.x*w12.y+texture2D(t,vec2(t3.x,t12.y)).rgb*w3.x*w12.y+texture2D(t,vec2(t12.x,t3.y)).rgb*w12.x*w3.y;
  float ws=w12.x*w0.y+w0.x*w12.y+w12.x*w12.y+w3.x*w12.y+w12.x*w3.y;return max(r/ws,0.);}
 vec3 clipAABB(vec3 lo,vec3 hi,vec3 p,vec3 q){vec3 c=.5*(hi+lo),e=.5*(hi-lo)+1e-5;vec3 v=q-c;vec3 a=abs(v/e);float m=max(a.x,max(a.y,a.z));return m>1.?c+v/m:q;}
-void main(){vec3 cur=keRGBToYCoCg(tm(texture2D(tCurrent,vUv).rgb)),m1=vec3(0.),m2=vec3(0.),mn=vec3(1e9),mx=vec3(-1e9);float cd=1.;vec2 cuv=vUv;
+void main(){/* when upscaling, reconstruct the centre sample with Catmull-Rom as well (bilinear softens it) */vec3 cur=keRGBToYCoCg(tm(uCurTexel.x>uTexel.x*1.01?catmull(tCurrent,vUv,uCurTexel):texture2D(tCurrent,vUv).rgb)),m1=vec3(0.),m2=vec3(0.),mn=vec3(1e9),mx=vec3(-1e9);float cd=1.;vec2 cuv=vUv;
  for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){vec2 o=vec2(float(x),float(y))*uCurTexel;vec3 s=keRGBToYCoCg(tm(texture2D(tCurrent,vUv+o).rgb));m1+=s;m2+=s*s;mn=min(mn,s);mx=max(mx,s);float d=texture2D(tDepth,vUv+o).x;if(d<cd){cd=d;cuv=vUv+o;}}
  vec3 mean=m1/9.,sig=sqrt(max(m2/9.-mean*mean,0.));vec3 lo=max(mean-1.25*sig,mn),hi=min(mean+1.25*sig,mx);
  vec4 p=uInvProjU*vec4(vec3(cuv,cd)*2.-1.,1.);p/=p.w;vec4 pc=uPrevViewProj*(uInvView*vec4(p.xyz,1.));vec2 prev=vUv+(pc.xy/pc.w*.5+.5-cuv);
  float blend=uBlend;if(uValid<.5||prev.x<0.||prev.y<0.||prev.x>1.||prev.y>1.)blend=1.;
- vec3 hist=clipAABB(lo,hi,mean,keRGBToYCoCg(tm(catmull(tHistory,prev))));float motion=length((prev-vUv)/uTexel);blend=clamp(blend+motion*.004,blend,.5);if(uValid<.5||prev.x<0.||prev.y<0.||prev.x>1.||prev.y>1.)blend=1.;
+ vec3 hist=clipAABB(lo,hi,mean,keRGBToYCoCg(tm(catmull(tHistory,prev,uTexel))));float motion=length((prev-vUv)/uTexel);blend=clamp(blend+motion*.004,blend,.5);if(uValid<.5||prev.x<0.||prev.y<0.||prev.x>1.||prev.y>1.)blend=1.;
  float wc=blend/(1.+cur.x),wh=(1.-blend)/(1.+hist.x);vec3 res=(cur*wc+hist*wh)/(wc+wh);gl_FragColor=vec4(itm(keYCoCgToRGB(res)),1.);}`;
 
 /* Depth of field: circle of confusion from linear depth, half-resolution golden-angle gather, then blend. */
@@ -239,7 +239,7 @@ KE.Pipeline=class{
     this.hdr=caps.halfRT&&o.hdr!==false;this.hdrType=this.hdr?THREE.HalfFloatType:THREE.UnsignedByteType;this.depthOK=caps.depthTexture;
     this.enabled=true;this.frame=0;this.historyValid=false;this.size=[0,0];this.internal=[0,0];this.targets=[];this.stats={passes:0,ms:0};
     this.options={taa:true,taaBlend:.1,upscale:1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,lensFlare:.035,
-      autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,dynamicResolution:{enabled:false,targetFps:60,min:.5,step:.1,downThreshold:1.12,upThreshold:.8,downHold:1,upHold:3},localExposure:{enabled:true,highlightContrast:.75,shadowContrast:.9,detail:1,blurredBlend:.4},fxaa:true,sharpen:.28,
+      autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,dynamicResolution:{enabled:false,targetFps:60,min:.6,step:.1,downThreshold:1.12,upThreshold:.8,downHold:1,upHold:3},localExposure:{enabled:true,highlightContrast:.75,shadowContrast:.9,detail:1,blurredBlend:.4},fxaa:true,sharpen:.28,
       fog:{enabled:true,density:.012,falloff:.12,height:0,start:4,maxOpacity:.9,color:new THREE.Color(.55,.66,.78),inscatter:1.2,inscatterExponent:12,sky:.35,replaceSceneFog:true},
       volumetrics:true,shaftStrength:.25,volumetricFog:{enabled:true,density:.012,falloff:.22,height:0,anisotropy:.45,intensity:1,maxDistance:50,steps:20},dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
       grading:{saturation:1.05,contrast:1.04,temperature:0,tint:0,lift:[0,0,0],gamma:[1,1,1],gain:[1,1,1],vignette:.22,grain:.012,chromaticAberration:.15},sun:null,debugView:'lit'};

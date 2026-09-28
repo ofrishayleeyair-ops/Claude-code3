@@ -93,6 +93,7 @@ While the editor is open (F8) the game loop is paused and the editor runs its ow
 | Volumetrics, clouds | off, 0 | off, 1 | on, 1 | on, 2 | on, 2 |
 | Shadow cascades | 1 | 2 | 3 | 4 | 4 |
 | Fur, VFX budget, pool lights | off, .35, 2 | on, .6, 4 | on, 1, 6 | on, 1, 8 | on, 1, 12 |
+| Depth of field, motion blur in play | off | off | off | off | off (photo modes turn DOF on) |
 
 ## 5. Mobile budgets (from public WebGL2 survey data)
 

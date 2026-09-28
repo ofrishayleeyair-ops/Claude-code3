@@ -16687,35 +16687,44 @@ const keReliefGLSL=`vec3 keReliefNormal(vec3 pos,vec3 n,float h,float strength){
 KE.splatMaterial=(THREE,mats,o={})=>{
  if(!mats.heightMaps)return KE.legacyRendering.splatMaterial(THREE,mats,o);
  const m=new THREE.MeshStandardMaterial({vertexColors:true,roughness:.92,metalness:0});m.extensions={derivatives:true};m.userData.keTextures=[...mats,...mats.heightMaps];
- m.onBeforeCompile=sh=>{mats.forEach((t,i)=>sh.uniforms['keTile'+i]={value:t});sh.uniforms.keHA={value:mats.heightMaps[0]};sh.uniforms.keHB={value:mats.heightMaps[1]};sh.uniforms.keScale={value:o.scale||.38};sh.uniforms.keRelief={value:o.relief===undefined?.34:o.relief};
+ m.onBeforeCompile=sh=>{mats.forEach((t,i)=>sh.uniforms['keTile'+i]={value:t});sh.uniforms.keHA={value:mats.heightMaps[0]};sh.uniforms.keHB={value:mats.heightMaps[1]};sh.uniforms.keHTexel={value:2/mats.heightMaps[0].image.width};sh.uniforms.keScale={value:o.scale||.38};sh.uniforms.keRelief={value:o.relief===undefined?.34:o.relief};
  sh.vertexShader='attribute vec4 splatA;attribute vec4 splatB;varying vec4 kA;varying vec4 kB;varying vec3 kWorld;varying vec3 kNormal;\n'+sh.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\nkA=splatA;kB=splatB;kWorld=(modelMatrix*vec4(position,1.)).xyz;kNormal=normalize(mat3(modelMatrix)*objectNormal);');
- sh.fragmentShader=`${Array.from({length:8},(_,i)=>'uniform sampler2D keTile'+i+';').join('\n')}\nuniform sampler2D keHA;uniform sampler2D keHB;uniform float keScale;uniform float keRelief;varying vec4 kA;varying vec4 kB;varying vec3 kWorld;varying vec3 kNormal;\n${keReliefGLSL}\n`+sh.fragmentShader;
+ sh.fragmentShader=`${Array.from({length:8},(_,i)=>'uniform sampler2D keTile'+i+';').join('\n')}\nuniform sampler2D keHA;uniform sampler2D keHB;uniform float keHTexel;uniform float keScale;uniform float keRelief;varying vec4 kA;varying vec4 kB;varying vec3 kWorld;varying vec3 kNormal;\n${keReliefGLSL}\n`+sh.fragmentShader;
  sh.fragmentShader=sh.fragmentShader.replace('#include <map_fragment>',`
  vec2 kuv=kWorld.xz*keScale;vec4 khA=texture2D(keHA,kuv),khB=texture2D(keHB,kuv);
  vec4 ka=pow(max(kA,vec4(0.))*mix(vec4(.62),vec4(1.45),khA),vec4(1.5));vec4 kb=pow(max(kB,vec4(0.))*mix(vec4(.62),vec4(1.45),khB),vec4(1.5));float ksum=dot(ka,vec4(1.))+dot(kb,vec4(1.))+1e-6;ka/=ksum;kb/=ksum;
  vec3 kn=pow(abs(normalize(kNormal)),vec3(4.));kn/=kn.x+kn.y+kn.z;
  vec3 cliff=texture2D(keTile4,kWorld.zy*keScale*.65).rgb*kn.x+texture2D(keTile4,kuv).rgb*kn.y+texture2D(keTile4,kWorld.xy*keScale*.65).rgb*kn.z;
  vec3 kcol=texture2D(keTile0,kuv).rgb*ka.x+texture2D(keTile1,kuv).rgb*ka.y+texture2D(keTile2,kuv).rgb*ka.z+texture2D(keTile3,kuv).rgb*ka.w+cliff*kb.x+texture2D(keTile5,kuv).rgb*kb.y+texture2D(keTile6,kuv).rgb*kb.z+texture2D(keTile7,kuv).rgb*kb.w;
- float kmacro=sin(kWorld.x*.17+sin(kWorld.z*.11))*sin(kWorld.z*.2)*.055;
+ /* macro variation: the tiles' own luma sampled at 1/14 and 1/53 scale, centred on its mean (the 1x1 mip), breaks up tiling over tens of metres */
+ vec4 kmA=texture2D(keHA,kWorld.xz*keScale*.071+vec2(.31,.17)),kmB=texture2D(keHA,kWorld.xz*keScale*.019+vec2(.63,.41)),kmM=texture2D(keHA,vec2(.5),16.);
+ float kmacro=clamp((kmA.x-kmM.x)*1.6+(kmB.z-kmM.z)*1.3,-.3,.3);
  diffuseColor.rgb*=pow(max(kcol,vec3(0.)),vec3(2.2))*(1.0+kmacro);
  float kHeight=dot(khA,ka)+dot(khB,kb);
- `).replace('#include <normal_fragment_maps>','#include <normal_fragment_maps>\nnormal=keReliefNormal(-vViewPosition,normal,kHeight,keRelief);');
+ /* relief from texture-space differences two texels apart: smooth, and it fades by itself where coarser mips are sampled */
+ vec2 kte=vec2(keHTexel,0.);vec3 kGrad=vec3(dot(texture2D(keHA,kuv+kte),ka)+dot(texture2D(keHB,kuv+kte),kb)-kHeight,0.,dot(texture2D(keHA,kuv+kte.yx),ka)+dot(texture2D(keHB,kuv+kte.yx),kb)-kHeight);
+ `).replace('#include <normal_fragment_maps>','#include <normal_fragment_maps>\n{vec3 kgv=(viewMatrix*vec4(kGrad,0.)).xyz;normal=normalize(normal-keRelief*30.*(kgv-normal*dot(kgv,normal)));}');
  };
- m.customProgramCacheKey=()=> 'ke-terrain-detail-2.1';return m;
+ m.customProgramCacheKey=()=> 'ke-terrain-detail-3.0';return m;
 };
 KE.detailTextures=(THREE,size=512)=>{if(KE._detailTex&&KE._detailTex.size===size)return KE._detailTex.maps;const maps={};for(const kind of ['bark','roof','leaf','plaster','lacquer','stone','wood','rock','fur'])maps[kind]=KE.paintTile(THREE,kind,size);KE._detailTex={size,maps};return maps;};
 KE.surface=(THREE,kind,o={})=>{
  const maps=KE.detailTextures(THREE,o.textureSize||KE.settings.tex||512),map=maps[kind]||maps.stone,m=new THREE.MeshStandardMaterial({color:o.color===undefined?0xffffff:o.color,roughness:o.roughness===undefined?.87:o.roughness,metalness:o.metalness||0,emissive:o.emissive||0,side:o.side||THREE.FrontSide});m.extensions={derivatives:true};m.userData.keTextures=[map];
- m.onBeforeCompile=sh=>{sh.uniforms.keDetail={value:map};sh.uniforms.keSurfaceScale={value:o.scale||.75};sh.uniforms.keSurfaceBump={value:o.bump===undefined?.16:o.bump};
+ m.onBeforeCompile=sh=>{sh.uniforms.keDetail={value:map};sh.uniforms.keDetailTexel={value:2/((map.image&&map.image.width)||512)};sh.uniforms.keSurfaceScale={value:o.scale||.75};sh.uniforms.keSurfaceBump={value:o.bump===undefined?.16:o.bump};
  sh.vertexShader='varying vec3 ksWorld;varying vec3 ksNormal;\n'+sh.vertexShader.replace('#include <begin_vertex>',`#include <begin_vertex>
  vec4 ksp=vec4(transformed,1.);vec3 ksn=objectNormal;
  #ifdef USE_INSTANCING
  ksp=instanceMatrix*ksp;ksn=mat3(instanceMatrix)*ksn;
  #endif
  ksWorld=(modelMatrix*ksp).xyz;ksNormal=normalize(mat3(modelMatrix)*ksn);`);
- sh.fragmentShader=`uniform sampler2D keDetail;uniform float keSurfaceScale;uniform float keSurfaceBump;varying vec3 ksWorld;varying vec3 ksNormal;${keReliefGLSL}\n`+sh.fragmentShader;
- sh.fragmentShader=sh.fragmentShader.replace('#include <map_fragment>',`vec3 ksBlend=pow(abs(normalize(ksNormal)),vec3(4.));ksBlend/=ksBlend.x+ksBlend.y+ksBlend.z;vec3 ksSample=texture2D(keDetail,ksWorld.zy*keSurfaceScale).rgb*ksBlend.x+texture2D(keDetail,ksWorld.xz*keSurfaceScale).rgb*ksBlend.y+texture2D(keDetail,ksWorld.xy*keSurfaceScale).rgb*ksBlend.z;diffuseColor.rgb*=pow(max(ksSample,vec3(0.)),vec3(2.2))*1.8;float ksH=dot(ksSample,vec3(.299,.587,.114));`).replace('#include <normal_fragment_maps>','#include <normal_fragment_maps>\nnormal=keReliefNormal(-vViewPosition,normal,ksH,keSurfaceBump);');};
- m.color.convertSRGBToLinear();m.customProgramCacheKey=()=> 'ke-surface-detail-2.1';return m;
+ sh.fragmentShader=`uniform sampler2D keDetail;uniform float keDetailTexel;uniform float keSurfaceScale;uniform float keSurfaceBump;varying vec3 ksWorld;varying vec3 ksNormal;${keReliefGLSL}\n`+sh.fragmentShader;
+ /* triplanar detail; relief from texture-space luma differences two texels apart on each plane (smooth and mip-aware) */
+ sh.fragmentShader=sh.fragmentShader.replace('#include <map_fragment>',`vec3 ksBlend=pow(abs(normalize(ksNormal)),vec3(4.));ksBlend/=ksBlend.x+ksBlend.y+ksBlend.z;const vec3 ksY=vec3(.299,.587,.114);vec2 kse=vec2(keDetailTexel,0.);
+ vec2 ksu=ksWorld.zy*keSurfaceScale,ksv=ksWorld.xz*keSurfaceScale,ksw=ksWorld.xy*keSurfaceScale;vec3 ksa=texture2D(keDetail,ksu).rgb,ksb=texture2D(keDetail,ksv).rgb,ksc=texture2D(keDetail,ksw).rgb;
+ vec3 ksSample=ksa*ksBlend.x+ksb*ksBlend.y+ksc*ksBlend.z;diffuseColor.rgb*=pow(max(ksSample,vec3(0.)),vec3(2.2))*1.8;
+ float ha=dot(ksa,ksY),hb=dot(ksb,ksY),hc=dot(ksc,ksY);
+ vec3 ksGrad=ksBlend.x*vec3(0.,dot(texture2D(keDetail,ksu+kse.yx).rgb,ksY)-ha,dot(texture2D(keDetail,ksu+kse).rgb,ksY)-ha)+ksBlend.y*vec3(dot(texture2D(keDetail,ksv+kse).rgb,ksY)-hb,0.,dot(texture2D(keDetail,ksv+kse.yx).rgb,ksY)-hb)+ksBlend.z*vec3(dot(texture2D(keDetail,ksw+kse).rgb,ksY)-hc,dot(texture2D(keDetail,ksw+kse.yx).rgb,ksY)-hc,0.);`).replace('#include <normal_fragment_maps>','#include <normal_fragment_maps>\n{vec3 ksg=(viewMatrix*vec4(ksGrad,0.)).xyz;normal=normalize(normal-keSurfaceBump*30.*(ksg-normal*dot(ksg,normal)));}');};
+ m.color.convertSRGBToLinear();m.customProgramCacheKey=()=> 'ke-surface-detail-3.0';return m;
 };
 // Alpha-tested leaf sprays produce irregular silhouettes rather than solid green balls.
 KE.leafSprayTexture=(THREE)=>{
@@ -16808,7 +16817,7 @@ const V3={
   ultra:    {pipeline:true, gi:true, taa:true, gtao:true, ssr:true, ssgi:true, volumetrics:true, clouds:2,dof:false,motionBlur:false,autoExposure:true, cascades:4,lod:1.25,fur:true, vfx:1,  lights:8,upscale:1,dynamicRes:false},
 };
 for(const [name,extra] of Object.entries(V3))Object.assign(KE.PRESETS[name],extra);
-KE.PRESETS.cinematic={...KE.PRESETS.ultra,preset:'cinematic',scale:1.6,shadowRes:2048,tex:512,grass:20000,view:220,aniso:16,dof:true,motionBlur:true,lod:1.5,lights:12};
+KE.PRESETS.cinematic={...KE.PRESETS.ultra,preset:'cinematic',scale:1.6,shadowRes:2048,tex:512,grass:20000,view:220,aniso:16,dof:false,motionBlur:false,lod:1.5,lights:12};/* no gameplay depth of field or motion blur: they blurred the whole landscape behind the player; photo modes enable DOF themselves */
 KE.PRESET_ORDER=['cinematic','ultra','high','medium','low'];
 const BOOL_V3=['pipeline','gi','taa','gtao','ssr','ssgi','volumetrics','dof','motionBlur','autoExposure','fur','dynamicRes'];
 const NUM_V3=[['upscale',.5,1,false],['clouds',0,2,true],['cascades',1,4,true],['lod',.25,2,false],['vfx',0,1,false],['lights',0,16,true]];
@@ -17134,16 +17143,16 @@ void main(){vec2 uv=snapUV(vUv);float d=rawDepth(uv);vec3 vp=viewPosAt(uv,min(d,
 const TAA_FS=`uniform sampler2D tCurrent;uniform sampler2D tHistory;uniform sampler2D tDepth;uniform mat4 uInvProjU;uniform mat4 uInvView;uniform mat4 uPrevViewProj;uniform vec2 uTexel;uniform vec2 uCurTexel;uniform float uBlend;uniform float uValid;varying vec2 vUv;
 ${KE.GLSL.color}
 vec3 tm(vec3 c){return c/(1.+max(c.r,max(c.g,c.b)));}vec3 itm(vec3 c){return c/max(1.-max(c.r,max(c.g,c.b)),1e-4);}
-vec3 catmull(sampler2D t,vec2 uv){vec2 sz=1./uTexel;vec2 sp=uv*sz;vec2 tp=floor(sp-.5)+.5;vec2 f=sp-tp;vec2 w0=f*(-.5+f*(1.-.5*f)),w1=1.+f*f*(-2.5+1.5*f),w2=f*(.5+f*(2.-1.5*f)),w3=f*f*(-.5+.5*f);vec2 w12=w1+w2;vec2 o12=w2/w12;
+vec3 catmull(sampler2D t,vec2 uv,vec2 uTexel){vec2 sz=1./uTexel;vec2 sp=uv*sz;vec2 tp=floor(sp-.5)+.5;vec2 f=sp-tp;vec2 w0=f*(-.5+f*(1.-.5*f)),w1=1.+f*f*(-2.5+1.5*f),w2=f*(.5+f*(2.-1.5*f)),w3=f*f*(-.5+.5*f);vec2 w12=w1+w2;vec2 o12=w2/w12;
  vec2 t0=(tp-1.)*uTexel,t3=(tp+2.)*uTexel,t12=(tp+o12)*uTexel;vec3 r=texture2D(t,vec2(t12.x,t0.y)).rgb*w12.x*w0.y+texture2D(t,vec2(t0.x,t12.y)).rgb*w0.x*w12.y+texture2D(t,t12).rgb*w12.x*w12.y+texture2D(t,vec2(t3.x,t12.y)).rgb*w3.x*w12.y+texture2D(t,vec2(t12.x,t3.y)).rgb*w12.x*w3.y;
  float ws=w12.x*w0.y+w0.x*w12.y+w12.x*w12.y+w3.x*w12.y+w12.x*w3.y;return max(r/ws,0.);}
 vec3 clipAABB(vec3 lo,vec3 hi,vec3 p,vec3 q){vec3 c=.5*(hi+lo),e=.5*(hi-lo)+1e-5;vec3 v=q-c;vec3 a=abs(v/e);float m=max(a.x,max(a.y,a.z));return m>1.?c+v/m:q;}
-void main(){vec3 cur=keRGBToYCoCg(tm(texture2D(tCurrent,vUv).rgb)),m1=vec3(0.),m2=vec3(0.),mn=vec3(1e9),mx=vec3(-1e9);float cd=1.;vec2 cuv=vUv;
+void main(){/* when upscaling, reconstruct the centre sample with Catmull-Rom as well (bilinear softens it) */vec3 cur=keRGBToYCoCg(tm(uCurTexel.x>uTexel.x*1.01?catmull(tCurrent,vUv,uCurTexel):texture2D(tCurrent,vUv).rgb)),m1=vec3(0.),m2=vec3(0.),mn=vec3(1e9),mx=vec3(-1e9);float cd=1.;vec2 cuv=vUv;
  for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){vec2 o=vec2(float(x),float(y))*uCurTexel;vec3 s=keRGBToYCoCg(tm(texture2D(tCurrent,vUv+o).rgb));m1+=s;m2+=s*s;mn=min(mn,s);mx=max(mx,s);float d=texture2D(tDepth,vUv+o).x;if(d<cd){cd=d;cuv=vUv+o;}}
  vec3 mean=m1/9.,sig=sqrt(max(m2/9.-mean*mean,0.));vec3 lo=max(mean-1.25*sig,mn),hi=min(mean+1.25*sig,mx);
  vec4 p=uInvProjU*vec4(vec3(cuv,cd)*2.-1.,1.);p/=p.w;vec4 pc=uPrevViewProj*(uInvView*vec4(p.xyz,1.));vec2 prev=vUv+(pc.xy/pc.w*.5+.5-cuv);
  float blend=uBlend;if(uValid<.5||prev.x<0.||prev.y<0.||prev.x>1.||prev.y>1.)blend=1.;
- vec3 hist=clipAABB(lo,hi,mean,keRGBToYCoCg(tm(catmull(tHistory,prev))));float motion=length((prev-vUv)/uTexel);blend=clamp(blend+motion*.004,blend,.5);if(uValid<.5||prev.x<0.||prev.y<0.||prev.x>1.||prev.y>1.)blend=1.;
+ vec3 hist=clipAABB(lo,hi,mean,keRGBToYCoCg(tm(catmull(tHistory,prev,uTexel))));float motion=length((prev-vUv)/uTexel);blend=clamp(blend+motion*.004,blend,.5);if(uValid<.5||prev.x<0.||prev.y<0.||prev.x>1.||prev.y>1.)blend=1.;
  float wc=blend/(1.+cur.x),wh=(1.-blend)/(1.+hist.x);vec3 res=(cur*wc+hist*wh)/(wc+wh);gl_FragColor=vec4(itm(keYCoCgToRGB(res)),1.);}`;
 
 /* Depth of field: circle of confusion from linear depth, half-resolution golden-angle gather, then blend. */
@@ -17226,7 +17235,7 @@ KE.Pipeline=class{
     this.hdr=caps.halfRT&&o.hdr!==false;this.hdrType=this.hdr?THREE.HalfFloatType:THREE.UnsignedByteType;this.depthOK=caps.depthTexture;
     this.enabled=true;this.frame=0;this.historyValid=false;this.size=[0,0];this.internal=[0,0];this.targets=[];this.stats={passes:0,ms:0};
     this.options={taa:true,taaBlend:.1,upscale:1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,lensFlare:.035,
-      autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,dynamicResolution:{enabled:false,targetFps:60,min:.5,step:.1,downThreshold:1.12,upThreshold:.8,downHold:1,upHold:3},localExposure:{enabled:true,highlightContrast:.75,shadowContrast:.9,detail:1,blurredBlend:.4},fxaa:true,sharpen:.28,
+      autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,dynamicResolution:{enabled:false,targetFps:60,min:.6,step:.1,downThreshold:1.12,upThreshold:.8,downHold:1,upHold:3},localExposure:{enabled:true,highlightContrast:.75,shadowContrast:.9,detail:1,blurredBlend:.4},fxaa:true,sharpen:.28,
       fog:{enabled:true,density:.012,falloff:.12,height:0,start:4,maxOpacity:.9,color:new THREE.Color(.55,.66,.78),inscatter:1.2,inscatterExponent:12,sky:.35,replaceSceneFog:true},
       volumetrics:true,shaftStrength:.25,volumetricFog:{enabled:true,density:.012,falloff:.22,height:0,anisotropy:.45,intensity:1,maxDistance:50,steps:20},dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
       grading:{saturation:1.05,contrast:1.04,temperature:0,tint:0,lift:[0,0,0],gamma:[1,1,1],gain:[1,1,1],vignette:.22,grain:.012,chromaticAberration:.15},sun:null,debugView:'lit'};
@@ -18729,7 +18738,47 @@ KE.materialLibrary=(THREE,{size}={})=>{
   LIBS.set(THREE,lib);return lib;
 };
 
-KE.registerModule('materials',{provides:['MaterialGraph','shaderGraph','materialLibrary']});
+/* ---------- terrain tiles ----------
+   The terrain kinds grass, dirt, sand and rock are painted per pixel from tileable fBm with domain warping, plus a few
+   soft brush features (turf blades, pebbles), instead of the 2.1 painter's thousands of high-contrast specks, which
+   read as grain on screen. Contrast sits at larger scales, so the ground reads as turf, packed earth, sand and weathered
+   rock both near and far. Luma still encodes height for layer blending and relief. Other kinds keep the 2.1 painter;
+   KE.groundTiles=false (or a loaded atlas image) restores the 2.1 tiles. */
+const paint21=KE.paintTile,TILE_KINDS=new Set(['grass','dirt','sand','rock']);
+KE.groundTiles=true;
+const sstep=(a,b,x)=>{const t=Math.min(1,Math.max(0,(x-a)/(b-a)));return t*t*(3-2*t);};
+function paintGround(THREE,kind,size,seed){
+  const S=Math.max(64,Math.min(1024,Math.round(size))),cv=document.createElement('canvas');cv.width=cv.height=S;const g=cv.getContext('2d',{willReadFrequently:true}),f=S/512;
+  const r=KE.random(seed+Array.from(kind).reduce((s,v)=>s+v.charCodeAt(0)*31,0)),N=KE.noise,o1=r()*61,o2=r()*61,o3=r()*61;
+  /* fBm over the unit square, periodic in u and v: P lattice cells at the first octave (P·2^(oct-1) ≤ 256) */
+  const fbm=(u,v,P,oct,off)=>{let s=0,a=.5,w=0;for(let i=0;i<oct;i++){s+=N(u*P+off+i*7.31,v*P+off*1.73+i*3.17,P)*a;w+=a;a*=.5;P*=2;}return s/w;};
+  const img=g.createImageData(S,S),d=img.data;
+  for(let y=0;y<S;y++)for(let x=0;x<S;x++){const u=x/S,v=y/S,k=(y*S+x)*4;let R,G,B;
+    if(kind==='grass'){const wu=u+(fbm(u,v,4,3,o1)-.5)*.12,wv=v+(fbm(u,v,4,3,o2)-.5)*.12,n=fbm(wu,wv,6,5,o3),dry=sstep(.56,.72,fbm(u,v,3,4,o2+11))*.5,q=.9+.2*N(u*128+o1,v*128+o2,128);
+      R=46+50*n;G=70+64*n;B=26+24*n;R+=(122-R)*dry;G+=(116-G)*dry;B+=(62-B)*dry;R*=q;G*=q;B*=q;}
+    else if(kind==='dirt'){const wu=u+(fbm(u,v,3,3,o1)-.5)*.2,wv=v+(fbm(u,v,3,3,o2)-.5)*.2,n=fbm(wu,wv,5,5,o3),damp=sstep(.55,.7,fbm(u,v,3,3,o1+5))*.22,q=(1-damp)*(.9+.2*fbm(u,v,64,2,o2));
+      R=(88+58*n)*q;G=(68+48*n)*q;B=(47+34*n)*q;}
+    else if(kind==='sand'){const n=fbm(u,v,4,5,o1),wv=v+(fbm(u,v,3,3,o2)-.5)*.08,rip=Math.sin(wv*Math.PI*32+(fbm(u,v,2,2,o3)-.5)*3),q=.94+.12*N(u*256+o1,v*256+o2,256);
+      R=(186+30*n+rip*2.5)*q;G=(164+28*n+rip*2.5)*q;B=(120+22*n+rip*2)*q;}
+    else{const wu=u+(fbm(u,v,3,4,o1)-.5)*.25,wv=v+(fbm(u,v,3,4,o2)-.5)*.25,n=fbm(wu,wv,8,6,o3),band=Math.sin((wv*5+n*.6)*Math.PI*2)*.5+.5,
+      crack=sstep(.955,.995,1-Math.abs(2*fbm(wu,wv,8,4,o1+9)-1))*sstep(.45,.6,fbm(u,v,3,2,o2+7)),lichen=sstep(.6,.72,fbm(u,v,8,4,o2+3))*.55,grain=1-Math.abs(2*fbm(u,v,32,3,o3+2)-1),L=(.5+.7*n+.1*band)*(1-crack*.3)*(.78+.3*grain)*(.9+.2*fbm(u,v,64,2,o1));
+      R=116*L;G=117*L;B=108*L;R+=(128*L-R)*lichen;G+=(136*L-G)*lichen;B+=(86*L-B)*lichen;}
+    d[k]=R;d[k+1]=G;d[k+2]=B;d[k+3]=255;}
+  g.putImageData(img,0,0);
+  /* brush features, wrapped across the tile edges */
+  const wrap=(x,y,pad,fn)=>{for(const dx of [0,...(x<pad?[S]:[]),...(x>S-pad?[-S]:[])])for(const dy of [0,...(y<pad?[S]:[]),...(y>S-pad?[-S]:[])])fn(x+dx,y+dy);};
+  if(kind==='grass'){/* short blades seen from above, grouped by colour (one stroke each: long multi-part paths rasterize slowly) */const pal=['#2b431f88','#4a6b2a88','#5f7f3288','#6d8c3877','#3b5a2588','#8fa24c66','#aeb06444'];g.lineCap='round';
+    for(let c=0;c<pal.length;c++){g.strokeStyle=pal[c];g.lineWidth=(c===6?.6:.9)*f;
+      for(let i=0,n=Math.round((c===6?300:1200)*f*f);i<n;i++){const x=r()*S,y=r()*S,a=r()*6.283,l=(3+r()*6)*f,dx=Math.cos(a)*l,dy=Math.sin(a)*l;wrap(x,y,l+2,(X,Y)=>{g.beginPath();g.moveTo(X,Y);g.quadraticCurveTo(X+dx*.5-dy*.15,Y+dy*.5+dx*.15,X+dx,Y+dy);g.stroke();});}}}
+  else if(kind==='dirt'){for(let i=0,n=Math.round(170*f*f);i<n;i++){const x=r()*S,y=r()*S,q=(1.6+r()*r()*5)*f,e=.55+r()*.4,a=r()*6.283;
+      wrap(x,y,q*2+2,(X,Y)=>{g.fillStyle='#2e231866';g.beginPath();g.ellipse(X+q*.35,Y+q*.35,q,q*e,a,0,Math.PI*2);g.fill();const gr=g.createRadialGradient(X-q*.3,Y-q*.3,q*.1,X,Y,q);gr.addColorStop(0,'#a8977c');gr.addColorStop(1,'#6a5a46');g.fillStyle=gr;g.beginPath();g.ellipse(X,Y,q,q*e,a,0,Math.PI*2);g.fill();});}}
+  else if(kind==='sand'){for(let i=0,n=Math.round(70*f*f);i<n;i++){const x=r()*S,y=r()*S,q=(.8+r()*1.8)*f;wrap(x,y,q+2,(X,Y)=>{g.fillStyle=i%3?'#8f7f6255':'#f3e7c988';g.beginPath();g.ellipse(X,Y,q,q*.7,r()*3,0,Math.PI*2);g.fill();});}}
+  const t=new THREE.CanvasTexture(cv);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=KE.settings.aniso||4;const px=g.getImageData(0,0,S,S).data,avg=[0,0,0];let n=0;for(let i=0;i<px.length;i+=64){for(let j=0;j<3;j++)avg[j]+=px[i+j]/255;n++;}
+  t.userData={avg:avg.map(v=>v/n),kind,detailEdition:3};return t;
+}
+if(paint21)KE.paintTile=(THREE,kind,size=512,seed=7241)=>TILE_KINDS.has(kind)&&KE.groundTiles&&!KE._atlasImage?paintGround(THREE,kind,size,seed):paint21(THREE,kind,size,seed);
+
+KE.registerModule('materials',{provides:['MaterialGraph','shaderGraph','materialLibrary','groundTiles']});
 })();
 
 /* ===== module: 22-water.js ===== */

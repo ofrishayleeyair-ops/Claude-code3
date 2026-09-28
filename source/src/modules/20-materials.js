@@ -819,5 +819,45 @@ KE.materialLibrary=(THREE,{size}={})=>{
   LIBS.set(THREE,lib);return lib;
 };
 
-KE.registerModule('materials',{provides:['MaterialGraph','shaderGraph','materialLibrary']});
+/* ---------- terrain tiles ----------
+   The terrain kinds grass, dirt, sand and rock are painted per pixel from tileable fBm with domain warping, plus a few
+   soft brush features (turf blades, pebbles), instead of the 2.1 painter's thousands of high-contrast specks, which
+   read as grain on screen. Contrast sits at larger scales, so the ground reads as turf, packed earth, sand and weathered
+   rock both near and far. Luma still encodes height for layer blending and relief. Other kinds keep the 2.1 painter;
+   KE.groundTiles=false (or a loaded atlas image) restores the 2.1 tiles. */
+const paint21=KE.paintTile,TILE_KINDS=new Set(['grass','dirt','sand','rock']);
+KE.groundTiles=true;
+const sstep=(a,b,x)=>{const t=Math.min(1,Math.max(0,(x-a)/(b-a)));return t*t*(3-2*t);};
+function paintGround(THREE,kind,size,seed){
+  const S=Math.max(64,Math.min(1024,Math.round(size))),cv=document.createElement('canvas');cv.width=cv.height=S;const g=cv.getContext('2d',{willReadFrequently:true}),f=S/512;
+  const r=KE.random(seed+Array.from(kind).reduce((s,v)=>s+v.charCodeAt(0)*31,0)),N=KE.noise,o1=r()*61,o2=r()*61,o3=r()*61;
+  /* fBm over the unit square, periodic in u and v: P lattice cells at the first octave (P·2^(oct-1) ≤ 256) */
+  const fbm=(u,v,P,oct,off)=>{let s=0,a=.5,w=0;for(let i=0;i<oct;i++){s+=N(u*P+off+i*7.31,v*P+off*1.73+i*3.17,P)*a;w+=a;a*=.5;P*=2;}return s/w;};
+  const img=g.createImageData(S,S),d=img.data;
+  for(let y=0;y<S;y++)for(let x=0;x<S;x++){const u=x/S,v=y/S,k=(y*S+x)*4;let R,G,B;
+    if(kind==='grass'){const wu=u+(fbm(u,v,4,3,o1)-.5)*.12,wv=v+(fbm(u,v,4,3,o2)-.5)*.12,n=fbm(wu,wv,6,5,o3),dry=sstep(.56,.72,fbm(u,v,3,4,o2+11))*.5,q=.9+.2*N(u*128+o1,v*128+o2,128);
+      R=46+50*n;G=70+64*n;B=26+24*n;R+=(122-R)*dry;G+=(116-G)*dry;B+=(62-B)*dry;R*=q;G*=q;B*=q;}
+    else if(kind==='dirt'){const wu=u+(fbm(u,v,3,3,o1)-.5)*.2,wv=v+(fbm(u,v,3,3,o2)-.5)*.2,n=fbm(wu,wv,5,5,o3),damp=sstep(.55,.7,fbm(u,v,3,3,o1+5))*.22,q=(1-damp)*(.9+.2*fbm(u,v,64,2,o2));
+      R=(88+58*n)*q;G=(68+48*n)*q;B=(47+34*n)*q;}
+    else if(kind==='sand'){const n=fbm(u,v,4,5,o1),wv=v+(fbm(u,v,3,3,o2)-.5)*.08,rip=Math.sin(wv*Math.PI*32+(fbm(u,v,2,2,o3)-.5)*3),q=.94+.12*N(u*256+o1,v*256+o2,256);
+      R=(186+30*n+rip*2.5)*q;G=(164+28*n+rip*2.5)*q;B=(120+22*n+rip*2)*q;}
+    else{const wu=u+(fbm(u,v,3,4,o1)-.5)*.25,wv=v+(fbm(u,v,3,4,o2)-.5)*.25,n=fbm(wu,wv,8,6,o3),band=Math.sin((wv*5+n*.6)*Math.PI*2)*.5+.5,
+      crack=sstep(.955,.995,1-Math.abs(2*fbm(wu,wv,8,4,o1+9)-1))*sstep(.45,.6,fbm(u,v,3,2,o2+7)),lichen=sstep(.6,.72,fbm(u,v,8,4,o2+3))*.55,grain=1-Math.abs(2*fbm(u,v,32,3,o3+2)-1),L=(.5+.7*n+.1*band)*(1-crack*.3)*(.78+.3*grain)*(.9+.2*fbm(u,v,64,2,o1));
+      R=116*L;G=117*L;B=108*L;R+=(128*L-R)*lichen;G+=(136*L-G)*lichen;B+=(86*L-B)*lichen;}
+    d[k]=R;d[k+1]=G;d[k+2]=B;d[k+3]=255;}
+  g.putImageData(img,0,0);
+  /* brush features, wrapped across the tile edges */
+  const wrap=(x,y,pad,fn)=>{for(const dx of [0,...(x<pad?[S]:[]),...(x>S-pad?[-S]:[])])for(const dy of [0,...(y<pad?[S]:[]),...(y>S-pad?[-S]:[])])fn(x+dx,y+dy);};
+  if(kind==='grass'){/* short blades seen from above, grouped by colour (one stroke each: long multi-part paths rasterize slowly) */const pal=['#2b431f88','#4a6b2a88','#5f7f3288','#6d8c3877','#3b5a2588','#8fa24c66','#aeb06444'];g.lineCap='round';
+    for(let c=0;c<pal.length;c++){g.strokeStyle=pal[c];g.lineWidth=(c===6?.6:.9)*f;
+      for(let i=0,n=Math.round((c===6?300:1200)*f*f);i<n;i++){const x=r()*S,y=r()*S,a=r()*6.283,l=(3+r()*6)*f,dx=Math.cos(a)*l,dy=Math.sin(a)*l;wrap(x,y,l+2,(X,Y)=>{g.beginPath();g.moveTo(X,Y);g.quadraticCurveTo(X+dx*.5-dy*.15,Y+dy*.5+dx*.15,X+dx,Y+dy);g.stroke();});}}}
+  else if(kind==='dirt'){for(let i=0,n=Math.round(170*f*f);i<n;i++){const x=r()*S,y=r()*S,q=(1.6+r()*r()*5)*f,e=.55+r()*.4,a=r()*6.283;
+      wrap(x,y,q*2+2,(X,Y)=>{g.fillStyle='#2e231866';g.beginPath();g.ellipse(X+q*.35,Y+q*.35,q,q*e,a,0,Math.PI*2);g.fill();const gr=g.createRadialGradient(X-q*.3,Y-q*.3,q*.1,X,Y,q);gr.addColorStop(0,'#a8977c');gr.addColorStop(1,'#6a5a46');g.fillStyle=gr;g.beginPath();g.ellipse(X,Y,q,q*e,a,0,Math.PI*2);g.fill();});}}
+  else if(kind==='sand'){for(let i=0,n=Math.round(70*f*f);i<n;i++){const x=r()*S,y=r()*S,q=(.8+r()*1.8)*f;wrap(x,y,q+2,(X,Y)=>{g.fillStyle=i%3?'#8f7f6255':'#f3e7c988';g.beginPath();g.ellipse(X,Y,q,q*.7,r()*3,0,Math.PI*2);g.fill();});}}
+  const t=new THREE.CanvasTexture(cv);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=KE.settings.aniso||4;const px=g.getImageData(0,0,S,S).data,avg=[0,0,0];let n=0;for(let i=0;i<px.length;i+=64){for(let j=0;j<3;j++)avg[j]+=px[i+j]/255;n++;}
+  t.userData={avg:avg.map(v=>v/n),kind,detailEdition:3};return t;
+}
+if(paint21)KE.paintTile=(THREE,kind,size=512,seed=7241)=>TILE_KINDS.has(kind)&&KE.groundTiles&&!KE._atlasImage?paintGround(THREE,kind,size,seed):paint21(THREE,kind,size,seed);
+
+KE.registerModule('materials',{provides:['MaterialGraph','shaderGraph','materialLibrary','groundTiles']});
 })();
