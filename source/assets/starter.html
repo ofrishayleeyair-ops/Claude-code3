@@ -147,6 +147,18 @@ let foxGait=null,tailSpring=null,wasAirborne=false;
 if(has('animation')){const foxBody=new T.Group();while(hero.children.length)foxBody.add(hero.children[0]);hero.add(foxBody);
  foxGait=new KE.ProceduralGait(T,{body:foxBody,heightAt:ground,legs:foxLegs.map((leg,i)=>({hip:leg,foot:leg.children[2],group:i===0||i===3?0:1})),stepLength:.42,stepHeight:.1,stepDuration:.17});
  tailSpring=new KE.SpringChain(T,[foxTail],{tip:[.21,.43,.9],stiffness:70,damping:9,gravity:[0,-.6,0],maxAngle:.7});}
+/* Nobori banners along the shrine path (cloth module): position-based cloth pinned to each pole's side and crossbar,
+   blown by the island's shared wind. */
+const banners=[];
+if(has('cloth')){const bc=document.createElement('canvas');bc.width=128;bc.height=320;const cx=bc.getContext('2d');cx.fillStyle='#b8392b';cx.fillRect(0,0,128,320);cx.fillStyle='#f4ead6';cx.fillRect(0,0,128,26);cx.fillRect(0,294,128,26);
+ cx.beginPath();cx.arc(64,120,38,0,Math.PI*2);cx.fill();cx.fillStyle='#b8392b';cx.beginPath();cx.arc(64,120,27,0,Math.PI*2);cx.fill();cx.fillStyle='#f4ead6';for(let k=0;k<3;k++){const a=k*2.094-.6;cx.beginPath();cx.arc(64+Math.cos(a)*12,120+Math.sin(a)*12,9,0,Math.PI*2);cx.fill();}
+ cx.fillRect(58,178,12,90);cx.fillRect(44,196,40,8);cx.fillRect(48,232,32,8);
+ const bt=new T.CanvasTexture(bc);bt.encoding=T.sRGBEncoding;bt.anisotropy=4;const bannerMat=new T.MeshStandardMaterial({map:bt,roughness:.85,side:T.DoubleSide}),poleMat=KE.surface(T,'wood',{color:0x6a4a32,scale:2,bump:.08,textureSize:detailSize});
+ const low=S.preset==='low';
+ for(const [z,side] of [[43,-1],[43,1],[55,-1],[55,1]]){const x=48+Math.sin(z*.13)*2+side*3.1,y=ground(x,z);const pole=mesh(new T.CylinderGeometry(.045,.06,3.9,10),poleMat,x,y+1.95,z,scene);solids.push({x,z,r:.18});
+  const anchor=new T.Object3D();anchor.position.set(x,y+3.75,z);anchor.rotation.y=side>0?Math.PI:0;scene.add(anchor);
+  const cloth=new KE.Cloth(T,{anchor,width:.72,height:2.3,segmentsX:low?6:10,segmentsY:low?14:26,iterations:low?4:6,pins:(i,j)=>i===0||j===0,position:[.41,0,0],material:bannerMat,mass:.35,windStrength:1.1,gustStrength:.7});
+  cloth.mesh.userData.keNoWeather=true;scene.add(cloth.mesh);banners.push(cloth);}}
 /* ---------- cascaded shadows for everything lit ---------- */
 csm=new KE.CascadedShadows(T,scene,{sun,maxFar:110,margin:40});csm.setupScene();csm.enabled=S.shadows;pipeline.setShadowSource(csm);if(KE.foliage)KE.foliage.setShadowSource(csm);if(grass&&grass.setShadowSource)grass.setShadowSource(csm);
 /* Probe-volume diffuse GI over the island: refreshed a probe per frame, nearest first. */
@@ -298,7 +310,7 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
  hero.position.set(player.x,player.y-player.r,player.z);
  if(foxGait){const air=player.y-player.r-ground(player.x,player.z)>.12;if(air){foxLegs.forEach((leg,i)=>leg.rotation.x=KE.damp(leg.rotation.x,i<2?-.7:.6,14,dt));}else{if(wasAirborne)foxGait.reset();foxGait.update(dt,{x:player.vx,y:0,z:player.vz});}wasAirborne=air;tailSpring.update(dt);}
  else{hero.position.y+=Math.sin(walkTime)*.025;const gait=Math.min(1,Math.hypot(player.vx,player.vz)/4);foxLegs.forEach((leg,i)=>leg.rotation.x=Math.sin(walkTime+(i===0||i===3?0:Math.PI))*.55*gait);foxTail.rotation.y=Math.sin(t*1.8)*.1;}
- if(fur)fur.update(dt,{x:player.vx,y:player.vy,z:player.vz});if(guide&&!paused)guide.update(dt,t);
+ if(fur)fur.update(dt,{x:player.vx,y:player.vy,z:player.vz});for(const b of banners)b.update(dt);if(guide&&!paused)guide.update(dt,t);
  if(intro){intro.seq.update(dt);if(intro)intro.rail.apply(camera,intro.state.u);}
  else{if(!paused){const look=input.consumeLook();follow.rotate(look.x,look.y);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.zoom(look.zoom);}follow.update(player,dt,ground);}
  if(finale){finale.t+=dt;lights.set(finale.light,{intensity:Math.min(3.2,finale.t*1.2)*(.85+.15*Math.sin(t*3))});}if(shake&&!intro)shake.update(dt,camera);
@@ -324,8 +336,8 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
 try{renderer.compile(scene,camera);}catch(e){}
 loop.start();
 /* Expose a small debug handle for automated checks and your own development tools. */
-window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,sound,world,editor,guide,setPhoto,startFinale,playIntro:()=>playIntro(()=>{},true),skipIntro:endIntro,isIntro:()=>!!intro,introSeek:t=>{if(intro)intro.seq.seek(t);},getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
- dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();stopFinale();if(guide)guide.dispose();if(editor)editor.dispose();if(world)world.dispose();if(sound)sound.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
+window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,sound,world,editor,guide,setPhoto,startFinale,banners,playIntro:()=>playIntro(()=>{},true),skipIntro:endIntro,isIntro:()=>!!intro,introSeek:t=>{if(intro)intro.seq.seek(t);},getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
+ dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();stopFinale();banners.forEach(b=>b.dispose());if(guide)guide.dispose();if(editor)editor.dispose();if(world)world.dispose();if(sound)sound.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();
 </script>

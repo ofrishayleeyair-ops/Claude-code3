@@ -22,6 +22,7 @@ Read this page first, then the reference for the system you are touching.
 | 30-geometry | `geometry` | `KE.simplify`, `KE.buildLODs`, `KE.LODMesh`, `KE.InstancedLOD`, `KE.Impostor`, `KE.VirtualGeometry` | geometry.md | test_geometry.cjs |
 | 32-world | `world` | `KE.Heightfield`, `KE.GPUTerrain`, `KE.WorldPartition`, `KE.scatterCell` | world.md | test_world.cjs |
 | 40-physics | `physics3d` | `KE.Physics3D` (Rapier) | physics.md | test_physics.cjs |
+| 42-cloth | `cloth` | `KE.Cloth` | cloth.md | test_cloth.cjs |
 | 50-vfx | `vfx` | `KE.VFX` | vfx.md | test_vfx.cjs |
 | 62-characters | `characters` | `KE.foxModel` | engine-overview.md §1 | test_browser.cjs, test_open_world.cjs |
 | 60-animation | `animation` | `KE.tween`, `KE.IK`, `KE.IKChain`, `KE.SpringChain`, `KE.ProceduralGait`, `KE.AnimStateMachine`, `KE.Sequencer`, `KE.CameraRail` | animation.md | test_animation.cjs |
@@ -52,7 +53,8 @@ This table names the UE5 feature each system is modelled on so you can find the 
 | Weather (wetness, snow) | `KE.SurfaceWeather` | Wet darkening, puddles with rain ripples, snow cover with drifts | No sheltering, noise-driven puddles |
 | Foliage, PCG, Groom | `KE.FoliageSpawner`, `KE.treeGeometry`, `KE.grassField`, `KE.fur` | Procedural trees (six species), Poisson placement, world-anchored grass with interactors, shell fur | Shell fur rather than strands; no billboard tree LOD in the spawner |
 | World Partition, Landscape | `KE.WorldPartition`, `KE.GPUTerrain`, `KE.Heightfield` | Cell streaming with time budgets and HLOD proxies; CDLOD terrain in one draw with sculpting; hydraulic and thermal erosion | One heightfield per terrain, no holes or caves |
-| Chaos Physics | `KE.Physics3D` (Rapier 0.19) | Rigid bodies, joints, character controller, vehicles, Voronoi fracture, buoyancy | Main-thread, no cloth, no cross-platform determinism claim |
+| Chaos Physics | `KE.Physics3D` (Rapier 0.19) | Rigid bodies, joints, character controller, vehicles, Voronoi fracture, buoyancy | Main-thread, no cross-platform determinism claim |
+| Chaos Cloth | `KE.Cloth` | Position-based cloth with pins on moving anchors, aerodynamic wind with gusts, sphere/capsule/ground collision | CPU only, no self-collision or tearing, grid sheets only |
 | Niagara | `KE.VFX` | GPU-simulated emitters with CPU fallback, forces, curl noise, collision, soft particles, ribbons, 14 presets | No per-particle lights or mesh collision |
 | Control Rig, IK, Animation Blueprint, Sequencer | `KE.IK`, `KE.ProceduralGait`, `KE.SpringChain`, `KE.AnimStateMachine`, `KE.Sequencer` | Two-bone/FABRIK/CCD IK, foot-planting gait, spring chains, blend spaces, crossfading state machine, keyframe sequencer with camera cuts | Reactive gait (no motion matching), no retargeting |
 | AI (NavMesh, Behavior Trees, EQS, Perception) | `KE.NavMesh`, `KE.Crowd`, `KE.BT`, `KE.EQS`, `KE.Perception` | Tiled navmesh with dynamic re-carving, ORCA crowd, BT with observer aborts, environment queries, sight/hearing | Single-layer navmesh, no off-mesh links |
