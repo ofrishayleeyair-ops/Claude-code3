@@ -1,6 +1,6 @@
 # kitsune enginev3 (Tenko) · engine overview
 
-Version 3.0.0 on the bundled Three.js r128 (WebGL2). One file, `assets/kitsune-engine.js`, holds the 2.1 runtime (`src/core.js`) plus nineteen v3 modules from `src/modules/`. Every module registers itself in `KE.modules` and degrades or reports `available:false` when a browser feature is missing. Games stay single offline HTML files: `scripts/build.py` inlines Three.js, the add-ons, the libraries and the engine.
+Version 3.0.0 on the bundled Three.js r128 (WebGL2). One file, `assets/kitsune-engine.js`, holds the 2.1 runtime (`src/core.js`) plus twenty-one v3 modules from `src/modules/`. Every module registers itself in `KE.modules` and degrades or reports `available:false` when a browser feature is missing. Games stay single offline HTML files: `scripts/build.py` inlines Three.js, the add-ons, the libraries and the engine.
 
 Read this page first, then the reference for the system you are touching.
 

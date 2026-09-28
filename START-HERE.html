@@ -27,15 +27,15 @@
 <p>Open <strong>open-world.html</strong> the same way. Walk with the fox (Shift to sprint), press <strong>F</strong> to fly (Q/E down and up), <strong>T</strong> for the time of day and <strong>R</strong> for rain. Loading generates the whole island on your device, which takes several seconds.</p>
 <h2>What is in the engine</h2>
 <table><thead><tr><th>Area</th><th>Systems</th></tr></thead><tbody>
-<tr><td>Rendering</td><td>HDR pipeline: TAA with temporal upscaling, GTAO, SSGI, screen-space reflections for translucent materials, height and volumetric fog, light shafts, bloom and lens flare, eye adaptation and local exposure, ACES grading, depth of field, motion blur, debug view modes.</td></tr>
+<tr><td>Rendering</td><td>HDR pipeline: TAA with temporal upscaling and dynamic resolution, GTAO, SSGI, screen-space reflections (translucent materials, and puddles from the previous frame), height and volumetric fog, light shafts, bloom and lens flare, eye adaptation and local exposure, ACES grading, depth of field, motion blur, debug view modes.</td></tr>
 <tr><td>Lighting</td><td>Physical sky (Rayleigh, Mie, ozone) with volumetric clouds and a captured sky light; stable cascaded shadows with contact-hardening PCSS; a pooled point-light system; probe-volume GI with multi-bounce and DDGI-style visibility.</td></tr>
 <tr><td>Surfaces</td><td>Material graphs compiled from JSON nodes and a 14-material library; Gerstner water with reflection, refraction, caustics and foam; rain wetness, puddles with ripples, and snow.</td></tr>
 <tr><td>World</td><td>Procedural trees (six species), foliage spawner, interactive grass, shell fur; heightfield generation with hydraulic and thermal erosion, CDLOD GPU terrain, World Partition streaming.</td></tr>
 <tr><td>Geometry</td><td>Mesh simplification, LOD meshes, instanced LOD with octahedral impostors, and a Nanite-inspired cluster DAG with crack-free cuts.</td></tr>
-<tr><td>Simulation</td><td>Rapier rigid bodies, joints, character controller, vehicle, fracture and buoyancy; GPU particles with 14 presets.</td></tr>
+<tr><td>Simulation</td><td>Rapier rigid bodies, joints, character controller, vehicle, fracture and buoyancy; position-based cloth for flags and banners; GPU particles with 14 presets.</td></tr>
 <tr><td>Characters and AI</td><td>Tweens, IK (two-bone, FABRIK, CCD), spring chains, procedural gait, blend spaces, state machine, sequencer and camera rails; navmesh, crowds, behavior trees, perception and environment queries.</td></tr>
 <tr><td>Audio</td><td>HRTF spatial audio, mix buses with ducking, reverb zones, synthesized footsteps and effects, ambience beds and generative music.</td></tr>
-<tr><td>Tools</td><td>Actors, components, JSON levels and Blueprint event graphs; the F8 editor with gizmos, undo/redo, Play In Editor and glTF import/export; the backquote console.</td></tr>
+<tr><td>Tools</td><td>Actors, components, JSON levels and Blueprint event graphs; the F8 editor with gizmos, undo/redo, Play In Editor and glTF import/export; the backquote console with <code>stat unit</code> and per-pass <code>stat gpu</code> timings.</td></tr>
 </tbody></table>
 
 <div class="grid" style="margin-top:18px">
