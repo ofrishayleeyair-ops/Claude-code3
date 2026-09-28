@@ -11,6 +11,23 @@ Open either file in a desktop or mobile browser with WebGL2; no server, account 
 
 The Open World splits CPU work across every thread the browser reports (up to 64). Worker threads generate and erode the terrain while it loads. While you play, they keep working out which trees, bamboo and impostors are hidden behind the mountains or outside the view, and the GPU skips those. The nearest shadow cascade draws only the trees inside it, and the far cascades are redrawn in turns instead of every frame. In the test views at High, that is about 65% fewer triangles per frame; the stats line shows how many instances are culled. [START-HERE.html](START-HERE.html) has controls and more screenshots.
 
+## HD asset pack (photoscans)
+
+The `hd/` folder beside the games holds 5.2 GB of photoscanned, CC0 (public domain) assets from [Poly Haven](https://polyhaven.com), as 208 items:
+- 89 material sets: ground, Japanese barks, hinoki planks, roof tiles, brick, plaster, metal, fabric, and more;
+- 96 scanned models: rocks, cliffs, ferns, moss, stumps, logs, lanterns, a fire pit, furniture, props;
+- 23 sky HDRIs.
+
+The Open World uses the pack on High and above (4K ground on Epic):
+- photoscanned ground;
+- real Japanese bark on the trees;
+- hinoki boats and jetty;
+- scanned rock clusters, cliffs and river boulders;
+- ferns and forest debris;
+- lanterns, and a campfire in a stone fire pit.
+
+Spirit Isle's shore rocks become scans too. Open [hd-gallery.html](hd-gallery.html) to browse everything. Keep `hd/` next to the HTML files. Without it, the games fall back to the engine's painted textures and procedural rocks. To fetch the pack straight from Poly Haven instead of cloning it, run `python3 source/scripts/hd_pack.py`, or add `--no-library` for just the 1.1 GB the Open World uses. Credits are in `hd/CREDITS.md`.
+
 ## What is inside
 
 | Area | Systems (module) |

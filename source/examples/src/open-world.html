@@ -83,6 +83,24 @@ status('Painting biomes',.55);await nextFrame();
 const terrain=new KE.GPUTerrain(T,{heightfield:hf,castShadow:true,waterLevel:0,textureSize:Math.min(512,S.tex||512),grassTint:[.74,.96,.6],relief:.22,
   biomeOptions:{snowLine:hf.minHeight+(hf.maxHeight-hf.minHeight)*.68,snowSlope:[1.2,2.2],snowOverRock:true,rockSlope:[.75,1.25]}});scene.add(terrain.object);
 const ground=(x,z)=>terrain.heightAt(x,z);
+/* ---------- the HD asset pack (the hd/ folder beside this page) ----------
+   Photoscanned CC0 ground layers, bark, planks and scanned rocks, plants, forest debris and props (Poly Haven), used on
+   High and above when the folder is there. Epic takes the ground at 4K (texture arrays: albedo, normal, roughness/AO,
+   height). Without the folder the engine's painted textures stay. */
+const HDQ=({high:{ground:2048,arm:1024,bark:1024,model:1024,tris:2500},ultra:{ground:2048,arm:1024,bark:2048,model:1024,tris:4000},cinematic:{ground:4096,arm:2048,bark:2048,model:2048,tris:6000},epic:{ground:4096,arm:2048,bark:2048,model:2048,tris:6000}})[S.preset]||null;
+const hd=HDQ&&KE.HD&&S.hd!==false?await KE.HD.ready():null,hdKit=[];
+if(hd){const roles=['grass','grass-leaves','sand','dirt','gravel','rock','rock-high','snow'],ids=roles.map(r=>KE.HD.find('texture',r)[0]);
+  if(ids.every(Boolean))try{const L={};for(const [k,map,size,label] of [['albedo','diff',HDQ.ground,'colour'],['normal','nor',HDQ.ground,'normals'],['arm','arm',HDQ.arm,'roughness'],['height','disp',1024,'height']]){
+      status(`HD pack: photoscanned ground ${label} (${ids.length} layers at ${size}²)`,.56);await nextFrame();L[k]=await KE.HD.layers(renderer,T,ids,map,size);hdKit.push(L[k]);}
+    terrain.setLayers({...L,scales:ids.map(id=>1/((KE.HD.info(id).size_m||[3])[0])),rockHigh:[hf.maxHeight*.4,hf.maxHeight*.62],dirtToMoss:.75});}catch(e){console.warn('HD ground layers failed; keeping the painted ground',e);}}
+const hdTex=async(id,map,size,srgb)=>{if(!hd||!KE.HD.has(id))return null;try{const t=await KE.HD.texture(T,id,map,{size,srgb});hdKit.push(t);return t;}catch(e){console.warn('HD texture',id,map,e);return null;}};
+const hdSurface=async(id,size)=>{const [map,normal,arm]=await Promise.all([hdTex(id,'diff',size,true),hdTex(id,'nor',size,false),hdTex(id,'arm',Math.max(512,size/2),false)]);return map?{map,normal,arm,size:KE.HD.info(id).size_m||[1,1]}:null;};
+/* put an HD texture set on an existing material (keeps its colour tint, wind and shadow hooks) */
+/* a texture takes the repeat of its first user; other repeats get a clone (same image) */
+const hdUse=(t,rep)=>{if(!t)return null;const k=rep.join(',');if(!t._keRep){t._keRep=k;t.repeat.set(rep[0],rep[1]);return t;}if(t._keRep===k)return t;
+  const c=t.clone();c.repeat.set(rep[0],rep[1]);c._keRep=k;c.needsUpdate=true;hdKit.push(c);return c;};
+const hdApply=(m,set,{repeat=[1,1],tint=null,normal=1,albedo=true}={})=>{if(!m||!set)return;if(albedo)m.map=hdUse(set.map,repeat);
+  const n=hdUse(set.normal,repeat);if(n){m.normalMap=n;m.normalScale.set(normal,normal);}const a=hdUse(set.arm,repeat);if(a){m.roughnessMap=a;m.roughness=1;}m.bumpMap=null;if(tint!=null)m.color.set(tint);m.needsUpdate=true;};
 
 // Spawn beside the lower river on gentle ground, facing upstream toward the volcano; the forest keeps a clearing there.
 let spawn={x:0,z:0,s:0,side:1};{const q={};search:for(const off of [9,12,16,22])for(const f of [.74,.68,.8,.62,.86,.56])for(const side of [-1,1]){const p=riverPathPoint(f*riverPath.length,q),x=p.x+p.nx*side*(p.w*.5+off),z=p.z+p.nz*side*(p.w*.5+off),h=ground(x,z);
@@ -111,15 +129,24 @@ const EPIC=S.preset==='epic',lod=EPIC?.72:Math.min(.8,Math.max(.35,(S.lod||1)*.5
 const species=[{name:'cedar',kind:'cedar',height:30,seed:5,h:[2,300],slope:[0,.95],weight:1.6},{name:'cedar2',kind:'cedar',height:22,seed:11,h:[2,260],slope:[0,.95],weight:1},{name:'oak',kind:'broadleaf',height:9,seed:4,h:[1.5,120],slope:[0,.7],weight:.7},
   {name:'maple',kind:'maple',height:7,seed:4,h:[2,160],slope:[0,.75],weight:.5},{name:'sakura',kind:'sakura',height:5.5,seed:2,h:[2,90],slope:[0,.6],weight:.35},{name:'bush',kind:'bush',height:1.6,seed:6,h:[1.2,220],slope:[0,.95],weight:.9},
   {name:'bamboo',kind:'bamboo',height:13,seed:9,h:[1.5,120],slope:[0,.6],weight:1}];
+/* HD bark: Japanese cedar, zelkova, trident maple, sakura and metasequoia (the daisugi) */
+if(hd)status('HD pack: bark',.74);
+const hdBark=hd?Object.fromEntries(await Promise.all([['cedar','japanese_cedar_bark'],['broadleaf','japanese_zelkova_bark'],['maple','trident_maple_bark'],['sakura','sakura_bark'],['daisugi','metasequoia_bark']].map(async([k,id])=>[k,await hdSurface(id,HDQ.bark)]))):{};
 const types=[],proxyTypes=[],bambooTypes=[],bambooProxy=[];
-for(const sp of species){const bam=sp.kind==='bamboo',T_=bam?bambooTypes:types,P_=bam?bambooProxy:proxyTypes;const tex=KE.leafTexture(T,{species:sp.kind,size:texSize,seed:sp.seed});const leaves=KE.foliageMaterial(T,{map:tex,vertexColors:true}),bark=KE.barkMaterial(T,{species:sp.kind,vertexColors:true});
+for(const sp of species){const bam=sp.kind==='bamboo',T_=bam?bambooTypes:types,P_=bam?bambooProxy:proxyTypes;const tex=KE.leafTexture(T,{species:sp.kind,size:texSize,seed:sp.seed});const leaves=KE.foliageMaterial(T,{map:tex,vertexColors:true}),bark=KE.barkMaterial(T,{species:sp.kind,vertexColors:true});if(hdBark[sp.kind])hdApply(bark,hdBark[sp.kind],{repeat:hdBark[sp.kind].size.map(v=>1.1/v),normal:1.6});
   const geo=merge(sp.kind==='bamboo'?KE.bambooGeometry(T,{seed:sp.seed,height:sp.height,culms:12,spread:4.2,detail:lod,leafCards:{texture:tex}}):KE.treeGeometry(T,{species:sp.kind,seed:sp.seed,height:sp.height,detail:lod,leafCards:{texture:tex}}));kit.push(tex,leaves,bark,geo);
   const t={name:sp.name,geometry:geo,material:[bark,leaves],weight:sp.weight,scale:bam?[.85,1.15]:[.75,1.3],height:sp.h,slope:sp.slope,sink:.05,castShadow:sp.kind!=='bush'};T_.push(t);
   // Octahedral impostor of the same tree for far cells (HLOD).
   let imp=null;if(has('geometry')&&KE.Impostor){const probe=new T.Mesh(geo,[bark,leaves]);try{imp=KE.Impostor.bake(T,renderer,probe,{size:EPIC?1024:512,frames:EPIC?12:8,mode:'octahedral',lit:true});imp.material.color.setScalar(.72);kit.push(imp);}   /* the bake has no foliage self-shadowing: darken to match */catch(e){console.warn('impostor bake failed',e);}}
   P_.push(imp?{...t,geometry:imp.geometry,material:imp.material,castShadow:false}:null);}
 const rockMat=new T.MeshStandardMaterial({color:new T.Color(0x8d8a82).convertSRGBToLinear(),roughness:.92,vertexColors:true});kit.push(rockMat);
-if(has('geometry')&&KE.proceduralRock){const rock=KE.proceduralRock(T,{detail:3,seed:4,radius:1.4,roughness:.5});kit.push(rock);types.push({name:'rock',geometry:rock,material:rockMat,weight:.35,scale:[.6,2.4],scaleY:[.5,.9],height:[1,160],slope:[.35,4],sink:.3,align:.6,castShadow:true});proxyTypes.push(null);}
+/* rocks are placed in clusters by their own partition (below), not scattered one by one with the trees */
+/* HD pack: stumps, fallen trunks and roots on the forest floor (simplified to the preset's triangle budget; the scanned
+   normal maps keep the surface detail). */
+const hdModel=(id,o={})=>hd&&KE.HD.has(id)?KE.HD.prepare(T,id,{maxTriangles:HDQ.tris,textureSize:HDQ.model,...o}).then(r=>{for(const p of r)hdKit.push(p.geometry);return r;}).catch(e=>{console.warn('HD model',id,e);return [];}):Promise.resolve([]);
+if(hd){status('HD pack: forest debris',.76);await nextFrame();
+  const [stump1,stump2,log1,log2,roots]=await Promise.all([hdModel('tree_stump_01',{maxTriangles:HDQ.tris*.6}),hdModel('tree_stump_02',{maxTriangles:HDQ.tris*.6}),hdModel('dead_tree_trunk',{maxTriangles:HDQ.tris*.5}),hdModel('dead_tree_trunk_02',{maxTriangles:HDQ.tris*.6}),hdModel('pine_roots',{maxTriangles:HDQ.tris*.6,keep:1})]);
+  for(const [list,w] of [[stump1,.05],[stump2,.05],[log1,.035],[log2,.035],[roots,.03]])for(const r of list)types.push({name:'debris-'+r.name,geometry:r.geometry,material:r.material,weight:w,scale:[.85,1.2],height:[2,220],slope:[0,.55],sink:.05,align:.85,castShadow:true});}
 const forestNoise=KE.noise2D(SEED+11),groveNoise=KE.noise2D(SEED+31);
 const density=(x,z)=>{const n=forestNoise(x*.0035,z*.0035)*.6+forestNoise(x*.011,z*.011)*.4;return n>-.2?.95:n>-.32?.5:.15;};
 /* bamboo groves: noise patches plus one grove on the far bank opposite the spawn */
@@ -130,7 +157,7 @@ const typeIndex=n=>types.findIndex(t=>t.name===n);
    stands are a second, denser scatter pass over the same cells that keeps only points inside a grove */
 const GROVE=.5,landmark={x:spawn.x,z:spawn.z};   // the daisugi's spot, set below
 const clear=(x,z,bank)=>(x-spawn.x)**2+(z-spawn.z)**2>196&&(x-landmark.x)**2+(z-landmark.z)**2>100&&river.edgeDistance(x,z)>bank;
-const scatterOpts={cellSize:128,terrain,spacing:({low:9.5,medium:8})[S.preset]||7,density,seed:SEED,waterLevel:.6,castShadow:true,receiveShadow:true,filter:(x,y,z,ti)=>clear(x,z,3)&&(grove(x,z)<=GROVE||types[ti].name==='bush')&&(!inView(x,z)||types[ti].name==='bush'||types[ti].name==='rock')};
+const scatterOpts={cellSize:128,terrain,spacing:({low:9.5,medium:8})[S.preset]||7,density,seed:SEED,waterLevel:.6,castShadow:true,receiveShadow:true,filter:(x,y,z,ti)=>clear(x,z,3)&&(grove(x,z)<=GROVE||types[ti].name==='bush')&&(!inView(x,z)||types[ti].name==='bush'||types[ti].name.startsWith('rock'))};
 /* bamboo stands stream in their own 64 m cells within a short radius (impostors beyond): a stand is ~10k triangles */
 const bambooOpts={cellSize:64,terrain,spacing:6,density:(x,z)=>grove(x,z)>GROVE?1:0,seed:SEED+2,waterLevel:.6,castShadow:true,receiveShadow:true,filter:(x,y,z)=>clear(x,z,1.5)};
 /* per-instance occlusion: the workers keep a horizon map around the camera; trees, bamboo and impostors behind the terrain
@@ -146,6 +173,41 @@ const bamboo=bambooTypes.length?new KE.WorldPartition({cellSize:64,loadRadius:({
   hlod:bambooProxy[0]?cell=>{const g=KE.scatterCell(T,{...bambooOpts,cell,types:[bambooProxy[0]],castShadow:false});scene.add(g);cull(g);return {dispose(){g.userData.dispose();}};}:null,hlodRadius:({low:220,medium:320,high:450,ultra:550,epic:750,cinematic:600})[S.preset]||450}):null;
 const csm=new KE.CascadedShadows(T,scene,{sun,maxFar:EPIC?300:220,margin:EPIC?100:80});csm.setupScene();
 for(const t of [...types,...bambooTypes])for(const m of [t.material].flat())csm.setupMaterial(m);
+/* ---------- rocks: clusters, cliff pieces, coast rocks and river boulders (KE.rockCell) ----------
+   Hero boulders ringed by smaller stones, half-buried and leaning with the slope; scanned cliff faces pressed into steep
+   ground with scree below; coast rocks at the waterline; boulders along both river banks. With the HD pack every rock is
+   a photoscan; without it, procedural rocks in a triplanar stone material. */
+status(hd?'HD pack: scanned rocks and cliffs':'Placing rocks',.78);await nextFrame();
+const rockTypes=[];
+if(hd){const [set1,set2,boulder,rf1,rf2,mtn,coast1,coast5,r07,r09,stone]=await Promise.all([hdModel('rock_moss_set_01'),hdModel('rock_moss_set_02'),hdModel('boulder_01'),
+    hdModel('rock_face_01',{maxTriangles:HDQ.tris*1.5}),hdModel('rock_face_02',{maxTriangles:HDQ.tris*1.5}),hdModel('mountainside',{maxTriangles:HDQ.tris*2}),
+    hdModel('coast_rocks_01',{maxTriangles:HDQ.tris*1.5}),hdModel('coast_rocks_05',{maxTriangles:HDQ.tris*1.5}),hdModel('rock_07',{maxTriangles:1500}),hdModel('rock_09',{maxTriangles:1500}),hdModel('stone_01',{maxTriangles:1500})]);
+  const T_=(r,o)=>rockTypes.push({name:'rock-'+r.name,geometry:r.geometry,material:r.material,castShadow:true,...o});
+  for(const set of [set1,set2])set.forEach((r,i)=>T_(r,i<2?{role:'hero small',size:[1,3.2],sink:[.18,.38],weight:1,height:[1,420]}:{role:'small',size:[.3,1.3],sink:[.12,.3],weight:1}));
+  for(const r of boulder)T_(r,{role:'hero',size:[1.5,4.2],sink:[.2,.4],weight:1.4,height:[1,420]});
+  for(const r of [...r07,...r09,...stone])T_(r,{role:'small',size:[.15,.6],sink:[.1,.3],weight:.8});
+  for(const r of [...rf1,...rf2,...mtn])T_(r,{role:'cliff',size:[7,16],sink:[.3,.45],weight:1});
+  for(const r of [...coast1,...coast5])T_(r,{role:'hero',size:[2,5],sink:[.25,.4],weight:3,height:[-2,4],underwater:2});}
+else if(has('geometry')&&KE.proceduralRock&&KE.surface){const stoneMat=KE.surface(T,'rock',{color:new T.Color(0x9a978f),roughness:.9,scale:.45,bump:.22,textureSize:Math.min(512,S.tex||512)});kit.push(stoneMat);
+  [[4,.5,1.4,'hero small'],[9,.62,1.2,'hero'],[13,.42,1.5,'hero cliff'],[21,.7,1,'small'],[33,.55,.9,'small']].forEach(([seed,rough,r,role])=>{const g=KE.proceduralRock(T,{detail:3,seed,radius:r,roughness:rough});kit.push(g);
+    rockTypes.push({name:'rock-p'+seed,geometry:g,material:stoneMat,role,size:role==='small'?[.3,1.1]:role.includes('cliff')?[4,9]:[1.2,3.4],sink:[.25,.45],castShadow:true});});}
+for(const t of rockTypes)csm.setupMaterial(t.material);
+const rockNoise=KE.noise2D(SEED+57);
+const rockPart=rockTypes.length?new KE.WorldPartition({cellSize:96,loadRadius:({low:70,medium:100,high:140,ultra:170,epic:200,cinematic:200})[S.preset]||140,budgetMs:2,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
+  load:cell=>{const g=KE.rockCell(T,{cell,cellSize:96,terrain,types:rockTypes,seed:SEED+9,spacing:26,waterLevel:-1.5,members:[2,6],
+      density:(x,z)=>{const h=ground(x,z),sl=terrain.slopeAt(x,z),n=rockNoise(x*.012,z*.012);return Math.min(1,.18+Math.max(0,n)*.5+(sl>.6?.35:0)+(h>-1.5&&h<3?.45:0));},
+      filter:(x,y,z)=>clear(x,z,2.5)&&Math.hypot(x-spawn.x,z-spawn.z)>18});scene.add(g);return cull(g);},
+  unload:(cell,g)=>{if(g)g.userData.dispose();}}):null;
+/* boulders and stones along both banks of the river (clear of the jetty, the torii and the spawn) */
+let riverRocks=null;if(rockTypes.length){const rr=KE.random(SEED+77),q={},bk=rockTypes.map(()=>[]),M=new T.Matrix4(),Q=new T.Quaternion(),E=new T.Euler(),P=new T.Vector3(),SC=new T.Vector3();
+  const pool=role=>rockTypes.map((t,k)=>String(t.role).includes(role)&&!(t.height&&t.height[0]<0)?k:-1).filter(k=>k>=0),hero=pool('hero'),small=pool('small');
+  const base=rockTypes.map(t=>{const g=t.geometry;if(!g.boundingBox)g.computeBoundingBox();const v=g.boundingBox.getSize(new T.Vector3());return [Math.max(v.x,v.y,v.z)||1,v.y||1];});
+  for(let s=riverPath.length*.03;s<riverPath.length*.97;s+=3.2){if(Math.abs(s-(spawn.s-24))<9||Math.abs(s-(spawn.s+14))<7)continue;const p=riverPathPoint(s,q);
+    for(const side of [-1,1]){if(rr()>.78)continue;const n=1+Math.floor(rr()*4);
+      for(let i=0;i<n;i++){const big=rr()<.45&&hero.length>0,list=big?hero:small;if(!list.length)continue;const k=list[Math.floor(rr()*list.length)],size=big?1.2+rr()*2.2:.3+rr()*.9;
+        const off=p.w*.5+(rr()-.7)*2.4,x=p.x+p.nx*side*off+p.dx*(rr()-.5)*3,z=p.z+p.nz*side*off+p.dz*(rr()-.5)*3;if(Math.hypot(x-spawn.x,z-spawn.z)<7)continue;
+        const y=ground(x,z),sc=size/base[k][0];P.set(x,y-base[k][1]*sc*(.2+rr()*.2),z);E.set((rr()-.5)*.5,rr()*6.283,(rr()-.5)*.5);Q.setFromEuler(E);SC.set(sc*(.88+rr()*.24),sc*(.8+rr()*.3),sc*(.88+rr()*.24));M.compose(P,Q,SC);bk[k].push(...M.elements);}}}
+  riverRocks=KE.instanceGroup(T,rockTypes,bk,'river-rocks',{castShadow:true});scene.add(riverRocks);cull(riverRocks);}
 if(culler)culler.setShadows(renderer,csm);   // the near shadow cascade draws only the trees inside it
 pipeline.setShadowSource(csm);if(KE.foliage)KE.foliage.setShadowSource(csm);
 
@@ -172,7 +234,7 @@ const jetty=new T.Group();{const q={},p=riverPathPoint(spawn.s-24,q),side=spawn.
   const m=addBoat('wasen',9,{boatman:false});m.mode='moored';m.x=bx-p.nx*side*1.2+p.dx*2.1;m.z=bz-p.nz*side*1.2+p.dz*2.1;m.y=p.y;m.yaw=Math.atan2(p.nz*side,-p.nx*side);}
 /* the daisugi: a Kitayama cedar stool with tall straight shoots, on the spawn's side of the river, ahead of the camera */
 let daisugi=null;if(KE.daisugiGeometry){const q={},p=riverPathPoint(spawn.s,q),side=spawn.side,f=[-Math.sin(toFuji),-Math.cos(toFuji)],x=spawn.x+p.nx*side*14+f[0]*16,z=spawn.z+p.nz*side*14+f[1]*16;landmark.x=x;landmark.z=z;
-  const tex=KE.leafTexture(T,{species:'cedar',size:texSize,seed:7}),leaves=KE.foliageMaterial(T,{map:tex,vertexColors:true}),bark=KE.barkMaterial(T,{species:'maple',vertexColors:true}),geo=KE.daisugiGeometry(T,{seed:3,height:24,detail:Math.max(lod,.8),leafCards:{texture:tex}});
+  const tex=KE.leafTexture(T,{species:'cedar',size:texSize,seed:7}),leaves=KE.foliageMaterial(T,{map:tex,vertexColors:true}),bark=KE.barkMaterial(T,{species:'maple',vertexColors:true}),hdb=hdBark.daisugi&&hdApply(bark,hdBark.daisugi,{repeat:hdBark.daisugi.size.map(v=>1.1/v),normal:1.6}),geo=KE.daisugiGeometry(T,{seed:3,height:24,detail:Math.max(lod,.8),leafCards:{texture:tex}});
   daisugi=new T.Group();const m1=new T.Mesh(geo.trunk,bark),m2=new T.Mesh(geo.leaves,leaves);for(const m of [m1,m2]){m.castShadow=m.receiveShadow=true;daisugi.add(m);}daisugi.position.set(x,ground(x,z)-.2,z);scene.add(daisugi);
   csm.setupMaterial(bark);csm.setupMaterial(leaves);sets.push(tex,leaves,bark,geo.trunk,geo.leaves);}
 const torii=new T.Group();{const q={},p=riverPathPoint(spawn.s+14,q),side=spawn.side,red=new T.MeshStandardMaterial({color:new T.Color(0xc23b22),roughness:.55}),blk=new T.MeshStandardMaterial({color:0x1d1b1a,roughness:.6});sets.push(red,blk);
@@ -183,6 +245,21 @@ const torii=new T.Group();{const q={},p=riverPathPoint(spawn.s+14,q),side=spawn.
   const tx=p.x+p.nx*side*(p.w*.5+7),tz=p.z+p.nz*side*(p.w*.5+7);torii.position.set(tx,ground(tx,tz)-.05,tz);torii.rotation.y=Math.atan2(-p.dz,p.dx);scene.add(torii);csm.setupScene(torii);}
 {const bay=[[250,170,'yakatabune'],[340,120,'wasen'],[190,220,'wasen'],[420,230,'yakatabune'],[300,280,'wasen'],[470,140,'wasen']];let k=0;
   for(const [x,z,style] of bay){if(ground(x,z)>-2.5)continue;const b=addBoat(style,40+k++);b.mode='sea';b.x=x;b.z=z;b.yaw=k*1.3;}}
+/* HD pack: hinoki planks on the boats and jetty, grey roof tiles on the yakatabune, wood grain in the torii's lacquer;
+   scanned lanterns on the jetty and beside the torii, and a stone fire pit with a campfire in the clearing by the spawn */
+const lanternGlass=[];let campfireAt=null;
+if(hd){status('HD pack: planks, roof tiles and props',.84);await nextFrame();
+  const [plank,roofT]=await Promise.all([hdSurface('hinoki_planks',HDQ.bark),hdSurface('grey_roof_tiles_02',1024)]);
+  for(const b of boats)for(const m of b.materials){if(m.userData.part==='wood')hdApply(m,plank,{repeat:[.5,.5]});else if(m.userData.part==='roof')hdApply(m,roofT,{repeat:[2.5,2.5],tint:0xd8d8d8});}
+  {const wm=[];jetty.traverse(o=>{if(o.isMesh&&!wm.includes(o.material))wm.push(o.material);});for(const m of wm)hdApply(m,plank,{repeat:[1,2.5],tint:0xd9cbb8});}
+  {const lac=[];torii.traverse(o=>{if(o.isMesh&&o.material.color.r>.3&&!lac.includes(o.material))lac.push(o.material);});for(const m of lac)hdApply(m,plank,{repeat:[1,1],albedo:false,normal:.5});}
+  const [lan,pit]=await Promise.all([hdModel('wooden_lantern_01',{split:false,textureSize:1024,maxTriangles:12000}),hdModel('stone_fire_pit',{split:false,textureSize:2048,maxTriangles:8000})]);
+  const place=(pieces,x,y,z,ry,sc,parent)=>{const g=new T.Group();for(const p of pieces){const m=new T.Mesh(p.geometry,p.material);m.castShadow=m.receiveShadow=true;g.add(m);for(const mt of [p.material].flat())csm.setupMaterial(mt);}
+    g.position.set(x,y,z);g.rotation.y=ry;g.scale.setScalar(sc);parent.add(g);return g;};
+  if(lan.length){const h=Math.max(...lan.map(p=>p.size[1])),sc=.55/h;for(const dz of [-3.1,3.1])place(lan,.78,.62,dz,0,sc,jetty);for(const x of [-2.7,2.7])place(lan,x,0,.7,.4,sc*1.25,torii);
+    for(const p of lan)for(const m of [p.material].flat())if(m.transparent||m.opacity<1||/glass/i.test(m.name)){m.emissive=new T.Color(0xffa24a);m.emissiveIntensity=0;lanternGlass.push(m);}}
+  if(pit.length){const q={},p=riverPathPoint(spawn.s,q),x=spawn.x+p.nx*spawn.side*6.5+p.dx*3,z=spawn.z+p.nz*spawn.side*6.5+p.dz*3,sc=1.45/Math.max(...pit.map(r=>r.size[0])),y=ground(x,z)-.04;
+    place(pit,x,y,z,.7,sc,scene);campfireAt=new T.Vector3(x,y+.08,z);}}
 const updateBoats=(dt,t)=>{const q={};for(const b of boats){const g=b.group;if(b.mode==='player')continue;
   if(b.mode==='river'){b.s+=b.speed*1.4*dt;if(b.s>riverPath.length-20)b.s=riverPath.length*.46;const p=river.pointAt(b.s,q);
     g.position.set(p.x+p.nx*b.lane*p.w*.5,p.y-b.draft+Math.sin(t*1.6+b.phase)*.025,p.z+p.nz*b.lane*p.w*.5);g.rotation.set(Math.sin(t*1.1+b.phase)*.025,Math.atan2(-p.dz,p.dx),Math.sin(t*.9+b.phase)*.015);}
@@ -221,22 +298,42 @@ const placeBoat=(t,dt)=>{const b=boating,g=b.group,w=waterUnder(drive.x,drive.z,
   seat.set(b.length*(b.style==='yakatabune'?.3:.12),b.draft+.12,0);g.localToWorld(seat);hero.position.copy(seat);hero.rotation.set(0,Math.atan2(-Math.cos(drive.heading),Math.sin(drive.heading)),0);
   player.x=seat.x;player.z=seat.z;player.y=seat.y+player.r;player.vx=Math.cos(drive.heading)*drive.speed;player.vz=-Math.sin(drive.heading)*drive.speed;
   if(wakeFx){const sx=drive.x-Math.cos(drive.heading)*b.length*.5,sz=drive.z+Math.sin(drive.heading)*b.length*.5;wakeFx.setPosition(sx,drive.y+.05,sz);if(Math.abs(drive.speed)>.6!==wakeFx.playing)Math.abs(drive.speed)>.6?wakeFx.play():wakeFx.stop();}};
-let grass=null;const makeGrass=()=>{if(grass)grass.dispose();grass=S.grass>0?KE.grassField(T,scene,{count:S.preset==='epic'?Math.round(S.grass*1.8):Math.min(Math.round(S.grass*1.8),20000),radius:S.preset==='epic'?40:26,castShadow:S.preset==='epic',ambient:3.2,heightAt:ground,density:(x,z)=>{const h=ground(x,z);return h>1.4&&h<70&&terrain.slopeAt(x,z)<.55?.85:0;}}):null;if(grass)grass.setShadowSource(csm);};makeGrass();
+const grassNoise=KE.noise2D(SEED+41);let grass=null;const makeGrass=()=>{if(grass)grass.dispose();const GR=S.preset==='epic'?40:S.preset==='low'||S.preset==='medium'?24:28,perM2=({medium:9,high:20,ultra:26,cinematic:28,epic:30})[S.preset]||12;
+  grass=S.grass>0?KE.grassField(T,scene,{count:Math.min(Math.round(Math.PI*GR*GR*perM2),S.preset==='epic'?150000:S.preset==='medium'?20000:70000),radius:GR,
+    castShadow:S.preset==='epic',ambient:2.4,heightAt:ground,bladeHeight:[.2,.58],bladeWidth:.036,
+    /* clumps: tufts where the noise is high, bare patches between, none on steep or high ground */
+    density:(x,z)=>{const h=ground(x,z);if(!(h>1.4&&h<70&&terrain.slopeAt(x,z)<.55)||river.edgeDistance(x,z)<.4)return 0;const n=grassNoise(x*.09,z*.09)*.65+grassNoise(x*.35,z*.35)*.35;return Math.max(0,Math.min(1,.45+n*1.2));},
+    /* natural palette: olive, yellow-green, fresh green and a little dry straw, varying in patches */
+    color:(x,z,c)=>{const a=grassNoise(x*.05+9,z*.05-4)*.5+.5,b=grassNoise(x*.6,z*.6)*.5+.5,dry=Math.max(0,a-.62)*2.2;c[0]=.2+.12*b+.26*dry;c[1]=.34+.1*a+.07*b+.1*dry;c[2]=.08+.04*b+.08*dry;return c;}}):null;if(grass)grass.setShadowSource(csm);};makeGrass();
 /* Ground cover near the player: fern clumps and wildflowers in small 32 m cells within ~50 m (smaller on Low). */
 const coverKit=[],coverTier=S.preset==='low'?0:S.preset==='medium'?1:EPIC?3:2;
 const coverTypes=[];if(KE.fernClump){const fernMat=KE.foliageMaterial(T,{vertexColors:true,translucency:.45,translucencyColor:0x8fbf3a}),fernGeo=KE.fernClump(T,{...[{fronds:7,leaflets:8},{fronds:9,leaflets:12},{fronds:10,leaflets:14},{fronds:12,leaflets:18}][coverTier],seed:7});coverKit.push(fernMat,fernGeo);
   coverTypes.push({name:'fern',geometry:fernGeo,material:fernMat,weight:1.4,scale:[.8,1.5],height:[1.4,85],slope:[0,.7],castShadow:false});
   for(const [hex,w] of [[0xe86a9a,.35],[0xf2c14e,.35],[0xf4f0e0,.3]]){const fm=new T.MeshStandardMaterial({vertexColors:true,roughness:.7,side:T.DoubleSide,color:new T.Color(hex)});if(KE.foliage)KE.foliage.applyWind(T,fm,{windAttribute:true});const fg=KE.flowerHead(T,{seed:hex&255});coverKit.push(fm,fg);
     coverTypes.push({name:'flower',geometry:fg,material:fm,weight:w*1.6,scale:[1.3,2.1],height:[1.4,70],slope:[0,.5],castShadow:false});}}
+/* HD pack: scanned ferns replace the procedural clumps; moss, celandine, nettles, grass clumps, weeds, fallen branches,
+   bark and small stones join them. Scales bring each scan to a real-world size range (metres, largest side). */
+if(hd&&coverTier>=2){status('HD pack: ferns, moss, wildflowers and stones',.8);await nextFrame();
+  const [fern,moss,cel,nettle,tuft,weed,branch,bark,peb1,peb2]=await Promise.all([hdModel('fern_02',{wind:true,maxTriangles:4000,keep:3}),hdModel('moss_01',{split:false}),hdModel('celandine_01',{split:false,wind:true}),
+    hdModel('nettle_plant',{wind:true,keep:2}),hdModel('grass_medium_01',{split:false,wind:true,maxTriangles:8000}),hdModel('weed_plant_02',{split:false,wind:true}),hdModel('dry_branches_medium_01',{keep:2,maxTriangles:2500}),
+    hdModel('bark_debris_01',{keep:2,maxTriangles:1500}),hdModel('rock_07',{maxTriangles:1200}),hdModel('stone_01',{maxTriangles:1200})]);
+  if(fern.length){const fi=coverTypes.findIndex(t=>t.name==='fern');if(fi>=0)coverTypes.splice(fi,1);}
+  const add=(list,weight,size,o={})=>list.forEach(r=>{const m=Math.max(...r.size);coverTypes.push({name:'hd-'+r.name,geometry:r.geometry,material:r.material,weight:weight/list.length,scale:[size[0]/m,size[1]/m],height:[1.4,110],slope:[0,.75],castShadow:false,...o});});
+  add(fern,1.5,[.7,1.4]);add(moss,.5,[.35,.8],{align:.9});add(cel,.45,[.3,.55]);add(nettle,.35,[.45,.9]);add(tuft,.7,[.35,.6]);add(weed,.3,[.3,.55]);
+  add(branch,.25,[.9,1.6],{align:.9,sink:.03});add(bark,.2,[.35,.7],{align:.9});add(peb1,.3,[.2,.55],{align:.8,sink:.1});add(peb2,.3,[.15,.4],{align:.8,sink:.1});
+  for(const t of coverTypes)if(t.name.startsWith('hd-'))for(const m of [t.material].flat())csm.setupMaterial(m);}
 const coverNoise=KE.noise2D(SEED+23);
 const cover=coverTypes.length?new KE.WorldPartition({cellSize:32,loadRadius:[28,40,52,66][coverTier],budgetMs:2,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
-  load:cell=>{const g=KE.scatterCell(T,{cell,cellSize:32,terrain,spacing:2.4,density:(x,z)=>coverNoise(x*.02,z*.02)>-.35?.6:.15,seed:SEED+5,waterLevel:1.2,castShadow:false,receiveShadow:true,types:coverTypes});scene.add(g);return cull(g);},
+  load:cell=>{const g=KE.scatterCell(T,{cell,cellSize:32,terrain,spacing:2.4,density:(x,z)=>coverNoise(x*.02,z*.02)>-.35?.6:.15,seed:SEED+5,waterLevel:1.2,castShadow:false,receiveShadow:true,types:coverTypes,filter:(x,y,z)=>river.edgeDistance(x,z)>.6});scene.add(g);return cull(g);},
   unload:(cell,g)=>{if(g)g.userData.dispose();}}):null;
 
 /* ---------- weather, particles, sound ---------- */
 const weather=has('weather')?new KE.SurfaceWeather(T,{puddleScale:.05,puddleCoverage:.4}):null;
 if(weather){try{weather.setupMaterial(terrain.material);}catch(e){console.warn('weather on terrain disabled',e);}for(const t of [...types,...bambooTypes])for(const m of [t.material].flat())if(m.side!==T.DoubleSide&&!(m.alphaTest>0))weather.setupMaterial(m);}
 const vfx=has('vfx')?new KE.VFX(T,renderer,scene,{budget:S.vfx}):null;let rainFx=null;if(vfx){rainFx=vfx.emitter(vfx.presets.rain({attachTo:camera,attachRotation:false,ground}));rainFx.stop({clear:true});wakeFx=makeWake();wakeFx.stop({clear:true});}
+/* the campfire in the HD fire pit: flames, embers and a flickering light that matters most at night */
+let fireLight=null;if(campfireAt){fireLight=new T.PointLight(0xff8a3a,0,18,2);fireLight.position.copy(campfireAt);fireLight.position.y+=.8;scene.add(fireLight);
+  if(vfx){vfx.create('fire',{position:campfireAt,scale:.8});vfx.create('embers',{position:campfireAt,scale:.7});vfx.create('smoke',{position:[campfireAt.x,campfireAt.y+.6,campfireAt.z],scale:.55,intensity:.5});}}
 const sound=has('audio')&&KE.AudioEngine?new KE.AudioEngine(T,{volume:.8}):null;let beds=null,stepSeed=0;
 const startSound=()=>{if(!sound||beds)return;sound.unlock().then(()=>{if(beds)return;sound.setReverb({preset:'forest',wet:.15});beds={wind:sound.ambience('wind',{intensity:.3}),day:sound.ambience('forest-day',{intensity:.5}),night:sound.ambience('night',{intensity:0}),rain:sound.ambience('rain',{intensity:0}),sea:sound.ambience('water',{intensity:0})};}).catch(()=>{});};
 if(gait&&sound)gait.onFootPlant=(leg,i,c)=>{if(!beds)return;const h=ground(c.x,c.z),surface=h<2?'sand':terrain.slopeAt(c.x,c.z)>.7?'stone':'grass';sound.play(KE.Synth.footstep({surface,intensity:.4,seed:(stepSeed++)%4}),{position:[c.x,c.y,c.z],volume:.3,bus:'sfx'});};
@@ -258,7 +355,7 @@ const resize=()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWi
 /* ---------- warm up: load the cells around the spawn, compile programs ---------- */
 status('Streaming the first cells',.93);await nextFrame();
 const introCam=t=>{const a=toFuji+Math.sin(t*.05)*.45,gy=ground(spawn.x,spawn.z);camera.position.set(spawn.x+Math.sin(a)*14,gy+5,spawn.z+Math.cos(a)*14);camera.lookAt(spawn.x-Math.sin(a)*60,gy+14,spawn.z-Math.cos(a)*60);};introCam(0);
-wp.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);if(bamboo)bamboo.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);if(cover)cover.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);terrain.update(camera,renderer);
+wp.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);if(rockPart)rockPart.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);if(bamboo)bamboo.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);if(cover)cover.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);terrain.update(camera,renderer);
 try{renderer.compile(scene,camera);}catch(e){}
 status('Ready',1);$('start').hidden=false;$('start').focus();
 $('start').onclick=()=>{started=true;input.setEnabled(true);$('overlay').hidden=true;startSound();};
@@ -282,8 +379,9 @@ const loop=new KE.Loop({onError:fail,update(dt){
   else if(started){const look=input.consumeLook();follow.rotate(look.x,look.y);follow.zoom(look.zoom);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.update(player,dt,ground);}
   else introCam(t);
   wet=KE.damp(wet,raining?1:0,.5,dt);
-  terrain.update(camera,renderer);wp.update(flying?camera.position:hero.position,dt);if(bamboo)bamboo.update(flying?camera.position:hero.position,dt);if(cover)cover.update(flying?camera.position:hero.position,dt);
+  terrain.update(camera,renderer);wp.update(flying?camera.position:hero.position,dt);if(rockPart)rockPart.update(flying?camera.position:hero.position,dt);if(bamboo)bamboo.update(flying?camera.position:hero.position,dt);if(cover)cover.update(flying?camera.position:hero.position,dt);
   sky.update(dt,camera);sun.intensity*=1-wet*.6;const night=sky.night;
+  if(fireLight)fireLight.intensity=(.8+night*3.2)*(.84+.1*Math.sin(t*21.7)+.06*Math.sin(t*8.3));for(const m of lanternGlass)m.emissiveIntensity=night*2.4;
   csm.update(camera);if(culler)culler.update(camera);scene.fog.color.copy(sky.fogColor);const f=pipeline.options.fog;f.color.copy(sky.fogColor);f.density=FOG*(1+wet*2.5);
   water.rain=wet;water.update(dt,camera,{pipeline});river.rain=wet;river.update(dt);updateBoats(dt,t);
   if(KE.foliage)KE.foliage.update(dt,{wind:1+wet*1.4,windDir:[.8,.6],interactors:[hero.position]});
@@ -297,11 +395,11 @@ const loop=new KE.Loop({onError:fail,update(dt){
   if(++frame%15===0){const st=terrain.stats(),ws=wp.stats(),r=renderer.info.render;$('stats').textContent=`${fps} FPS · ${S.preset}${pipeline.enabled?' · Tenko '+pipeline.stats.passes+' passes':''}\n${r.calls} draws · ${(r.triangles/1e6).toFixed(2)}M tris · terrain ${st.patches} patches in ${st.drawCalls} draw\ncells ${ws.loaded} loaded · ${ws.hlod} impostor${culler&&culler.stats.valid?` · ${culler.stats.hidden} culled (${culler.stats.workers?culler.stats.workers+' workers':'main thread'}), ${culler.stats.shadowSkipped} out of near shadows`:''} · shadows ${csm.stats.drawn}/${csm.count}\nalt ${(flying?camera.position.y:player.y).toFixed(0)} m${boating?' · boat '+(Math.abs(drive.speed)*3.6).toFixed(0)+' km/h':''}`;}
  }});loop.start();
 
-window.demo={KE,loop,cpuThreads:threads,culler,loadTimes,renderer,scene,camera,terrain,heightfield:hf,partition:wp,player,sky,water,river,boats,torii,jetty,daisugi,bambooPartition:bamboo,volcano:FUJI,spawn,grove:groveAt,landmark,board,ashore,boating:()=>boating,boatState:()=>({...drive}),setBoatState:o=>Object.assign(drive,o),waterUnder,csm,pipeline:()=>pipeline,fox,gait,fur,vfx,sound,weather,
+window.demo={KE,loop,cpuThreads:threads,culler,hd:!!hd,campfire:campfireAt,rocks:rockPart,riverRocks,rockTypes,loadTimes,renderer,scene,camera,terrain,heightfield:hf,partition:wp,player,sky,water,river,boats,torii,jetty,daisugi,bambooPartition:bamboo,volcano:FUJI,spawn,grove:groveAt,landmark,board,ashore,boating:()=>boating,boatState:()=>({...drive}),setBoatState:o=>Object.assign(drive,o),waterUnder,csm,pipeline:()=>pipeline,fox,gait,fur,vfx,sound,weather,
  getState:()=>({x:player.x,z:player.z,y:player.y,day,flying,raining,cells:wp.stats().loaded}),setDay,setRain,setFly,
  flyTo(x,y,z,yaw=fly.yaw,pitch=fly.pitch){setFly(true);fly.pos.set(x,y,z);fly.yaw=yaw;fly.pitch=pitch;},
  teleport(x,z){if(boating){const b=boating;b.mode=waterUnder(drive.x,drive.z,b.draft)&&waterUnder(drive.x,drive.z,b.draft).river?'moored':'sea';b.x=drive.x;b.z=drive.z;b.y=drive.y;b.yaw=drive.heading;boating=null;if(wakeFx)wakeFx.stop();follow.distance=7.5;follow.height=1.1;$('board').textContent='⛵ Board (E)';}player.x=x;player.z=z;player.y=ground(x,z)+.5;player.vx=player.vz=player.vy=0;follow.initialized=false;if(gait)gait.reset();},
- dispose(){loop.dispose();input.dispose();offSettings();window.removeEventListener('keydown',keys);window.removeEventListener('resize',resize);wp.dispose();if(bamboo)bamboo.dispose();if(daisugi)daisugi.parent.remove(daisugi);if(cover)cover.dispose();for(const r of coverKit)r.dispose();if(grass)grass.dispose();if(fur)fur.dispose();if(vfx)vfx.dispose();if(sound)sound.dispose();if(weather)weather.dispose();
+ dispose(){loop.dispose();input.dispose();offSettings();window.removeEventListener('keydown',keys);window.removeEventListener('resize',resize);wp.dispose();if(rockPart)rockPart.dispose();if(riverRocks)riverRocks.userData.dispose();if(bamboo)bamboo.dispose();if(daisugi)daisugi.parent.remove(daisugi);if(cover)cover.dispose();for(const r of coverKit)r.dispose();for(const r of hdKit)if(r&&r.dispose)r.dispose();if(KE.HD)KE.HD.dispose();if(grass)grass.dispose();if(fur)fur.dispose();if(vfx)vfx.dispose();if(sound)sound.dispose();if(weather)weather.dispose();
   pipeline.dispose();csm.dispose();water.dispose();river.dispose();for(const b of boats)b.dispose();for(const r of sets)r.dispose();KE.disposeObject(torii);KE.disposeObject(jetty);sky.dispose();terrain.dispose();for(const r of kit)if(r&&r.dispose)r.dispose();fox.dispose();renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();

@@ -603,6 +603,11 @@ uniform float keTexScale;uniform float keRelief;uniform float keTHTexel;uniform 
 varying vec3 keTWorld;varying vec2 keTUV;varying float keTLod;
 ${TERRAIN_RELIEF}
 vec3 keTNormalAt(vec2 uv){vec2 e=texture2D(keNormalMap,uv).xy*2.-1.;return normalize(vec3(e.x,sqrt(max(0.,1.-dot(e,e))),e.y));}
+#ifdef KE_TERRAIN_HD
+precision highp sampler2DArray;
+uniform sampler2DArray keLA;uniform sampler2DArray keLN;uniform sampler2DArray keLR;uniform sampler2DArray keLH;uniform sampler2D keFlow;
+uniform float keLScale[8];uniform vec2 keRockHigh;uniform float keHDNormal;uniform float keDirtMoss;
+#endif
 `;
 const TERRAIN_MAP=`
 vec3 kN=keTNormalAt(keTUV);
@@ -640,6 +645,45 @@ vec3 kGrad=vec3(dot(kBA,vec4(kHAx.r,kHAx.g,kHAx.b,kRockH))+kBS*texture2D(keHB,ku
 `;
 const TERRAIN_ROUGH=`roughnessFactor=mix(dot(kBA,vec4(.95,.9,.96,.82))+kBS*.55,.28,kWet*.85);`;
 const TERRAIN_NORMAL=`normal=normalize((viewMatrix*vec4(kN,0.)).xyz);{vec3 kg=(viewMatrix*vec4(kGrad,0.)).xyz;normal=normalize(normal-keRelief*30.*(1.-kFar*.8)*(kg-normal*dot(kg,normal)));}`;
+/* HD layers (setLayers): eight photoscanned texture sets in texture arrays (albedo, normal, ARM, height), each at its
+   real-world size. Biome weights split further: grass into moss and leaf litter by broad noise, dirt into gravel where
+   water flows (the flow mask), rock into mossy and bare by altitude. Height blending as above; normals from the
+   layers' normal maps (whiteout blend onto the terrain normal; rock triplanar); roughness and AO from their ARM maps. */
+const TERRAIN_MAP_HD=`
+vec3 kN=keTNormalAt(keTUV);
+float kDist=length(vViewPosition);
+vec4 kB=texture2D(keBiome,keTUV);
+vec4 kWA=vec4(kB.r,kB.g,max(0.,1.-kB.r-kB.g-kB.b-kB.a),kB.b);float kWS=kB.a;
+float kSteep=smoothstep(.74,.6,kN.y);kWA=kWA*(1.-kSteep)+vec4(0.,0.,0.,kSteep);kWS*=1.-kSteep;
+float kFar=smoothstep(12.,70.,kDist);
+float kM1=keFbm2(keTWorld.xz*.0042+3.7),kM2=keNoise2(keTWorld.xz*.027-1.3),kM3=keNoise2(keTWorld.xz*.11+7.1);
+float kLeaf=smoothstep(.45,.62,keFbm2(keTWorld.xz*.019+11.3));
+float kFl=smoothstep(.12,.5,texture2D(keFlow,keTUV).r);
+float kAlt=smoothstep(keRockHigh.x,keRockHigh.y,keTWorld.y+(kM2-.5)*(keRockHigh.y-keRockHigh.x));
+float kw[8];kw[0]=kWA.x*(1.-kLeaf);kw[1]=kWA.x*kLeaf;kw[2]=kWA.y;kw[3]=kWA.z*(1.-kFl);kw[4]=kWA.z*kFl;{float mv=kw[3]*keDirtMoss*smoothstep(.25,.6,kM3+kM1*.5);kw[0]+=mv;kw[3]-=mv;}kw[5]=kWA.w*(1.-kAlt);kw[6]=kWA.w*kAlt;kw[7]=kWS;
+vec3 kBl=pow(abs(kN),vec3(4.));kBl/=dot(kBl,vec3(1.));
+float kh[8];float kTop=-1.;
+for(int i=0;i<8;i++){kh[i]=0.;if(kw[i]>.003){kh[i]=texture(keLH,vec3(keTWorld.xz*keLScale[i],float(i))).r;kTop=max(kTop,kw[i]+kh[i]*.55);}}
+kTop-=.2;float kSum=1e-5;
+for(int i=0;i<8;i++){float t=kw[i]>.003?max(kw[i]+kh[i]*.55-kTop,0.):0.;kw[i]=t;kSum+=t;}
+vec3 kCol=vec3(0.),kNP=vec3(0.);float kRgh=0.,kAO=0.;
+for(int i=0;i<8;i++){float w=kw[i]/kSum;if(w<.002)continue;float fi=float(i),s=keLScale[i];vec3 a,np,r;bool tri=i==5||i==6;
+  if(tri){
+    a=texture(keLA,vec3(keTWorld.zy*s,fi)).rgb*kBl.x+texture(keLA,vec3(keTWorld.xz*s,fi)).rgb*kBl.y+texture(keLA,vec3(keTWorld.xy*s,fi)).rgb*kBl.z;
+    vec2 nx=texture(keLN,vec3(keTWorld.zy*s,fi)).rg*2.-1.,ny=texture(keLN,vec3(keTWorld.xz*s,fi)).rg*2.-1.,nz=texture(keLN,vec3(keTWorld.xy*s,fi)).rg*2.-1.;
+    np=vec3(0.,-nx.y,nx.x)*kBl.x+vec3(ny.x,0.,-ny.y)*kBl.y+vec3(nz.x,-nz.y,0.)*kBl.z;
+    r=texture(keLR,vec3(keTWorld.zy*s,fi)).rgb*kBl.x+texture(keLR,vec3(keTWorld.xz*s,fi)).rgb*kBl.y+texture(keLR,vec3(keTWorld.xy*s,fi)).rgb*kBl.z;
+  }else{vec2 uv=keTWorld.xz*s;a=texture(keLA,vec3(uv,fi)).rgb;vec2 n=texture(keLN,vec3(uv,fi)).rg*2.-1.;np=vec3(n.x,0.,-n.y);r=texture(keLR,vec3(uv,fi)).rgb;}
+  if(kFar>.001){vec3 af=texture(keLA,vec3(keTWorld.xz*s*keFarScale+vec2(.37,.71),fi)).rgb;a=mix(a,af,kFar*(tri?.5:1.));}
+  if(i<2)a*=mix(vec3(1.),mix(vec3(.9,1.,.84),vec3(1.1,1.04,.88),smoothstep(.3,.7,kM1)*keMacro+.5*(1.-keMacro))*keGrassTint,.55);
+  kCol+=a*w;kNP+=np*w;kRgh+=r.g*w;kAO+=r.r*w;}
+kCol*=1.+keMacro*((kM2-.5)*.16+(kM3-.5)*.07);
+float kWet=1.-smoothstep(keWaterLevel+.05,keWaterLevel+1.1,keTWorld.y);float kBS=kw[7]/kSum;
+diffuseColor.rgb*=pow(max(kCol,vec3(0.)),vec3(2.2))*mix(1.,.62,kWet*(1.-kBS))*mix(1.,kAO,.65);
+vec3 kHDN=normalize(kN+kNP*keHDNormal*(1.-kFar*.6));
+`;
+const TERRAIN_ROUGH_HD=`roughnessFactor=mix(clamp(kRgh,.05,1.),.28,kWet*.85);`;
+const TERRAIN_NORMAL_HD=`normal=normalize((viewMatrix*vec4(kHDN,0.)).xyz);`;
 
 function replaceOrThrow(src,target,repl,what){if(src.indexOf(target)<0)throw new Error('KE.GPUTerrain: shader chunk '+target+' not found in '+what+' (Three.js r128 expected)');return src.replace(target,repl);}
 
@@ -886,13 +930,29 @@ class GPUTerrain{
     for(const k of ['keTGrass','keTSand','keTDirt','keTRock','keTSnow'])if(!F[k].value)throw new Error('KE.GPUTerrain: textures missing '+k.slice(3).toLowerCase());
     m.onBeforeCompile=sh=>{for(const k in F)sh.uniforms[k]=F[k];
       let f=TERRAIN_FRAG_DECL+KE.GLSL.hash+'\n'+KE.GLSL.noise+'\n'+sh.fragmentShader;
-      f=replaceOrThrow(f,'#include <map_fragment>',TERRAIN_MAP,'fragment shader');
-      f=replaceOrThrow(f,'#include <roughnessmap_fragment>','#include <roughnessmap_fragment>\n'+TERRAIN_ROUGH,'fragment shader');
-      f=replaceOrThrow(f,'#include <normal_fragment_maps>','#include <normal_fragment_maps>\n'+TERRAIN_NORMAL,'fragment shader');
+      const hd=m.defines&&m.defines.KE_TERRAIN_HD!==undefined;
+      f=replaceOrThrow(f,'#include <map_fragment>',hd?TERRAIN_MAP_HD:TERRAIN_MAP,'fragment shader');
+      f=replaceOrThrow(f,'#include <roughnessmap_fragment>','#include <roughnessmap_fragment>\n'+(hd?TERRAIN_ROUGH_HD:TERRAIN_ROUGH),'fragment shader');
+      f=replaceOrThrow(f,'#include <normal_fragment_maps>','#include <normal_fragment_maps>\n'+(hd?TERRAIN_NORMAL_HD:TERRAIN_NORMAL),'fragment shader');
       sh.fragmentShader=f;};
-    m.customProgramCacheKey=()=>'ke-terrain-default-1';
+    m.customProgramCacheKey=()=>'ke-terrain-default-1'+(m.defines&&m.defines.KE_TERRAIN_HD!==undefined?'-hd':'');
     return this.patchMaterial(m);
   }
+  /* HD layers from texture arrays (KE.HD.layers): {albedo, normal, arm, height} with 8 layers in the order
+     grass, grass-leaves, sand, dirt, gravel, rock, rock-high, snow; scales = 8 tiles-per-metre factors; rockHigh =
+     [y0, y1] where bare rock takes over; normalStrength; dirtToMoss (0..1: share of dry dirt turned to moss in noise
+     patches). Pass null to go back to the painted layers. */
+  setLayers(layers){const m=this.material,F=this.materialUniforms;if(!m||!F)throw new Error('KE.GPUTerrain.setLayers needs the default material');
+    m.defines=m.defines||{};
+    if(!layers){if(m.defines.KE_TERRAIN_HD!==undefined){delete m.defines.KE_TERRAIN_HD;m.needsUpdate=true;}this.layers=null;return this;}
+    const T=this.THREE;if(!this._flowTexture){const hf=this.heightfield,n=hf.size,fl=hf.masks&&hf.masks.flow,d=new Uint8Array(n*n);
+      if(fl){let s=0,c=0;for(let i=0;i<fl.length;i+=7){s+=fl[i];c++;}const mean=Math.max(1e-3,c?s/c:1),a=Math.log(1+mean*2.5),b=Math.log(1+mean*14);
+        for(let i=0;i<n*n;i++)d[i]=Math.round(clamp((Math.log(1+fl[i])-a)/(b-a),0,1)*255);}
+      const t=new T.DataTexture(d,n,n,T.RedFormat,T.UnsignedByteType);t.minFilter=T.LinearMipmapLinearFilter;t.magFilter=T.LinearFilter;t.generateMipmaps=true;t.flipY=false;t.wrapS=t.wrapT=T.ClampToEdgeWrapping;t.needsUpdate=true;t.name='ke-terrain-flow';this._flowTexture=t;}
+    const put=(k,v)=>{if(F[k])F[k].value=v;else F[k]={value:v};};
+    put('keLA',layers.albedo);put('keLN',layers.normal);put('keLR',layers.arm);put('keLH',layers.height);put('keFlow',this._flowTexture);
+    put('keLScale',(layers.scales||[]).concat(Array(8).fill(.3)).slice(0,8));put('keRockHigh',new T.Vector2(...(layers.rockHigh||[1e5,1e5+1])));put('keHDNormal',layers.normalStrength===undefined?1:layers.normalStrength);put('keDirtMoss',layers.dirtToMoss===undefined?0:layers.dirtToMoss);
+    if(m.defines.KE_TERRAIN_HD===undefined){m.defines.KE_TERRAIN_HD='';m.needsUpdate=true;}this.layers=layers;return this;}
   /* Debug views: 'lod' (colour per LOD level, morph shown as a blend), 'wireframe' (the same plus triangle
      edges), 'height' (unlit world height in the red channel, for float render targets), or null. */
   setDebug(mode){
@@ -917,7 +977,7 @@ gl_FragColor=vec4(c,1.);
   dispose(){
     const m=this.mesh;m.parent&&m.parent.remove(m);this.geometry.dispose();this.heightTexture.dispose();this.normalTexture.dispose();if(this._ownBiomes&&this.biomeTexture)this.biomeTexture.dispose();
     if(this._ownMaterial)this.material.dispose();m.customDepthMaterial.dispose();m.customDistanceMaterial.dispose();if(this._debugMaterial)this._debugMaterial.dispose();
-    for(const t of this._materialTextures||[])t.dispose();this._materialTextures=null;this._dirty=null;
+    for(const t of this._materialTextures||[])t.dispose();this._materialTextures=null;this._dirty=null;if(this._flowTexture){this._flowTexture.dispose();this._flowTexture=null;}
   }
 }
 GPUTerrain.GLSL={vertex:TERRAIN_VERT,relief:TERRAIN_RELIEF};
@@ -1066,26 +1126,78 @@ function scatterCell(THREE,o={}){
     if(t.align&&src.normalAt){src.normalAt(x,z,nrm);n.set(nrm.x,nrm.y,nrm.z);qa.setFromUnitVectors(up,n);q.identity().slerp(qa,clamp(t.align,0,1)).multiply(qy);}else q.copy(qy);
     p.set(x,y-(t.sink||0)*s,z);sc.set(s,s,s);if(t.scaleY)sc.y*=t.scaleY;m.compose(p,q,sc);buckets[ti].push(...m.elements);
   }
-  const group=new THREE.Group();group.name='ke-scatter-'+(cell.ix!==undefined?cell.ix+'_'+cell.iz:x0+'_'+z0);let total=0;
+  const group=instanceGroup(THREE,types,buckets,'ke-scatter-'+(cell.ix!==undefined?cell.ix+'_'+cell.iz:x0+'_'+z0),o);group.userData.cell={x:x0,z:z0,size:cs};
+  return group;
+}
+/* One InstancedMesh per type from flat matrix lists (buckets[k] = 16 floats per instance), each drawing through a
+   per-group view of the shared geometry (same attribute objects, no copies) that carries the group's bounding sphere,
+   so Three's frustum culling works per cell. userData.dispose() frees the group's instance buffers and VAOs without
+   touching the shared geometry (the view's attribute table is emptied first) and removes the group. */
+function instanceGroup(THREE,types,buckets,name,o={}){
+  const group=new THREE.Group();group.name=name;let total=0;
   types.forEach((t,k)=>{const arr=buckets[k],count=arr.length/16;if(!count)return;const base=t.geometry;if(!base.boundingSphere)base.computeBoundingSphere();
-    // A per-cell view of the shared geometry (same attribute objects, no copies) that carries the cell's
-    // bounding sphere, so Three's frustum culling works per cell.
     const g=new THREE.BufferGeometry();g.setIndex(base.index);for(const a in base.attributes)g.setAttribute(a,base.attributes[a]);g.groups=base.groups;
     let mnx=Infinity,mny=Infinity,mnz=Infinity,mxx=-Infinity,mxy=-Infinity,mxz=-Infinity,ms=0;
-    for(let i=0;i<count;i++){const e=i*16,px=arr[e+12],py=arr[e+13],pz=arr[e+14],s=Math.hypot(arr[e],arr[e+1],arr[e+2]),sy=Math.hypot(arr[e+4],arr[e+5],arr[e+6]);ms=Math.max(ms,s,sy);
+    for(let i=0;i<count;i++){const e=i*16,px=arr[e+12],py=arr[e+13],pz=arr[e+14],s=Math.hypot(arr[e],arr[e+1],arr[e+2]),sy=Math.hypot(arr[e+4],arr[e+5],arr[e+6]),sz=Math.hypot(arr[e+8],arr[e+9],arr[e+10]);ms=Math.max(ms,s,sy,sz);
       if(px<mnx)mnx=px;if(py<mny)mny=py;if(pz<mnz)mnz=pz;if(px>mxx)mxx=px;if(py>mxy)mxy=py;if(pz>mxz)mxz=pz;}
     const bs=base.boundingSphere;g.boundingSphere=new THREE.Sphere(new THREE.Vector3((mnx+mxx)/2,(mny+mxy)/2,(mnz+mxz)/2),Math.hypot(mxx-mnx,mxy-mny,mxz-mnz)/2+(bs.center.length()+bs.radius)*ms);
     const mesh=new THREE.InstancedMesh(g,t.material,count);mesh.instanceMatrix.array.set(arr);mesh.instanceMatrix.needsUpdate=true;
     mesh.castShadow=t.castShadow!==undefined?t.castShadow:!!o.castShadow;mesh.receiveShadow=t.receiveShadow!==undefined?t.receiveShadow:o.receiveShadow!==false;mesh.name=t.name||('type'+k);mesh.userData.typeIndex=k;
     group.add(mesh);total+=count;});
-  group.userData.count=total;group.userData.cell={x:x0,z:z0,size:cs};
-  /* Releases this cell's instance buffers and VAOs without touching the shared geometry buffers: the view's
-     attribute table is emptied before dispose() so Three frees only what belongs to the cell. */
+  group.userData.count=total;
   group.userData.dispose=()=>{for(const mesh of group.children.slice()){const g=mesh.geometry;g.index=null;g.attributes={};g.dispose();mesh.dispose&&mesh.dispose();group.remove(mesh);}group.parent&&group.parent.remove(group);};
   return group;
 }
+KE.instanceGroup=instanceGroup;
+
+/* ---------- rock clusters ----------
+   Rocks the way they lie in nature, for one cell. Cluster centres sit on a global jittered lattice (spacing), each kept
+   with probability density(x, z) and by filter. On ordinary ground a cluster is one hero rock (types with role 'hero')
+   ringed by `members` smaller rocks (role 'small') within `spread` × the hero's size; on steep ground (slope >=
+   cliffSlope) a cliff piece (role 'cliff') is pressed into the slope, its face turned downhill, with scree below it.
+   Every rock is sunk by a share of its height (type.sink [a, b]), yawed at random, tilted up to `tilt` radians, leaned
+   `align` of the way onto the terrain normal and stretched ±12% per axis, so one scan gives many shapes. Sizes are in
+   metres of the rock's largest side (type.size [min, max]); a type's height/slope ranges limit where it may go.
+   Deterministic per (seed, cell); returns the same group contract as scatterCell (instanceGroup). */
+function rockCell(THREE,o={}){
+  const cs=o.cellSize||(o.cell&&o.cell.size)||96,cell=o.cell||{ix:0,iz:0};
+  const x0=cell.x!==undefined?cell.x:(o.originX||0)+cell.ix*cs,z0=cell.z!==undefined?cell.z:(o.originZ||0)+cell.iz*cs;
+  const src=o.heightfield||o.terrain;if(!src||typeof src.heightAt!=='function')throw new TypeError('rockCell needs {terrain} (anything with heightAt)');
+  const types=o.types||[];if(!types.length)throw new TypeError('rockCell needs types');
+  const spacing=o.spacing||24,seed=(o.seed===undefined?1:o.seed)>>>0,density=o.density===undefined?.5:o.density,water=o.waterLevel,members=o.members||[2,6],spread=o.spread||1.6,
+    tilt=o.tilt===undefined?.35:o.tilt,align=o.align===undefined?.7:o.align,cliffSlope=o.cliffSlope===undefined?1.05:o.cliffSlope;
+  const info=types.map(t=>{const g=t.geometry;if(!g.boundingBox)g.computeBoundingBox();const s=g.boundingBox.getSize(new THREE.Vector3());return {base:t.baseSize||Math.max(s.x,s.y,s.z)||1,h:s.y||1};});
+  const pools={hero:[],small:[],cliff:[]};types.forEach((t,k)=>{for(const r of String(t.role||'hero small').split(' '))if(pools[r])pools[r].push(k);});
+  const buckets=types.map(()=>[]),nrm={x:0,y:1,z:0},m=new THREE.Matrix4(),q=new THREE.Quaternion(),qt=new THREE.Quaternion(),qa=new THREE.Quaternion(),up=new THREE.Vector3(0,1,0),n=new THREE.Vector3(),ax=new THREE.Vector3(),p=new THREE.Vector3(),sc=new THREE.Vector3();
+  const gi0=Math.floor(x0/spacing),gi1=Math.ceil((x0+cs)/spacing),gj0=Math.floor(z0/spacing),gj1=Math.ceil((z0+cs)/spacing);
+  const pick=(pool,rnd,y,slope)=>{let w=0;const ok=pool.filter(k=>{const t=types[k],hr=t.height||[-Infinity,Infinity],sl=t.slope||[0,Infinity];return y>=hr[0]&&y<=hr[1]&&slope>=sl[0]&&slope<=sl[1];});
+    for(const k of ok)w+=types[k].weight===undefined?1:types[k].weight;let r=rnd()*w;for(const k of ok){r-=types[k].weight===undefined?1:types[k].weight;if(r<=0)return k;}return ok.length?ok[ok.length-1]:-1;};
+  /* one rock: size = metres of its largest side; yawFixed turns a cliff face downhill */
+  const place=(k,x,z,size,rnd,yawFixed,alignK)=>{const t=types[k],I=info[k],y=src.heightAt(x,z);if(water!==undefined&&y<water-(t.underwater||0))return 0;
+    const s=size/I.base,sk=t.sink||[.15,.35],sink=(sk[0]+(sk[1]-sk[0])*rnd())*I.h*s;
+    q.setFromAxisAngle(up,yawFixed!==undefined?yawFixed+(rnd()-.5)*.6:rnd()*Math.PI*2);
+    const ta=rnd()*Math.PI*2,tv=rnd()*tilt;ax.set(Math.cos(ta),0,Math.sin(ta));qt.setFromAxisAngle(ax,tv);q.premultiply(qt);
+    if(src.normalAt&&alignK>0){src.normalAt(x,z,nrm);n.set(nrm.x,nrm.y,nrm.z);qa.setFromUnitVectors(up,n);q.premultiply(new THREE.Quaternion().slerp(qa,alignK));}
+    p.set(x,y-sink,z);sc.set(s*(.88+rnd()*.24),s*(.88+rnd()*.24),s*(.88+rnd()*.24));m.compose(p,q,sc);buckets[k].push(...m.elements);return size;};
+  for(let gj=gj0;gj<gj1;gj++)for(let gi=gi0;gi<gi1;gi++){
+    let st=hashInts(seed,gi,gj);const rnd=()=>{st=(st+0x6D2B79F5)>>>0;let t=st;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296;};
+    const x=(gi+rnd())*spacing,z=(gj+rnd())*spacing;if(x<x0||x>=x0+cs||z<z0||z>=z0+cs)continue;
+    const d=typeof density==='function'?density(x,z):density;if(!(rnd()<d))continue;
+    const y=src.heightAt(x,z),slope=src.slopeAt?src.slopeAt(x,z):0;if(o.filter&&!o.filter(x,y,z,slope))continue;
+    if(slope>=cliffSlope&&pools.cliff.length){const k=pick(pools.cliff,rnd,y,slope);if(k<0)continue;src.normalAt&&src.normalAt(x,z,nrm);
+      const yaw=Math.atan2(nrm.x,nrm.z),sr=types[k].size||[6,14],size=sr[0]+(sr[1]-sr[0])*rnd();place(k,x,z,size,rnd,yaw,.85);
+      const scree=Math.floor(rnd()*4);for(let i=0;i<scree;i++){const ks=pick(pools.small,rnd,y,Math.min(slope,.9));if(ks<0)break;const a=rnd()*Math.PI*2,r=size*(.4+rnd()*.5),sx=x+nrm.x*size*.5+Math.cos(a)*r*.4,sz=z+nrm.z*size*.5+Math.sin(a)*r*.4,
+        srr=types[ks].size||[.3,1.2];place(ks,sx,sz,srr[0]+(srr[1]-srr[0])*rnd(),rnd,undefined,align);}continue;}
+    const kh=pick(pools.hero,rnd,y,slope);if(kh<0)continue;const hr=types[kh].size||[1.2,3.5],hs=hr[0]+(hr[1]-hr[0])*Math.pow(rnd(),1.6);place(kh,x,z,hs,rnd,undefined,align);
+    const cnt=members[0]+Math.floor(rnd()*(members[1]-members[0]+1));
+    for(let i=0;i<cnt;i++){const ks=pick(pools.small,rnd,y,slope);if(ks<0)break;const a=rnd()*Math.PI*2,r=hs*(.45+rnd()*spread*.6),sx=x+Math.cos(a)*r,sz=z+Math.sin(a)*r;if(sx<x0-8||sx>=x0+cs+8||sz<z0-8||sz>=z0+cs+8)continue;
+      const srr=types[ks].size||[.2,1],size=Math.min(srr[0]+(srr[1]-srr[0])*rnd(),hs*.55);place(ks,sx,sz,size,rnd,undefined,align);}
+  }
+  const group=instanceGroup(THREE,types,buckets,'ke-rocks-'+(cell.ix!==undefined?cell.ix+'_'+cell.iz:x0+'_'+z0),{castShadow:true,...o});group.userData.cell={x:x0,z:z0,size:cs};return group;
+}
+KE.rockCell=rockCell;
 KE.scatterCell=scatterCell;
 
 
-KE.registerModule('world',{provides:['Heightfield','GPUTerrain','WorldPartition','scatterCell','noise2D','HorizonCuller']});
+KE.registerModule('world',{provides:['Heightfield','GPUTerrain','WorldPartition','scatterCell','rockCell','instanceGroup','noise2D','HorizonCuller']});
 })();

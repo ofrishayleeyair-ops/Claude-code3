@@ -23,6 +23,7 @@ A reusable game runtime delivered as self-contained HTML files. `KE.version === 
 - [Materials](references/materials.md): `KE.MaterialGraph` node graphs, `KE.shaderGraph`, `KE.materialLibrary`.
 - [Foliage](references/foliage.md): procedural trees, spawner, grass field, shell fur, shared wind.
 - [Geometry](references/geometry.md): simplification, LOD meshes, instanced LOD and impostors, `KE.VirtualGeometry` cluster DAG.
+- [HD assets](references/hd-assets.md): the optional photoscanned CC0 pack (`hd/`, 5.2 GB: ground layers, bark, planks, rocks, plants, props, furniture, skies), `KE.HD` loader, HD terrain layers, rock clusters (`KE.rockCell`), `scripts/hd_pack.py`, `hd-gallery.html`.
 - [World](references/world.md): heightfield generation and erosion (on worker threads), GPU CDLOD terrain, World Partition streaming, scatter, `KE.HorizonCuller` (terrain occlusion and near-shadow culling on worker threads).
 - [Physics](references/physics.md): `KE.Physics3D` on Rapier: bodies, queries, joints, character controller, vehicle, fracture, buoyancy.
 - [Cloth](references/cloth.md): `KE.Cloth` flags, banners and capes: pins on moving anchors, wind, colliders.

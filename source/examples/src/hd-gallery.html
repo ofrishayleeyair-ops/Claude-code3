@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f2229"><title>kitsune enginev3 · HD Library</title>
+<style>
+[hidden]{display:none!important}
+:root{--ink:#0f2229;--cream:#fff3d7;--gold:#efd093}*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0f2229;font-family:system-ui,sans-serif;color:var(--cream)}
+canvas{display:block;width:100%;height:100%;touch-action:none}button,input{font:inherit;color:inherit}
+.glass{background:rgba(12,30,36,.66);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,243,215,.16);border-radius:16px}
+#side{position:fixed;left:16px;top:16px;bottom:16px;width:320px;display:flex;flex-direction:column;padding:16px;gap:10px}
+#side .brand{font-size:10px;letter-spacing:2.4px;text-transform:uppercase;opacity:.8}#side h1{margin:0;font:26px Georgia,serif}
+#count{font-size:12px;opacity:.75}
+#q{width:100%;padding:9px 12px;border-radius:10px;border:1px solid rgba(255,243,215,.2);background:rgba(0,0,0,.25)}
+.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{padding:6px 11px;border-radius:999px;border:1px solid rgba(255,243,215,.2);background:transparent;cursor:pointer;font-size:12px}
+.chip[aria-pressed=true]{background:var(--gold);color:var(--ink);border-color:var(--gold)}
+#list{flex:1;overflow:auto;margin:0 -6px;padding:0 6px}
+.item{display:flex;justify-content:space-between;gap:8px;width:100%;text-align:left;padding:8px 10px;border-radius:9px;border:0;background:transparent;cursor:pointer;font-size:13px}
+.item:hover{background:rgba(255,243,215,.08)}.item[aria-current=true]{background:rgba(239,208,147,.22)}.item small{opacity:.6;white-space:nowrap}
+.group{font-size:10px;letter-spacing:1.6px;text-transform:uppercase;opacity:.6;margin:12px 4px 4px}
+#info{position:fixed;right:16px;bottom:16px;width:min(380px,calc(100vw - 32px));padding:16px;font-size:13px;line-height:1.55}
+#info h2{margin:0 0 4px;font:22px Georgia,serif}#info .meta{opacity:.8}#info code{font-size:11px;opacity:.75}
+#status{position:fixed;left:50%;top:18px;transform:translateX(-50%);padding:8px 16px;border-radius:999px;font-size:12px}
+.nopack{position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center}.nopack .glass{max-width:520px;padding:28px;line-height:1.6}
+.item:focus-visible,.chip:focus-visible,#q:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+@media(max-width:760px){#side{top:auto;height:46vh;width:auto;right:16px}#info{display:none}}
+</style>
+</head>
+<body>
+<aside id="side" class="glass" aria-label="HD library">
+  <div class="brand">kitsune enginev3 · Tenko</div><h1>HD Library</h1><div id="count">Looking for the hd folder…</div>
+  <input id="q" type="search" placeholder="Search: bark, rock, brick, lantern, sunset…" aria-label="Search the library">
+  <div class="chips" role="group" aria-label="Filter"><button class="chip" data-k="" aria-pressed="true">All</button><button class="chip" data-k="texture" aria-pressed="false">Materials</button><button class="chip" data-k="model" aria-pressed="false">Models</button><button class="chip" data-k="hdri" aria-pressed="false">Skies</button></div>
+  <div id="list" role="listbox" aria-label="Assets"></div>
+</aside>
+<section id="info" class="glass" aria-live="polite" hidden></section>
+<div id="status" class="glass" role="status" hidden></div>
+<!--THREE-->
+<!--KITSUNE-->
+<script>
+(async()=>{'use strict';
+const KE=window.KitsuneEngine,T=window.THREE,$=id=>document.getElementById(id);
+const renderer=new T.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
+renderer.outputEncoding=T.sRGBEncoding;renderer.toneMapping=T.ACESFilmicToneMapping;renderer.toneMappingExposure=1;renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFSoftShadowMap;document.body.prepend(renderer.domElement);
+const scene=new T.Scene();scene.background=new T.Color(0x1b2f36);
+const camera=new T.PerspectiveCamera(40,innerWidth/innerHeight,.01,500);camera.position.set(2.6,1.6,3.2);
+const controls=new T.OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.target.set(0,.6,0);
+const sun=new T.DirectionalLight(0xfff4e0,2.2);sun.position.set(4,6,3);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-4,right:4,top:4,bottom:-4,near:.1,far:30});scene.add(sun,new T.HemisphereLight(0xcfe3ff,0x2b2a24,.35));
+const floor=new T.Mesh(new T.CircleGeometry(6,64),new T.MeshStandardMaterial({color:0x3a3f3c,roughness:.95}));floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;scene.add(floor);
+addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();});
+(function loop(){requestAnimationFrame(loop);controls.update();renderer.render(scene,camera);})();
+const status=t=>{const el=$('status');el.hidden=!t;el.textContent=t||'';};
+
+const pack=await KE.HD.ready();
+if(!pack){$('count').textContent='No HD pack found';const d=document.createElement('div');d.className='nopack';d.innerHTML='<div class="glass"><h2 style="font:26px Georgia,serif;margin-top:0">Put the hd folder next to this page</h2><p>The HD library is the <code>hd/</code> folder of photoscanned CC0 assets. It sits beside this file in the repository (or build it with <code>python3 source/scripts/hd_pack.py</code>). Open this page from that folder.</p></div>';document.body.append(d);return;}
+const all=Object.entries(pack.assets).map(([id,e])=>({id,...e,mb:Object.values(e.files).reduce((s,f)=>s+f.bytes,0)/1e6}));
+$('count').textContent=`${all.length} assets · ${(pack.bytes/1e9).toFixed(2)} GB of source files · CC0 from Poly Haven`;
+let filter='',query='',current=null,shown=null,env=null;const LABEL={texture:'Materials',model:'Models',hdri:'Skies'};
+const render=()=>{const list=$('list');list.textContent='';const q=query.trim().toLowerCase();
+  for(const kind of ['texture','model','hdri']){if(filter&&filter!==kind)continue;const items=all.filter(a=>a.kind===kind&&(!q||(a.id+' '+a.name+' '+a.role).toLowerCase().includes(q)));if(!items.length)continue;
+    const g=document.createElement('div');g.className='group';g.textContent=`${LABEL[kind]} · ${items.length}`;list.append(g);
+    for(const a of items){const b=document.createElement('button');b.className='item';b.setAttribute('role','option');b.dataset.id=a.id;b.setAttribute('aria-current',String(current===a.id));
+      const n=document.createElement('span');n.textContent=a.name;const s=document.createElement('small');s.textContent=`${a.role.replace(' library','')} · ${a.mb.toFixed(0)} MB`;b.append(n,s);b.onclick=()=>show(a.id);list.append(b);}}};
+$('q').oninput=e=>{query=e.target.value;render();};
+for(const c of document.querySelectorAll('.chip'))c.onclick=()=>{filter=c.dataset.k;for(const x of document.querySelectorAll('.chip'))x.setAttribute('aria-pressed',String(x===c));render();};
+addEventListener('keydown',e=>{if(e.target.id==='q'||!['ArrowDown','ArrowUp'].includes(e.key))return;const ids=[...document.querySelectorAll('.item')].map(b=>b.dataset.id),i=ids.indexOf(current);const n=ids[Math.max(0,Math.min(ids.length-1,i+(e.key==='ArrowDown'?1:-1)))];if(n){e.preventDefault();show(n);}});
+
+const info=a=>{const el=$('info');el.hidden=false;el.textContent='';const h=document.createElement('h2');h.textContent=a.name;
+  const m=document.createElement('div');m.className='meta';m.textContent=`${LABEL[a.kind]} · ${a.role.replace(' library','')} · ${a.res.toUpperCase()}${a.size_m?` · ${a.size_m[0]} × ${a.size_m[1]} m`:''} · ${a.mb.toFixed(1)} MB`;
+  const au=document.createElement('div');au.textContent='By '+(a.authors.join(', ')||'Poly Haven')+' · CC0 (public domain)';const f=document.createElement('code');f.textContent=Object.keys(a.files).join('  ');
+  const s=document.createElement('div');s.style.marginTop='6px';s.textContent=a.page;s.style.opacity='.6';s.style.fontSize='11px';el.append(h,m,au,f,s);};
+const clear=()=>{if(!shown)return;scene.remove(shown.object);if(shown.dispose)shown.dispose();shown=null;};
+const setSky=async id=>{const r=await KE.HD.hdri(renderer,T,id);if(!r)return;if(env){env.texture.dispose();if(env.envMap)env.envMap.dispose();}env=r;scene.background=r.texture;scene.environment=r.envMap;};
+const fit=(obj,size)=>{const b=new T.Box3().setFromObject(obj),s=b.getSize(new T.Vector3()),c=b.getCenter(new T.Vector3()),m=Math.max(s.x,s.y,s.z)||1,k=size/m;obj.scale.setScalar(k);obj.position.set(-c.x*k,-b.min.y*k,-c.z*k);
+  controls.target.set(0,s.y*k*.45,0);camera.position.set(size*1.25,size*.8+s.y*k*.3,size*1.55);};
+let token=0;
+async function show(id){const a=pack.assets[id];if(!a)return;current=id;render();info({id,...a,mb:Object.values(a.files).reduce((s,f)=>s+f.bytes,0)/1e6});const my=++token;
+  status(`Loading ${a.name} (${a.res.toUpperCase()})…`);const t0=performance.now();
+  try{if(a.kind==='hdri'){await setSky(id);if(my!==token)return;clear();
+      const g=new T.Group(),chrome=new T.Mesh(new T.SphereGeometry(.6,96,64),new T.MeshStandardMaterial({metalness:1,roughness:.05})),clay=new T.Mesh(new T.SphereGeometry(.6,96,64),new T.MeshStandardMaterial({color:0xdddddd,roughness:.6}));
+      chrome.position.set(-.7,.6,0);clay.position.set(.7,.6,0);g.add(chrome,clay);for(const m of [chrome,clay])m.castShadow=true;floor.visible=false;scene.add(g);shown={object:g,dispose(){for(const m of [chrome,clay]){m.geometry.dispose();m.material.dispose();}}};
+      controls.target.set(0,.6,0);camera.position.set(0,1.2,3.6);}
+    else if(a.kind==='texture'){const m=await KE.HD.material(T,id,{repeat:1});if(my!==token){m.dispose();return;}clear();floor.visible=false;
+      const g=new T.Group(),sph=new T.Mesh(new T.SphereGeometry(.7,128,96),m),size=(a.size_m||[2])[0],tile=new T.PlaneGeometry(4,4);const tm=m.clone();for(const k of ['map','normalMap','roughnessMap','metalnessMap']){if(tm[k]){tm[k]=tm[k].clone();tm[k].repeat.set(4/size,4/size);tm[k].needsUpdate=true;}}
+      const ground=new T.Mesh(tile,tm);ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;sph.position.y=.75;sph.castShadow=true;g.add(sph,ground);scene.add(g);
+      shown={object:g,dispose(){sph.geometry.dispose();tile.dispose();for(const mt of [m,tm]){for(const k of ['map','normalMap','roughnessMap','metalnessMap'])if(mt[k])mt[k].dispose();mt.dispose();}}};controls.target.set(0,.6,0);camera.position.set(1.9,1.5,2.6);}
+    else{const r=await KE.HD.gltf(T,id);if(my!==token){r.dispose();return;}clear();floor.visible=true;const g=r.scene;g.traverse(o=>{if(o.isMesh){o.castShadow=o.receiveShadow=true;}});
+      const b=new T.Box3().setFromObject(g),s=b.getSize(new T.Vector3()),real=Math.max(s.x,s.y,s.z);fit(g,real<.5?1.2:real>6?5:real);scene.add(g);shown={object:g,dispose:r.dispose};
+      let tris=0;g.traverse(o=>{if(o.isMesh)tris+=(o.geometry.index?o.geometry.index.count:o.geometry.attributes.position.count)/3;});$('info').append(Object.assign(document.createElement('div'),{textContent:`${Math.round(tris).toLocaleString()} triangles · ${s.x.toFixed(2)} × ${s.y.toFixed(2)} × ${s.z.toFixed(2)} m`}));}
+    status(`${a.name} · loaded in ${((performance.now()-t0)/1000).toFixed(1)} s`);setTimeout(()=>{if(my===token)status('');},2500);}
+  catch(e){console.error(e);status('Could not load '+a.name+': '+e.message);}}
+render();
+const sky=pack.assets.kloofendal_48d_partly_cloudy_puresky?'kloofendal_48d_partly_cloudy_puresky':all.find(a=>a.kind==='hdri')&&all.find(a=>a.kind==='hdri').id;
+if(sky){status('Loading the sky…');await setSky(sky);}
+const first=(all.find(a=>a.id==='japanese_cedar_bark')||all[0]).id;show(first);
+window.gallery={KE,renderer,scene,show,setSky,pack,get current(){return current;}};
+})().catch(e=>{console.error(e);document.body.append(Object.assign(document.createElement('pre'),{textContent:String(e&&e.stack||e),style:'position:fixed;inset:20px;color:#fdd;white-space:pre-wrap'}));});
+</script>
+</body>
+</html>

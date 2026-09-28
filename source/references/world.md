@@ -177,6 +177,8 @@ Options: `cell` (`{ix, iz}` or a WorldPartition cell record), `cellSize` 128, `o
 
 Each mesh draws through a per-cell view of the shared geometry (same attribute objects, no copies) carrying the cell's bounding sphere, so Three's frustum culling works per cell. `group.userData.dispose()` frees the cell's instance buffers and vertex-array state without touching the shared geometry, and removes the group. `group.userData.count` is the instance total.
 
+GPUTerrain also takes photoscanned layers from texture arrays: `terrain.setLayers({albedo, normal, arm, height, scales, rockHigh, dirtToMoss})`. `KE.rockCell` places rocks in clusters, cliff pieces and scree, and `KE.instanceGroup` builds instanced groups from matrix lists. Both are covered in [hd-assets.md](hd-assets.md) §4–5.
+
 ## 6. KE.HorizonCuller
 
 Per-instance culling for `InstancedMesh`es (scatter cells, impostor proxies). CPU threads do the work so the GPU draws less.

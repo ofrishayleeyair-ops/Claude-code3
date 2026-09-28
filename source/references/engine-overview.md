@@ -16,11 +16,12 @@ Read this page first, then the reference for the system you are touching.
 | 16-lights | `lights` | `KE.LightPool` | rendering-v3.md §5 | (pipeline, game) |
 | 18-gi | `gi` | `KE.ProbeVolume` | rendering-v3.md §10 | test_gi.cjs |
 | 20-materials | `materials` | `KE.MaterialGraph`, `KE.shaderGraph`, `KE.materialLibrary` | materials.md | test_materials.cjs |
+| 21-hd | `hd` | `KE.HD`: optional photoscanned asset pack (textures, texture arrays, glTF models, HDRIs) loaded from `hd/` beside the page | hd-assets.md | test_hd.cjs |
 | 22-water | `water` | `KE.Water`, `KE.waterWaves`, `KE.River`, `KE.boatModel` | rendering-v3.md §6 | test_water.cjs |
 | 24-foliage | `foliage` | `KE.treeGeometry`, `KE.tree`, `KE.bambooGeometry`, `KE.daisugiGeometry`, `KE.FoliageSpawner`, `KE.grassField`, `KE.fur`, `KE.foliage` | foliage.md | test_foliage.cjs |
 | 26-weather | `weather` | `KE.SurfaceWeather` | rendering-v3.md §11 | test_weather.cjs |
 | 30-geometry | `geometry` | `KE.simplify`, `KE.buildLODs`, `KE.LODMesh`, `KE.InstancedLOD`, `KE.Impostor`, `KE.VirtualGeometry` | geometry.md | test_geometry.cjs |
-| 32-world | `world` | `KE.Heightfield`, `KE.GPUTerrain`, `KE.WorldPartition`, `KE.scatterCell`, `KE.HorizonCuller` (terrain occlusion + near-shadow culling on worker threads) | world.md | test_world.cjs |
+| 32-world | `world` | `KE.Heightfield`, `KE.GPUTerrain`, `KE.WorldPartition`, `KE.scatterCell`, `KE.rockCell` (rock clusters), `KE.instanceGroup`, `KE.HorizonCuller` (terrain occlusion + near-shadow culling on worker threads) | world.md | test_world.cjs |
 | 40-physics | `physics3d` | `KE.Physics3D` (Rapier) | physics.md | test_physics.cjs |
 | 42-cloth | `cloth` | `KE.Cloth` | cloth.md | test_cloth.cjs |
 | 50-vfx | `vfx` | `KE.VFX` | vfx.md | test_vfx.cjs |

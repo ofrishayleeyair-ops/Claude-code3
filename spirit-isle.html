@@ -18835,6 +18835,149 @@ if(paint21)KE.paintTile=(THREE,kind,size=512,seed=7241)=>TILE_KINDS.has(kind)&&K
 KE.registerModule('materials',{provides:['MaterialGraph','shaderGraph','materialLibrary','groundTiles']});
 })();
 
+/* ===== module: 21-hd.js ===== */
+/* KE.HD — the optional HD asset pack: photoscanned CC0 textures and models (Poly Haven) in a folder next to
+   the page (default 'hd/', built by scripts/hd_pack.py). Browsers do not let a page opened from disk hand local
+   image files to WebGL, so every file in the pack is a script that calls KitsuneHD.put(key, part, parts, mime,
+   base64); loading one is adding a <script>. Without the folder everything here resolves to null and games keep
+   their painted textures.
+   - ready(base) → manifest or null; has(id); info(id)
+   - blob(id, file) → Blob; bitmap(id, file, {size, flipY}) → ImageBitmap (decoded off the main thread)
+   - texture(THREE, id, map, {size, srgb, repeat}) and material(THREE, id, {size, repeat, ...}) → MeshStandardMaterial
+     with map, normalMap and the ARM map as roughnessMap + metalnessMap (G, B; aoMaterial adds R as aoMap)
+   - layers(renderer, THREE, ids, map, size) → a TEXTURE_2D_ARRAY (one layer per id) uploaded straight from the
+     decoded images, wrapped as a DataTexture2DArray that Three binds without re-uploading
+   - gltf(THREE, id) → {scene, parts: [{geometry, material, name}], dispose}; prepare(THREE, id, opts) → instancing-ready pieces
+   - hdri(renderer, THREE, id) → {texture, envMap} for sky HDRIs (RGBELoader, PMREM)
+   - stats {files, bytes, textures, gpuBytes, ms}; dispose() frees what this module created. */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+
+const pending=new Map(),scripts=new Map();let manifestWait=null;
+const hub=window.KitsuneHD=window.KitsuneHD||{};
+hub.put=(key,part,parts,mime,b64)=>{const p=pending.get(key);if(!p)return;p.chunks[part]=b64;p.mime=mime;p.parts=parts;p.got++;if(p.got===parts)p.done();};
+hub.manifest=m=>{if(manifestWait)manifestWait(m);};
+
+const loadScript=src=>new Promise((resolve,reject)=>{const s=document.createElement('script');s.src=src;s.async=true;
+  s.onload=()=>{s.remove();resolve();};s.onerror=()=>{s.remove();reject(new Error('KE.HD: could not load '+src));};document.head.appendChild(s);});
+/* base64 → bytes: fetch('data:') decodes natively; atob is the fallback */
+const decode=async(b64,mime)=>{try{return await (await fetch('data:'+mime+';base64,'+b64)).arrayBuffer();}catch(e){const s=atob(b64),u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return u.buffer;}};
+
+/* at most `limit` files in flight, so a 1 GB pack never sits in memory as strings all at once */
+const queue=[];let active=0;const LIMIT=4;
+const pump=()=>{while(active<LIMIT&&queue.length){const j=queue.shift();active++;j().finally(()=>{active--;pump();});}};
+const limited=fn=>new Promise((resolve,reject)=>{queue.push(()=>fn().then(resolve,reject));pump();});
+
+const HD={base:'hd/',manifest:null,enabled:true,stats:{files:0,bytes:0,textures:0,gpuBytes:0,ms:0},_ready:null,_owned:new Set(),_gl:new Set(),
+  /* Load hd/manifest.js once; null when the folder is missing (or KE.HD.enabled is false). */
+  ready(base){if(base&&base!==this.base){this.base=base.endsWith('/')?base:base+'/';this._ready=null;}
+    if(!this.enabled)return Promise.resolve(null);if(this._ready)return this._ready;
+    this._ready=new Promise(resolve=>{let done=false;const finish=m=>{if(done)return;done=true;manifestWait=null;this.manifest=m&&m.assets?m:null;resolve(this.manifest);};
+      manifestWait=finish;loadScript(this.base+'manifest.js').then(()=>setTimeout(()=>finish(null),0),()=>finish(null));});
+    return this._ready;},
+  has(id){return !!(this.manifest&&this.manifest.assets[id]);},
+  info(id){return this.manifest?this.manifest.assets[id]||null:null;},
+  /* all ids of a kind ('texture'/'model') whose role contains `role` */
+  find(kind,role){if(!this.manifest)return [];return Object.entries(this.manifest.assets).filter(([,e])=>(!kind||e.kind===kind)&&(!role||String(e.role).split(' ').includes(role))).map(([id])=>id);},
+  /* the file of a texture map ('diff', 'nor', 'arm', 'disp') at the best resolution available */
+  mapFile(id,map){const e=this.info(id);if(!e)return null;const f=Object.keys(e.files).filter(k=>k.startsWith(map+'_')).sort((a,b)=>parseInt(b.split('_').pop())-parseInt(a.split('_').pop()));return f[0]||null;},
+  blob(id,file){const e=this.info(id);if(!e||!e.files[file])return Promise.reject(new Error('KE.HD: no '+id+'/'+file));const key=id+'/'+file;
+    if(scripts.has(key))return scripts.get(key);
+    const f=e.files[file],t0=performance.now();
+    const pr=limited(()=>new Promise((resolve,reject)=>{const rec={chunks:new Array(f.parts),got:0,parts:f.parts,mime:f.mime,done:null};
+        rec.done=()=>{pending.delete(key);Promise.all(rec.chunks.map(c=>decode(c,rec.mime))).then(bufs=>{rec.chunks=null;const b=new Blob(bufs,{type:rec.mime});this.stats.files++;this.stats.bytes+=b.size;this.stats.ms+=performance.now()-t0;resolve(b);},reject);};
+        pending.set(key,rec);
+        const names=f.parts>1?Array.from({length:f.parts},(_,p)=>f.script+'.'+p+'.js'):[f.script+'.js'];
+        Promise.all(names.map(n=>loadScript(this.base+id+'/'+n))).catch(err=>{pending.delete(key);reject(err);});}));
+    scripts.set(key,pr);pr.then(()=>scripts.delete(key),()=>scripts.delete(key));return pr;},
+  /* decoded image; size resamples (square), flipY flips rows for Three's usual UV convention */
+  async bitmap(id,file,{size=0,flipY=false}={}){const b=await this.blob(id,file),o={imageOrientation:flipY?'flipY':'none',premultiplyAlpha:'none',colorSpaceConversion:'none'};
+    if(size)Object.assign(o,{resizeWidth:size,resizeHeight:size,resizeQuality:'high'});
+    try{return await createImageBitmap(b,o);}catch(e){return await createImageBitmap(b);}},
+  async texture(THREE,id,map,{size=0,srgb=false,repeat=1,anisotropy=null}={}){const file=this.mapFile(id,map);if(!file)return null;
+    const bmp=await this.bitmap(id,file,{size,flipY:true}),t=new THREE.Texture(bmp);t.flipY=false;t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(repeat,repeat);
+    t.anisotropy=anisotropy||KE.settings.aniso||4;if(srgb)t.encoding=THREE.sRGBEncoding;t.minFilter=THREE.LinearMipmapLinearFilter;t.generateMipmaps=true;t.needsUpdate=true;t.name='hd:'+id+':'+map;
+    const onDispose=()=>{if(bmp.close)bmp.close();t.removeEventListener('dispose',onDispose);};t.addEventListener('dispose',onDispose);
+    this._owned.add(t);this.stats.textures++;this.stats.gpuBytes+=bmp.width*bmp.height*4*4/3;return t;},
+  /* MeshStandardMaterial from a texture set; repeat is in tiles per UV unit (or per metre with {metres}) */
+  async material(THREE,id,{size=0,repeat=1,color=null,roughness=1,normalScale=1,side=null,name=null}={}){if(!this.has(id))return null;
+    const [map,nor,arm]=await Promise.all([this.texture(THREE,id,'diff',{size,srgb:true,repeat}),this.texture(THREE,id,'nor',{size,repeat}),this.texture(THREE,id,'arm',{size:size?Math.max(256,size/2):0,repeat})]);
+    /* ARM: roughness (G) and metalness (B); AO (R) needs a second UV set in Three r128, so it is only attached by aoMaterial() */
+    const m=new THREE.MeshStandardMaterial({map,normalMap:nor,roughnessMap:arm,metalnessMap:arm,roughness,metalness:1});
+    if(nor)m.normalScale.set(normalScale,normalScale);/* OpenGL normal maps, rows flipped at decode = Three's flipY convention */
+    if(color)m.color.set(color);if(side!=null)m.side=side;m.name=name||'hd:'+id;m.userData.hd=id;this._owned.add(m);return m;},
+  /* Use the ARM map's red channel as ambient occlusion on geometries that get a uv2 copy of their uv. */
+  aoMaterial(m,geometries=[]){if(!m||!m.roughnessMap)return m;for(const g of geometries)if(g.attributes.uv&&!g.attributes.uv2)g.setAttribute('uv2',g.attributes.uv);m.aoMap=m.roughnessMap;m.needsUpdate=true;return m;},
+  /* One TEXTURE_2D_ARRAY from a map of several texture sets, uploaded from the decoded images (no CPU pixel copies). */
+  async layers(renderer,THREE,ids,map,size){const bmps=await Promise.all(ids.map(id=>{const f=this.mapFile(id,map);if(!f)throw new Error('KE.HD: '+id+' has no '+map);return this.bitmap(id,f,{size});}));
+    const gl=renderer.getContext();if(!gl.texStorage3D)throw new Error('KE.HD.layers needs WebGL2');
+    const prevUnit=gl.getParameter(gl.ACTIVE_TEXTURE),prev=gl.getParameter(gl.TEXTURE_BINDING_2D_ARRAY),tex=gl.createTexture(),levels=Math.floor(Math.log2(size))+1;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY,tex);gl.texStorage3D(gl.TEXTURE_2D_ARRAY,levels,gl.RGBA8,size,size,bmps.length);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,false);gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL,gl.NONE);gl.pixelStorei(gl.UNPACK_ALIGNMENT,4);
+    bmps.forEach((b,i)=>{gl.texSubImage3D(gl.TEXTURE_2D_ARRAY,0,0,0,i,size,size,1,gl.RGBA,gl.UNSIGNED_BYTE,b);if(b.close)b.close();});
+    gl.generateMipmap(gl.TEXTURE_2D_ARRAY);gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_WRAP_S,gl.REPEAT);gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_WRAP_T,gl.REPEAT);
+    const an=gl.getExtension('EXT_texture_filter_anisotropic');if(an)gl.texParameterf(gl.TEXTURE_2D_ARRAY,an.TEXTURE_MAX_ANISOTROPY_EXT,Math.min(KE.settings.aniso||8,gl.getParameter(an.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY,prev);gl.activeTexture(prevUnit);
+    /* a DataTexture2DArray at version 0 is bound as-is: Three uses the handle we give it and never uploads */
+    const t=new THREE.DataTexture2DArray(null,size,size,bmps.length);t.version=0;/* the constructor sets needsUpdate: undo it, or Three would replace our texture with an empty upload */t.name='hd-layers:'+map;renderer.properties.get(t).__webglTexture=tex;
+    const bytes=size*size*4*bmps.length*4/3;this.stats.gpuBytes+=bytes;this.stats.textures++;
+    const free=()=>{if(!this._gl.has(tex))return;this._gl.delete(tex);gl.deleteTexture(tex);this.stats.gpuBytes-=bytes;t.removeEventListener('dispose',free);};t.addEventListener('dispose',free);
+    this._gl.add(tex);this._owned.add(t);return t;},
+  /* A glTF model from the pack: every mesh's world-transformed geometry and material, ready for instancing. */
+  async gltf(THREE,id){const e=this.info(id);if(!e)return null;if(!THREE.GLTFLoader)throw new Error('KE.HD.gltf needs THREE.GLTFLoader');
+    const main=Object.keys(e.files).find(f=>f.endsWith('.gltf'));const urls={};
+    await Promise.all(Object.keys(e.files).filter(f=>f!==main).map(async f=>{urls[f]=URL.createObjectURL(await this.blob(id,f));}));
+    const json=await (await this.blob(id,main)).text();
+    const manager=new THREE.LoadingManager();manager.setURLModifier(u=>{const k=Object.keys(urls).find(f=>u.endsWith(f));return k?urls[k]:u;});
+    const loader=new THREE.GLTFLoader(manager);
+    const gltf=await new Promise((resolve,reject)=>loader.parse(json,'',resolve,reject));
+    for(const u of Object.values(urls))URL.revokeObjectURL(u);
+    const scene=gltf.scene;scene.updateMatrixWorld(true);const parts=[];
+    scene.traverse(o=>{if(!o.isMesh)return;const g=o.geometry.clone().applyMatrix4(o.matrixWorld);g.computeBoundingSphere();g.computeBoundingBox();
+      for(const m of [o.material].flat()){for(const k of ['map','emissiveMap'])if(m[k])m[k].encoding=THREE.sRGBEncoding;if(m.map)m.map.anisotropy=KE.settings.aniso||4;this._owned.add(m);}
+      parts.push({geometry:g,material:o.material,name:o.name});this._owned.add(g);});
+    const dispose=()=>{for(const p of parts){p.geometry.dispose();for(const m of [p.material].flat()){for(const k in m)if(m[k]&&m[k].isTexture)m[k].dispose();m.dispose();}}};
+    return {scene,parts,info:e,dispose};},
+  /* A sky HDRI from the pack: {texture (equirectangular, half float), envMap (PMREM, for scene.environment)}. */
+  async hdri(renderer,THREE,id,{pmrem=true}={}){const e=this.info(id);if(!e||e.kind!=='hdri')return null;if(!THREE.RGBELoader)throw new Error('KE.HD.hdri needs THREE.RGBELoader');
+    const file=Object.keys(e.files).find(f=>f.endsWith('.hdr')),buf=await (await this.blob(id,file)).arrayBuffer();
+    const L=new THREE.RGBELoader();L.setDataType(THREE.HalfFloatType);const d=L.parse(buf);
+    const t=new THREE.DataTexture(d.data,d.width,d.height,d.format||THREE.RGBAFormat,d.type||THREE.HalfFloatType);t.encoding=THREE.LinearEncoding;t.minFilter=THREE.LinearFilter;t.magFilter=THREE.LinearFilter;
+    t.generateMipmaps=false;t.flipY=true;t.mapping=THREE.EquirectangularReflectionMapping;t.needsUpdate=true;t.name='hd-sky:'+id;this._owned.add(t);this.stats.textures++;this.stats.gpuBytes+=d.width*d.height*8;
+    let envMap=null;if(pmrem&&THREE.PMREMGenerator){const g=new THREE.PMREMGenerator(renderer);envMap=g.fromEquirectangular(t).texture;g.dispose();this._owned.add(envMap);}
+    return {texture:t,envMap,width:d.width,height:d.height};},
+  /* Game-ready pieces of a scanned model, for instancing (KE.scatterCell types) or placing:
+     split: each mesh on its own, recentred on its footprint (x/z centre, base at y = 0); otherwise one merged piece
+     per material, recentred the same way. Pieces above maxTriangles are simplified (KE.simplify: meshoptimizer; the
+     photoscanned normal map keeps the surface detail). Textures are resampled to textureSize (VRAM budget).
+     Blended (BLEND) foliage becomes alpha-tested and double-sided, so instances need no sorting; wind adds
+     height-based sway (KE.foliage). Returns [{geometry, material, triangles, sourceTriangles, size:[x,y,z], name}]
+     sorted largest first. */
+  async prepare(THREE,id,{maxTriangles=5000,split=true,wind=null,textureSize=0,keep=0}={}){const m=await this.gltf(THREE,id);if(!m)return [];
+    const mats=new Set();for(const p of m.parts)for(const x of [p.material].flat())mats.add(x);
+    if(textureSize)await Promise.all([...mats].flatMap(mt=>['map','normalMap','roughnessMap','metalnessMap','aoMap','alphaMap'].map(async k=>{const t=mt[k],im=t&&t.image;
+      if(!im||!(im.width>textureSize))return;if(t._keResized)return;t._keResized=true;const b=await createImageBitmap(im,{resizeWidth:textureSize,resizeHeight:Math.max(1,Math.round(im.height*textureSize/im.width)),resizeQuality:'high'});if(im.close)im.close();t.image=b;t.needsUpdate=true;})));
+    for(const mt of mats){if(mt.transparent&&(mt.map||mt.alphaMap)){mt.transparent=false;mt.alphaTest=.5;mt.depthWrite=true;}if(mt.alphaTest>0)mt.side=THREE.DoubleSide;
+      if(wind&&KE.foliage)KE.foliage.applyWind(THREE,mt,{wind:typeof wind==='object'?wind:{trunk:.01,branch:.035,leaf:.07}});}
+    let parts=m.parts;
+    if(!split&&parts.length>1&&THREE.BufferGeometryUtils){const byMat=new Map();for(const p of parts){const k=[p.material].flat()[0];if(!byMat.has(k))byMat.set(k,[]);byMat.get(k).push(p);}
+      parts=[...byMat.entries()].map(([mt,list])=>{const gs=list.map(p=>{const g=p.geometry.index?p.geometry.toNonIndexed():p.geometry;for(const n of Object.keys(g.attributes))if(!['position','normal','uv','tangent'].includes(n))g.deleteAttribute(n);return g;});
+        const g=THREE.BufferGeometryUtils.mergeBufferGeometries(gs,false)||list[0].geometry;return {geometry:g,material:mt,name:list.map(p=>p.name).join('+')};});}
+    const out=[];
+    for(const p of parts){let g=p.geometry;g.computeBoundingBox();const bb=g.boundingBox;g.translate(-(bb.min.x+bb.max.x)/2,-bb.min.y,-(bb.min.z+bb.max.z)/2);
+      const src=(g.index?g.index.count:g.attributes.position.count)/3;let tris=src;
+      if(src>maxTriangles&&KE.simplify){try{const lo=KE.simplify(THREE,g,{ratio:maxTriangles/src,targetError:Infinity});tris=(lo.index?lo.index.count:lo.attributes.position.count)/3;g.dispose();g=lo;}catch(e){console.warn('KE.HD.prepare: simplify failed for',id,e);}}
+      if(wind&&KE.foliage)KE.foliage.addWindWeights(THREE,g);
+      g.computeBoundingBox();g.computeBoundingSphere();const sz=g.boundingBox.getSize(new THREE.Vector3());this._owned.add(g);
+      out.push({geometry:g,material:p.material,triangles:Math.round(tris),sourceTriangles:Math.round(src),size:[sz.x,sz.y,sz.z],name:p.name||id});}
+    out.sort((a,b)=>b.size[0]*b.size[1]*b.size[2]-a.size[0]*a.size[1]*a.size[2]);return keep?out.slice(0,keep):out;},
+  dispose(){for(const o of this._owned)if(o.dispose)o.dispose();this._owned.clear();}
+};
+KE.HD=HD;
+KE.registerModule('hd',{provides:['HD']});
+})();
+
 /* ===== module: 22-water.js ===== */
 /* KE.Water — ocean/lake surface in the spirit of a single-layer water shading model.
    Geometry: a camera-following radial grid (dense near the viewer, geometric ring growth outward) displaced
@@ -19093,7 +19236,7 @@ KE.boatModel=(THREE,o={})=>{
   const style=o.style||'wasen',yak=style==='yakatabune',L=o.length||(yak?9.5:5.6),W=o.width||(yak?2.3:1.35),D=o.depth||(yak?.75:.55),r=KE.random((o.seed||1)*977+17),th=.035,N=18;
   const wood=sharedTile(THREE,'wood',o.textureSize||256,((o.seed||1)%3)*13+5),woodTex=wood.tex,tiles=[wood];
   const tone=new THREE.Color(o.color||(yak?0x9a7650:0x8b6b4a)),outer=new THREE.MeshStandardMaterial({map:woodTex,color:tone,roughness:.82}),inner=new THREE.MeshStandardMaterial({map:woodTex,color:tone.clone().multiplyScalar(.78),roughness:.88,side:THREE.DoubleSide});
-  const group=new THREE.Group();group.name='ke-boat-'+style;const mats=[outer,inner],geos=[];
+  const group=new THREE.Group();group.name='ke-boat-'+style;const mats=[outer,inner],geos=[];outer.userData.part=inner.userData.part='wood';
   const hw=t=>W/2*Math.min(1,.8+.4*t)*(1-.97*Math.pow(rsmooth(.6,1,t),1.5)),top=t=>D+D*.8*Math.pow(rsmooth(.55,1,t),2)+(yak?0:D*.12*Math.pow(1-t,3)),bot=t=>D*.55*Math.pow(rsmooth(.68,1,t),2)+.04*Math.pow(1-t,6);
   const prof=(t,inset)=>{const h=Math.max(.001,hw(t)-inset),fb=h*.62,b=bot(t)+inset,tp=top(t);return [[-h,tp],[-fb,b+D*.12],[0,b],[fb,b+D*.12],[h,tp]];};
   const skin=(inset,flip)=>{const pos=[],uv=[],idx=[];for(let i=0;i<=N;i++){const t=i/N,x=-L/2+t*L,p=prof(t,inset);let arc=0;for(let k=0;k<p.length;k++){if(k)arc+=Math.hypot(p[k][0]-p[k-1][0],p[k][1]-p[k-1][1]);pos.push(x,p[k][1],p[k][0]);uv.push(arc/.9,x/2.5);}}
@@ -19109,7 +19252,7 @@ KE.boatModel=(THREE,o={})=>{
   const box=(sx,sy,sz,x,y,z,m=inner)=>{const g=new THREE.BoxGeometry(sx,sy,sz);g.translate(x,y,z);return add(g,m);};
   for(const t of yak?[.2,.45,.7]:[.3,.62])box(.16,.04,hw(t)*2-.08,-L/2+t*L,top(t)-.12,0);
   if(yak){/* cabin: posts, a gently arched roof with overhanging eaves, and paper lanterns */
-    const roof=sharedTile(THREE,'roof',256,((o.seed||1)%2)*7+3),roofTex=roof.tex;tiles.push(roof);const roofMat=new THREE.MeshStandardMaterial({map:roofTex,color:0x5b5750,roughness:.75,side:THREE.DoubleSide}),lamp=new THREE.MeshStandardMaterial({color:0xf6dcc0,emissive:0xff6a2a,emissiveIntensity:o.lanterns===false?0:1.6,roughness:.9});mats.push(roofMat,lamp);
+    const roof=sharedTile(THREE,'roof',256,((o.seed||1)%2)*7+3),roofTex=roof.tex;tiles.push(roof);const roofMat=new THREE.MeshStandardMaterial({map:roofTex,color:0x5b5750,roughness:.75,side:THREE.DoubleSide}),lamp=new THREE.MeshStandardMaterial({color:0xf6dcc0,emissive:0xff6a2a,emissiveIntensity:o.lanterns===false?0:1.6,roughness:.9});roofMat.userData.part='roof';lamp.userData.part='lantern';mats.push(roofMat,lamp);
     const x0=-L*.3,x1=L*.28,cw=W*.46,ph=1.45,base=top(.5)-.1;
     for(const x of [x0,(x0+x1)/2,x1])for(const z of [-cw,cw])box(.09,ph,.09,x,base+ph/2,z);
     const rg=new THREE.PlaneGeometry(x1-x0+1.1,cw*2+.9,10,6),rp=rg.attributes.position;for(let i=0;i<rp.count;i++){const y=rp.getY(i);rp.setZ(i,-(y*y)*.28);}rg.computeVertexNormals();rg.rotateX(-Math.PI/2);rg.translate((x0+x1)/2,base+ph+.18,0);add(rg,roofMat);
@@ -21837,6 +21980,11 @@ uniform float keTexScale;uniform float keRelief;uniform float keTHTexel;uniform 
 varying vec3 keTWorld;varying vec2 keTUV;varying float keTLod;
 ${TERRAIN_RELIEF}
 vec3 keTNormalAt(vec2 uv){vec2 e=texture2D(keNormalMap,uv).xy*2.-1.;return normalize(vec3(e.x,sqrt(max(0.,1.-dot(e,e))),e.y));}
+#ifdef KE_TERRAIN_HD
+precision highp sampler2DArray;
+uniform sampler2DArray keLA;uniform sampler2DArray keLN;uniform sampler2DArray keLR;uniform sampler2DArray keLH;uniform sampler2D keFlow;
+uniform float keLScale[8];uniform vec2 keRockHigh;uniform float keHDNormal;uniform float keDirtMoss;
+#endif
 `;
 const TERRAIN_MAP=`
 vec3 kN=keTNormalAt(keTUV);
@@ -21874,6 +22022,45 @@ vec3 kGrad=vec3(dot(kBA,vec4(kHAx.r,kHAx.g,kHAx.b,kRockH))+kBS*texture2D(keHB,ku
 `;
 const TERRAIN_ROUGH=`roughnessFactor=mix(dot(kBA,vec4(.95,.9,.96,.82))+kBS*.55,.28,kWet*.85);`;
 const TERRAIN_NORMAL=`normal=normalize((viewMatrix*vec4(kN,0.)).xyz);{vec3 kg=(viewMatrix*vec4(kGrad,0.)).xyz;normal=normalize(normal-keRelief*30.*(1.-kFar*.8)*(kg-normal*dot(kg,normal)));}`;
+/* HD layers (setLayers): eight photoscanned texture sets in texture arrays (albedo, normal, ARM, height), each at its
+   real-world size. Biome weights split further: grass into moss and leaf litter by broad noise, dirt into gravel where
+   water flows (the flow mask), rock into mossy and bare by altitude. Height blending as above; normals from the
+   layers' normal maps (whiteout blend onto the terrain normal; rock triplanar); roughness and AO from their ARM maps. */
+const TERRAIN_MAP_HD=`
+vec3 kN=keTNormalAt(keTUV);
+float kDist=length(vViewPosition);
+vec4 kB=texture2D(keBiome,keTUV);
+vec4 kWA=vec4(kB.r,kB.g,max(0.,1.-kB.r-kB.g-kB.b-kB.a),kB.b);float kWS=kB.a;
+float kSteep=smoothstep(.74,.6,kN.y);kWA=kWA*(1.-kSteep)+vec4(0.,0.,0.,kSteep);kWS*=1.-kSteep;
+float kFar=smoothstep(12.,70.,kDist);
+float kM1=keFbm2(keTWorld.xz*.0042+3.7),kM2=keNoise2(keTWorld.xz*.027-1.3),kM3=keNoise2(keTWorld.xz*.11+7.1);
+float kLeaf=smoothstep(.45,.62,keFbm2(keTWorld.xz*.019+11.3));
+float kFl=smoothstep(.12,.5,texture2D(keFlow,keTUV).r);
+float kAlt=smoothstep(keRockHigh.x,keRockHigh.y,keTWorld.y+(kM2-.5)*(keRockHigh.y-keRockHigh.x));
+float kw[8];kw[0]=kWA.x*(1.-kLeaf);kw[1]=kWA.x*kLeaf;kw[2]=kWA.y;kw[3]=kWA.z*(1.-kFl);kw[4]=kWA.z*kFl;{float mv=kw[3]*keDirtMoss*smoothstep(.25,.6,kM3+kM1*.5);kw[0]+=mv;kw[3]-=mv;}kw[5]=kWA.w*(1.-kAlt);kw[6]=kWA.w*kAlt;kw[7]=kWS;
+vec3 kBl=pow(abs(kN),vec3(4.));kBl/=dot(kBl,vec3(1.));
+float kh[8];float kTop=-1.;
+for(int i=0;i<8;i++){kh[i]=0.;if(kw[i]>.003){kh[i]=texture(keLH,vec3(keTWorld.xz*keLScale[i],float(i))).r;kTop=max(kTop,kw[i]+kh[i]*.55);}}
+kTop-=.2;float kSum=1e-5;
+for(int i=0;i<8;i++){float t=kw[i]>.003?max(kw[i]+kh[i]*.55-kTop,0.):0.;kw[i]=t;kSum+=t;}
+vec3 kCol=vec3(0.),kNP=vec3(0.);float kRgh=0.,kAO=0.;
+for(int i=0;i<8;i++){float w=kw[i]/kSum;if(w<.002)continue;float fi=float(i),s=keLScale[i];vec3 a,np,r;bool tri=i==5||i==6;
+  if(tri){
+    a=texture(keLA,vec3(keTWorld.zy*s,fi)).rgb*kBl.x+texture(keLA,vec3(keTWorld.xz*s,fi)).rgb*kBl.y+texture(keLA,vec3(keTWorld.xy*s,fi)).rgb*kBl.z;
+    vec2 nx=texture(keLN,vec3(keTWorld.zy*s,fi)).rg*2.-1.,ny=texture(keLN,vec3(keTWorld.xz*s,fi)).rg*2.-1.,nz=texture(keLN,vec3(keTWorld.xy*s,fi)).rg*2.-1.;
+    np=vec3(0.,-nx.y,nx.x)*kBl.x+vec3(ny.x,0.,-ny.y)*kBl.y+vec3(nz.x,-nz.y,0.)*kBl.z;
+    r=texture(keLR,vec3(keTWorld.zy*s,fi)).rgb*kBl.x+texture(keLR,vec3(keTWorld.xz*s,fi)).rgb*kBl.y+texture(keLR,vec3(keTWorld.xy*s,fi)).rgb*kBl.z;
+  }else{vec2 uv=keTWorld.xz*s;a=texture(keLA,vec3(uv,fi)).rgb;vec2 n=texture(keLN,vec3(uv,fi)).rg*2.-1.;np=vec3(n.x,0.,-n.y);r=texture(keLR,vec3(uv,fi)).rgb;}
+  if(kFar>.001){vec3 af=texture(keLA,vec3(keTWorld.xz*s*keFarScale+vec2(.37,.71),fi)).rgb;a=mix(a,af,kFar*(tri?.5:1.));}
+  if(i<2)a*=mix(vec3(1.),mix(vec3(.9,1.,.84),vec3(1.1,1.04,.88),smoothstep(.3,.7,kM1)*keMacro+.5*(1.-keMacro))*keGrassTint,.55);
+  kCol+=a*w;kNP+=np*w;kRgh+=r.g*w;kAO+=r.r*w;}
+kCol*=1.+keMacro*((kM2-.5)*.16+(kM3-.5)*.07);
+float kWet=1.-smoothstep(keWaterLevel+.05,keWaterLevel+1.1,keTWorld.y);float kBS=kw[7]/kSum;
+diffuseColor.rgb*=pow(max(kCol,vec3(0.)),vec3(2.2))*mix(1.,.62,kWet*(1.-kBS))*mix(1.,kAO,.65);
+vec3 kHDN=normalize(kN+kNP*keHDNormal*(1.-kFar*.6));
+`;
+const TERRAIN_ROUGH_HD=`roughnessFactor=mix(clamp(kRgh,.05,1.),.28,kWet*.85);`;
+const TERRAIN_NORMAL_HD=`normal=normalize((viewMatrix*vec4(kHDN,0.)).xyz);`;
 
 function replaceOrThrow(src,target,repl,what){if(src.indexOf(target)<0)throw new Error('KE.GPUTerrain: shader chunk '+target+' not found in '+what+' (Three.js r128 expected)');return src.replace(target,repl);}
 
@@ -22120,13 +22307,29 @@ class GPUTerrain{
     for(const k of ['keTGrass','keTSand','keTDirt','keTRock','keTSnow'])if(!F[k].value)throw new Error('KE.GPUTerrain: textures missing '+k.slice(3).toLowerCase());
     m.onBeforeCompile=sh=>{for(const k in F)sh.uniforms[k]=F[k];
       let f=TERRAIN_FRAG_DECL+KE.GLSL.hash+'\n'+KE.GLSL.noise+'\n'+sh.fragmentShader;
-      f=replaceOrThrow(f,'#include <map_fragment>',TERRAIN_MAP,'fragment shader');
-      f=replaceOrThrow(f,'#include <roughnessmap_fragment>','#include <roughnessmap_fragment>\n'+TERRAIN_ROUGH,'fragment shader');
-      f=replaceOrThrow(f,'#include <normal_fragment_maps>','#include <normal_fragment_maps>\n'+TERRAIN_NORMAL,'fragment shader');
+      const hd=m.defines&&m.defines.KE_TERRAIN_HD!==undefined;
+      f=replaceOrThrow(f,'#include <map_fragment>',hd?TERRAIN_MAP_HD:TERRAIN_MAP,'fragment shader');
+      f=replaceOrThrow(f,'#include <roughnessmap_fragment>','#include <roughnessmap_fragment>\n'+(hd?TERRAIN_ROUGH_HD:TERRAIN_ROUGH),'fragment shader');
+      f=replaceOrThrow(f,'#include <normal_fragment_maps>','#include <normal_fragment_maps>\n'+(hd?TERRAIN_NORMAL_HD:TERRAIN_NORMAL),'fragment shader');
       sh.fragmentShader=f;};
-    m.customProgramCacheKey=()=>'ke-terrain-default-1';
+    m.customProgramCacheKey=()=>'ke-terrain-default-1'+(m.defines&&m.defines.KE_TERRAIN_HD!==undefined?'-hd':'');
     return this.patchMaterial(m);
   }
+  /* HD layers from texture arrays (KE.HD.layers): {albedo, normal, arm, height} with 8 layers in the order
+     grass, grass-leaves, sand, dirt, gravel, rock, rock-high, snow; scales = 8 tiles-per-metre factors; rockHigh =
+     [y0, y1] where bare rock takes over; normalStrength; dirtToMoss (0..1: share of dry dirt turned to moss in noise
+     patches). Pass null to go back to the painted layers. */
+  setLayers(layers){const m=this.material,F=this.materialUniforms;if(!m||!F)throw new Error('KE.GPUTerrain.setLayers needs the default material');
+    m.defines=m.defines||{};
+    if(!layers){if(m.defines.KE_TERRAIN_HD!==undefined){delete m.defines.KE_TERRAIN_HD;m.needsUpdate=true;}this.layers=null;return this;}
+    const T=this.THREE;if(!this._flowTexture){const hf=this.heightfield,n=hf.size,fl=hf.masks&&hf.masks.flow,d=new Uint8Array(n*n);
+      if(fl){let s=0,c=0;for(let i=0;i<fl.length;i+=7){s+=fl[i];c++;}const mean=Math.max(1e-3,c?s/c:1),a=Math.log(1+mean*2.5),b=Math.log(1+mean*14);
+        for(let i=0;i<n*n;i++)d[i]=Math.round(clamp((Math.log(1+fl[i])-a)/(b-a),0,1)*255);}
+      const t=new T.DataTexture(d,n,n,T.RedFormat,T.UnsignedByteType);t.minFilter=T.LinearMipmapLinearFilter;t.magFilter=T.LinearFilter;t.generateMipmaps=true;t.flipY=false;t.wrapS=t.wrapT=T.ClampToEdgeWrapping;t.needsUpdate=true;t.name='ke-terrain-flow';this._flowTexture=t;}
+    const put=(k,v)=>{if(F[k])F[k].value=v;else F[k]={value:v};};
+    put('keLA',layers.albedo);put('keLN',layers.normal);put('keLR',layers.arm);put('keLH',layers.height);put('keFlow',this._flowTexture);
+    put('keLScale',(layers.scales||[]).concat(Array(8).fill(.3)).slice(0,8));put('keRockHigh',new T.Vector2(...(layers.rockHigh||[1e5,1e5+1])));put('keHDNormal',layers.normalStrength===undefined?1:layers.normalStrength);put('keDirtMoss',layers.dirtToMoss===undefined?0:layers.dirtToMoss);
+    if(m.defines.KE_TERRAIN_HD===undefined){m.defines.KE_TERRAIN_HD='';m.needsUpdate=true;}this.layers=layers;return this;}
   /* Debug views: 'lod' (colour per LOD level, morph shown as a blend), 'wireframe' (the same plus triangle
      edges), 'height' (unlit world height in the red channel, for float render targets), or null. */
   setDebug(mode){
@@ -22151,7 +22354,7 @@ gl_FragColor=vec4(c,1.);
   dispose(){
     const m=this.mesh;m.parent&&m.parent.remove(m);this.geometry.dispose();this.heightTexture.dispose();this.normalTexture.dispose();if(this._ownBiomes&&this.biomeTexture)this.biomeTexture.dispose();
     if(this._ownMaterial)this.material.dispose();m.customDepthMaterial.dispose();m.customDistanceMaterial.dispose();if(this._debugMaterial)this._debugMaterial.dispose();
-    for(const t of this._materialTextures||[])t.dispose();this._materialTextures=null;this._dirty=null;
+    for(const t of this._materialTextures||[])t.dispose();this._materialTextures=null;this._dirty=null;if(this._flowTexture){this._flowTexture.dispose();this._flowTexture=null;}
   }
 }
 GPUTerrain.GLSL={vertex:TERRAIN_VERT,relief:TERRAIN_RELIEF};
@@ -22300,28 +22503,80 @@ function scatterCell(THREE,o={}){
     if(t.align&&src.normalAt){src.normalAt(x,z,nrm);n.set(nrm.x,nrm.y,nrm.z);qa.setFromUnitVectors(up,n);q.identity().slerp(qa,clamp(t.align,0,1)).multiply(qy);}else q.copy(qy);
     p.set(x,y-(t.sink||0)*s,z);sc.set(s,s,s);if(t.scaleY)sc.y*=t.scaleY;m.compose(p,q,sc);buckets[ti].push(...m.elements);
   }
-  const group=new THREE.Group();group.name='ke-scatter-'+(cell.ix!==undefined?cell.ix+'_'+cell.iz:x0+'_'+z0);let total=0;
+  const group=instanceGroup(THREE,types,buckets,'ke-scatter-'+(cell.ix!==undefined?cell.ix+'_'+cell.iz:x0+'_'+z0),o);group.userData.cell={x:x0,z:z0,size:cs};
+  return group;
+}
+/* One InstancedMesh per type from flat matrix lists (buckets[k] = 16 floats per instance), each drawing through a
+   per-group view of the shared geometry (same attribute objects, no copies) that carries the group's bounding sphere,
+   so Three's frustum culling works per cell. userData.dispose() frees the group's instance buffers and VAOs without
+   touching the shared geometry (the view's attribute table is emptied first) and removes the group. */
+function instanceGroup(THREE,types,buckets,name,o={}){
+  const group=new THREE.Group();group.name=name;let total=0;
   types.forEach((t,k)=>{const arr=buckets[k],count=arr.length/16;if(!count)return;const base=t.geometry;if(!base.boundingSphere)base.computeBoundingSphere();
-    // A per-cell view of the shared geometry (same attribute objects, no copies) that carries the cell's
-    // bounding sphere, so Three's frustum culling works per cell.
     const g=new THREE.BufferGeometry();g.setIndex(base.index);for(const a in base.attributes)g.setAttribute(a,base.attributes[a]);g.groups=base.groups;
     let mnx=Infinity,mny=Infinity,mnz=Infinity,mxx=-Infinity,mxy=-Infinity,mxz=-Infinity,ms=0;
-    for(let i=0;i<count;i++){const e=i*16,px=arr[e+12],py=arr[e+13],pz=arr[e+14],s=Math.hypot(arr[e],arr[e+1],arr[e+2]),sy=Math.hypot(arr[e+4],arr[e+5],arr[e+6]);ms=Math.max(ms,s,sy);
+    for(let i=0;i<count;i++){const e=i*16,px=arr[e+12],py=arr[e+13],pz=arr[e+14],s=Math.hypot(arr[e],arr[e+1],arr[e+2]),sy=Math.hypot(arr[e+4],arr[e+5],arr[e+6]),sz=Math.hypot(arr[e+8],arr[e+9],arr[e+10]);ms=Math.max(ms,s,sy,sz);
       if(px<mnx)mnx=px;if(py<mny)mny=py;if(pz<mnz)mnz=pz;if(px>mxx)mxx=px;if(py>mxy)mxy=py;if(pz>mxz)mxz=pz;}
     const bs=base.boundingSphere;g.boundingSphere=new THREE.Sphere(new THREE.Vector3((mnx+mxx)/2,(mny+mxy)/2,(mnz+mxz)/2),Math.hypot(mxx-mnx,mxy-mny,mxz-mnz)/2+(bs.center.length()+bs.radius)*ms);
     const mesh=new THREE.InstancedMesh(g,t.material,count);mesh.instanceMatrix.array.set(arr);mesh.instanceMatrix.needsUpdate=true;
     mesh.castShadow=t.castShadow!==undefined?t.castShadow:!!o.castShadow;mesh.receiveShadow=t.receiveShadow!==undefined?t.receiveShadow:o.receiveShadow!==false;mesh.name=t.name||('type'+k);mesh.userData.typeIndex=k;
     group.add(mesh);total+=count;});
-  group.userData.count=total;group.userData.cell={x:x0,z:z0,size:cs};
-  /* Releases this cell's instance buffers and VAOs without touching the shared geometry buffers: the view's
-     attribute table is emptied before dispose() so Three frees only what belongs to the cell. */
+  group.userData.count=total;
   group.userData.dispose=()=>{for(const mesh of group.children.slice()){const g=mesh.geometry;g.index=null;g.attributes={};g.dispose();mesh.dispose&&mesh.dispose();group.remove(mesh);}group.parent&&group.parent.remove(group);};
   return group;
 }
+KE.instanceGroup=instanceGroup;
+
+/* ---------- rock clusters ----------
+   Rocks the way they lie in nature, for one cell. Cluster centres sit on a global jittered lattice (spacing), each kept
+   with probability density(x, z) and by filter. On ordinary ground a cluster is one hero rock (types with role 'hero')
+   ringed by `members` smaller rocks (role 'small') within `spread` × the hero's size; on steep ground (slope >=
+   cliffSlope) a cliff piece (role 'cliff') is pressed into the slope, its face turned downhill, with scree below it.
+   Every rock is sunk by a share of its height (type.sink [a, b]), yawed at random, tilted up to `tilt` radians, leaned
+   `align` of the way onto the terrain normal and stretched ±12% per axis, so one scan gives many shapes. Sizes are in
+   metres of the rock's largest side (type.size [min, max]); a type's height/slope ranges limit where it may go.
+   Deterministic per (seed, cell); returns the same group contract as scatterCell (instanceGroup). */
+function rockCell(THREE,o={}){
+  const cs=o.cellSize||(o.cell&&o.cell.size)||96,cell=o.cell||{ix:0,iz:0};
+  const x0=cell.x!==undefined?cell.x:(o.originX||0)+cell.ix*cs,z0=cell.z!==undefined?cell.z:(o.originZ||0)+cell.iz*cs;
+  const src=o.heightfield||o.terrain;if(!src||typeof src.heightAt!=='function')throw new TypeError('rockCell needs {terrain} (anything with heightAt)');
+  const types=o.types||[];if(!types.length)throw new TypeError('rockCell needs types');
+  const spacing=o.spacing||24,seed=(o.seed===undefined?1:o.seed)>>>0,density=o.density===undefined?.5:o.density,water=o.waterLevel,members=o.members||[2,6],spread=o.spread||1.6,
+    tilt=o.tilt===undefined?.35:o.tilt,align=o.align===undefined?.7:o.align,cliffSlope=o.cliffSlope===undefined?1.05:o.cliffSlope;
+  const info=types.map(t=>{const g=t.geometry;if(!g.boundingBox)g.computeBoundingBox();const s=g.boundingBox.getSize(new THREE.Vector3());return {base:t.baseSize||Math.max(s.x,s.y,s.z)||1,h:s.y||1};});
+  const pools={hero:[],small:[],cliff:[]};types.forEach((t,k)=>{for(const r of String(t.role||'hero small').split(' '))if(pools[r])pools[r].push(k);});
+  const buckets=types.map(()=>[]),nrm={x:0,y:1,z:0},m=new THREE.Matrix4(),q=new THREE.Quaternion(),qt=new THREE.Quaternion(),qa=new THREE.Quaternion(),up=new THREE.Vector3(0,1,0),n=new THREE.Vector3(),ax=new THREE.Vector3(),p=new THREE.Vector3(),sc=new THREE.Vector3();
+  const gi0=Math.floor(x0/spacing),gi1=Math.ceil((x0+cs)/spacing),gj0=Math.floor(z0/spacing),gj1=Math.ceil((z0+cs)/spacing);
+  const pick=(pool,rnd,y,slope)=>{let w=0;const ok=pool.filter(k=>{const t=types[k],hr=t.height||[-Infinity,Infinity],sl=t.slope||[0,Infinity];return y>=hr[0]&&y<=hr[1]&&slope>=sl[0]&&slope<=sl[1];});
+    for(const k of ok)w+=types[k].weight===undefined?1:types[k].weight;let r=rnd()*w;for(const k of ok){r-=types[k].weight===undefined?1:types[k].weight;if(r<=0)return k;}return ok.length?ok[ok.length-1]:-1;};
+  /* one rock: size = metres of its largest side; yawFixed turns a cliff face downhill */
+  const place=(k,x,z,size,rnd,yawFixed,alignK)=>{const t=types[k],I=info[k],y=src.heightAt(x,z);if(water!==undefined&&y<water-(t.underwater||0))return 0;
+    const s=size/I.base,sk=t.sink||[.15,.35],sink=(sk[0]+(sk[1]-sk[0])*rnd())*I.h*s;
+    q.setFromAxisAngle(up,yawFixed!==undefined?yawFixed+(rnd()-.5)*.6:rnd()*Math.PI*2);
+    const ta=rnd()*Math.PI*2,tv=rnd()*tilt;ax.set(Math.cos(ta),0,Math.sin(ta));qt.setFromAxisAngle(ax,tv);q.premultiply(qt);
+    if(src.normalAt&&alignK>0){src.normalAt(x,z,nrm);n.set(nrm.x,nrm.y,nrm.z);qa.setFromUnitVectors(up,n);q.premultiply(new THREE.Quaternion().slerp(qa,alignK));}
+    p.set(x,y-sink,z);sc.set(s*(.88+rnd()*.24),s*(.88+rnd()*.24),s*(.88+rnd()*.24));m.compose(p,q,sc);buckets[k].push(...m.elements);return size;};
+  for(let gj=gj0;gj<gj1;gj++)for(let gi=gi0;gi<gi1;gi++){
+    let st=hashInts(seed,gi,gj);const rnd=()=>{st=(st+0x6D2B79F5)>>>0;let t=st;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296;};
+    const x=(gi+rnd())*spacing,z=(gj+rnd())*spacing;if(x<x0||x>=x0+cs||z<z0||z>=z0+cs)continue;
+    const d=typeof density==='function'?density(x,z):density;if(!(rnd()<d))continue;
+    const y=src.heightAt(x,z),slope=src.slopeAt?src.slopeAt(x,z):0;if(o.filter&&!o.filter(x,y,z,slope))continue;
+    if(slope>=cliffSlope&&pools.cliff.length){const k=pick(pools.cliff,rnd,y,slope);if(k<0)continue;src.normalAt&&src.normalAt(x,z,nrm);
+      const yaw=Math.atan2(nrm.x,nrm.z),sr=types[k].size||[6,14],size=sr[0]+(sr[1]-sr[0])*rnd();place(k,x,z,size,rnd,yaw,.85);
+      const scree=Math.floor(rnd()*4);for(let i=0;i<scree;i++){const ks=pick(pools.small,rnd,y,Math.min(slope,.9));if(ks<0)break;const a=rnd()*Math.PI*2,r=size*(.4+rnd()*.5),sx=x+nrm.x*size*.5+Math.cos(a)*r*.4,sz=z+nrm.z*size*.5+Math.sin(a)*r*.4,
+        srr=types[ks].size||[.3,1.2];place(ks,sx,sz,srr[0]+(srr[1]-srr[0])*rnd(),rnd,undefined,align);}continue;}
+    const kh=pick(pools.hero,rnd,y,slope);if(kh<0)continue;const hr=types[kh].size||[1.2,3.5],hs=hr[0]+(hr[1]-hr[0])*Math.pow(rnd(),1.6);place(kh,x,z,hs,rnd,undefined,align);
+    const cnt=members[0]+Math.floor(rnd()*(members[1]-members[0]+1));
+    for(let i=0;i<cnt;i++){const ks=pick(pools.small,rnd,y,slope);if(ks<0)break;const a=rnd()*Math.PI*2,r=hs*(.45+rnd()*spread*.6),sx=x+Math.cos(a)*r,sz=z+Math.sin(a)*r;if(sx<x0-8||sx>=x0+cs+8||sz<z0-8||sz>=z0+cs+8)continue;
+      const srr=types[ks].size||[.2,1],size=Math.min(srr[0]+(srr[1]-srr[0])*rnd(),hs*.55);place(ks,sx,sz,size,rnd,undefined,align);}
+  }
+  const group=instanceGroup(THREE,types,buckets,'ke-rocks-'+(cell.ix!==undefined?cell.ix+'_'+cell.iz:x0+'_'+z0),{castShadow:true,...o});group.userData.cell={x:x0,z:z0,size:cs};return group;
+}
+KE.rockCell=rockCell;
 KE.scatterCell=scatterCell;
 
 
-KE.registerModule('world',{provides:['Heightfield','GPUTerrain','WorldPartition','scatterCell','noise2D','HorizonCuller']});
+KE.registerModule('world',{provides:['Heightfield','GPUTerrain','WorldPartition','scatterCell','rockCell','instanceGroup','noise2D','HorizonCuller']});
 })();
 
 /* ===== module: 40-physics.js ===== */
@@ -30212,15 +30467,29 @@ treePoints.forEach(([x,z,s],i)=>{const y=ground(x,z);dummy.rotation.set(0,rng()*
 });
 for(const m of [trunks,branches,canopies,sprays]){m.castShadow=m.receiveShadow=true;scene.add(m);}
 }
-/* Shoreline boulders: sculpted procedural rocks with mossy tops in four shapes. Each shape is a KE.InstancedLOD whose levels
-   are the same rock at lower tessellation, so near boulders keep their full silhouette and distant ones cost a few hundred triangles. */
+/* Shoreline rocks in clusters: every fifth spot is a hero boulder and the four after it lie around it, all sunk a third
+   of their height into the ground and tilted, so they read as rock breaking through the soil rather than props set on top.
+   With the HD pack (hd/ beside this page, High and above) they are photoscanned boulders and mossy rocks (KE.HD); otherwise
+   sculpted procedural rocks with mossy tops, each shape a KE.InstancedLOD (near boulders keep their full silhouette,
+   distant ones cost a few hundred triangles). */
 const rockSpots=[],rockFields=[];for(let i=0;i<90;i++){const a=rng()*6.283,r=25+rng()*9,x=48+Math.sin(a)*r,z=49+Math.cos(a)*r,s=.25+rng()*1.4;rockSpots.push([x,z,s,rng(),rng()*3,rng()]);}
-if(has('geometry')){const top={low:2,medium:3,high:4}[S.preset]||5,shoreMat=KE.surface(T,'rock',{color:0xffffff,scale:.5,textureSize:detailSize,bump:.18});shoreMat.vertexColors=true;
- for(let v=0;v<4;v++){const set=rockSpots.filter((p,i)=>i%4===v),lods=[];for(let d=top;d>=Math.max(1,top-3);d--){const geometry=KE.proceduralRock(T,{detail:d,seed:101+v*37,roughness:.38,color:0xbdb9ad,moss:0x5d6e36});lods.push({geometry,error:.6/geometry.userData.rock.frequency});}
+const clusterSpots=rockSpots.map((p,i)=>{if(i%5===0)return {x:p[0],z:p[1],size:1+p[2]*1.25,a:p[3],b:p[4],c:p[5],hero:true};const h=rockSpots[i-i%5],hs=1+h[2]*1.25,ang=p[3]*6.283+i,r=hs*.55+.4+p[5]*1.5;
+  return {x:h[0]+Math.cos(ang)*r,z:h[1]+Math.sin(ang)*r,size:.25+p[2]*.32,a:p[3],b:p[4],c:p[5],hero:false};});
+const hdPack=S.preset!=='low'&&S.preset!=='medium'&&KE.HD?await KE.HD.ready():null;let hdRockTypes=[];
+if(hdPack){const tris={high:2500,ultra:4000}[S.preset]||6000,tex=S.preset==='high'?1024:2048,P=(id,o={})=>KE.HD.has(id)?KE.HD.prepare(T,id,{maxTriangles:tris,textureSize:tex,...o}).catch(e=>{console.warn('HD rock',id,e);return [];}):Promise.resolve([]);
+  const [s1,s2,boulder,r07,r09]=await Promise.all([P('rock_moss_set_01'),P('rock_moss_set_02'),P('boulder_01'),P('rock_07',{maxTriangles:1500}),P('rock_09',{maxTriangles:1500})]);
+  hdRockTypes=[...boulder.map(r=>({...r,hero:true})),...[s1,s2].flatMap(set=>set.map((r,i)=>({...r,hero:i<2}))),...[...r07,...r09].map(r=>({...r,hero:false}))];}
+if(hdRockTypes.length){const heroes=hdRockTypes.filter(t=>t.hero),smalls=hdRockTypes.filter(t=>!t.hero),buckets=hdRockTypes.map(()=>[]);
+  clusterSpots.forEach((p,i)=>{const list=p.hero?heroes:(smalls.length?smalls:heroes),t=list[i%list.length],base=Math.max(...t.size),sc=p.size/base;
+    dummy.position.set(p.x,ground(p.x,p.z)-t.size[1]*sc*(.25+p.c*.15),p.z);dummy.rotation.set((p.a-.5)*.45,p.b*2.1,(p.c-.5)*.45);dummy.scale.set(sc*(.9+p.a*.2),sc*(.85+p.c*.3),sc*(.9+p.b*.07));dummy.updateMatrix();
+    buckets[hdRockTypes.indexOf(t)].push(...dummy.matrix.elements);});
+  const g=KE.instanceGroup(T,hdRockTypes,buckets,'shore-rocks-hd',{castShadow:true});scene.add(g);}
+else if(has('geometry')){const top={low:2,medium:3,high:4}[S.preset]||5,shoreMat=KE.surface(T,'rock',{color:0xffffff,scale:.5,textureSize:detailSize,bump:.18});shoreMat.vertexColors=true;
+ for(let v=0;v<4;v++){const set=clusterSpots.filter((p,i)=>(p.hero?0:1+(i%3))===v),lods=[];if(!set.length)continue;for(let d=top;d>=Math.max(1,top-3);d--){const geometry=KE.proceduralRock(T,{detail:d,seed:101+v*37,roughness:.38,color:0xbdb9ad,moss:0x5d6e36});lods.push({geometry,error:.6/geometry.userData.rock.frequency});}
   const field=new KE.InstancedLOD(T,lods,shoreMat,{count:set.length,pixelError:1.5,castShadow:true,receiveShadow:true,shadowDistance:70});
-  set.forEach(([x,z,s,a,b,c],i)=>{dummy.position.set(x,ground(x,z)+s*.18,z);dummy.rotation.set((a-.5)*.35,b,(c-.5)*.35);dummy.scale.set(s*1.35,s*.95,s*1.1);dummy.updateMatrix();field.setMatrixAt(i,dummy.matrix);});
+  set.forEach((p,i)=>{const s=p.size*.62;dummy.position.set(p.x,ground(p.x,p.z)-s*.3,p.z);dummy.rotation.set((p.a-.5)*.4,p.b,(p.c-.5)*.4);dummy.scale.set(s*1.3,s*.95,s*1.1);dummy.updateMatrix();field.setMatrixAt(i,dummy.matrix);});
   field.object.name='shore-rocks';scene.add(field.object);rockFields.push(field);}}
-else{const rocks=new T.InstancedMesh(new T.IcosahedronGeometry(1,2),rockMat,90);rockSpots.forEach(([x,z,s,a,b,c],i)=>{dummy.position.set(x,ground(x,z)+s*.25,z);dummy.scale.set(s*1.6,s*.8,s);dummy.rotation.set(a,b,c*.5);dummy.updateMatrix();rocks.setMatrixAt(i,dummy.matrix);});rocks.castShadow=rocks.receiveShadow=true;scene.add(rocks);}
+else{const rocks=new T.InstancedMesh(new T.IcosahedronGeometry(1,2),rockMat,90);clusterSpots.forEach((p,i)=>{const s=p.size*.6;dummy.position.set(p.x,ground(p.x,p.z)-s*.2,p.z);dummy.scale.set(s*1.6,s*.8,s);dummy.rotation.set(p.a,p.b,p.c*.5);dummy.updateMatrix();rocks.setMatrixAt(i,dummy.matrix);});rocks.castShadow=rocks.receiveShadow=true;scene.add(rocks);}
 /* Fern fronds and small flower heads add readable close-range detail. */
 if(has('foliage')&&KE.fernClump){
  /* Ferns and wildflowers (foliage module): real frond geometry with translucent, wind-driven foliage shading; detail by preset. */

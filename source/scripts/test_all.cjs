@@ -21,6 +21,7 @@ const SUITES=[
   ['materials','node',['scripts/test_materials.cjs'],1200,'browser'],
   ['geometry','node',['scripts/test_geometry.cjs'],1200,'browser'],
   ['world','node',['scripts/test_world.cjs'],1200,'browser'],
+  ['hd','node',['scripts/test_hd.cjs'],600,'browser'],
   ['physics','node',['scripts/test_physics.cjs'],900,'browser'],
   ['cloth','node',['scripts/test_cloth.cjs'],600,'browser'],
   ['vfx','node',['scripts/test_vfx.cjs','--no-shots'],900,'browser'],
