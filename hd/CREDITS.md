@@ -5,12 +5,16 @@ Thanks to the artists who scanned and published them:
 
 - [Forest Ground 01](https://polyhaven.com/a/forrest_ground_01) (texture, 4k): Rob Tuytel
 - [Brown Mud Leaves 01](https://polyhaven.com/a/brown_mud_leaves_01) (texture, 4k): Rob Tuytel
-- [Coast Sand 01](https://polyhaven.com/a/coast_sand_01) (texture, 4k): Rob Tuytel
+- [Sand 03](https://polyhaven.com/a/sand_03) (texture, 4k): Charlotte Baglioni
 - [Forest Ground 04](https://polyhaven.com/a/forest_ground_04) (texture, 4k): Rob Tuytel, Rico Cilliers
 - [River Small Rocks](https://polyhaven.com/a/river_small_rocks) (texture, 4k): Rob Tuytel, Rico Cilliers
 - [Mossy Rock](https://polyhaven.com/a/mossy_rock) (texture, 4k): Rob Tuytel
 - [Rock Face 03](https://polyhaven.com/a/rock_face_03) (texture, 4k): Dario Barresi, Rico Cilliers
 - [Snow 02](https://polyhaven.com/a/snow_02) (texture, 4k): Rob Tuytel
+- [Gravel Stones](https://polyhaven.com/a/gravel_stones) (texture, 4k): Amal Kumar
+- [Lichen Rock](https://polyhaven.com/a/lichen_rock) (texture, 4k): Rico Cilliers
+- [Rocky Trail](https://polyhaven.com/a/rocky_trail) (texture, 4k): Amal Kumar
+- [Coast Sand 05](https://polyhaven.com/a/coast_sand_05) (texture, 4k): Rob Tuytel, Dario Barresi
 - [Japanese Cedar Bark](https://polyhaven.com/a/japanese_cedar_bark) (texture, 4k): Charlotte Baglioni
 - [Sakura Bark](https://polyhaven.com/a/sakura_bark) (texture, 2k): Charlotte Baglioni
 - [Trident Maple Bark](https://polyhaven.com/a/trident_maple_bark) (texture, 2k): Charlotte Baglioni
@@ -51,6 +55,9 @@ Thanks to the artists who scanned and published them:
 - [Wooden Lantern 01](https://polyhaven.com/a/wooden_lantern_01) (model, 2k): James Ray Cock
 - [Stone Fire Pit](https://polyhaven.com/a/stone_fire_pit) (model, 2k): Sebastian Platen
 - [Modular Wooden Pier](https://polyhaven.com/a/modular_wooden_pier) (model, 2k): Rico Cilliers
+- [Coastal Cliff 04](https://polyhaven.com/a/coastal_cliff_04) (model, 2k): Rob Tuytel, Rico Cilliers
+- [Coastal Cliff 02](https://polyhaven.com/a/coastal_cliff_02) (model, 2k): Rob Tuytel
+- [Sand Rocks Small 01](https://polyhaven.com/a/sand_rocks_small_01) (model, 2k): Rob Tuytel, Rico Cilliers
 - [Kloofendal 48d Partly Cloudy (Pure Sky)](https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky) (hdri, 4k): Greg Zaal, Jarod Guest
 - [Lilienstein](https://polyhaven.com/a/lilienstein) (hdri, 4k): Andreas Mischok
 - [The Sky Is On Fire](https://polyhaven.com/a/the_sky_is_on_fire) (hdri, 4k): Greg Zaal, Rico Cilliers
@@ -90,6 +97,7 @@ Thanks to the artists who scanned and published them:
 - [Green Metal Rust](https://polyhaven.com/a/green_metal_rust) (texture, 4k): Rob Tuytel
 - [Rust Coarse 01](https://polyhaven.com/a/rust_coarse_01) (texture, 4k): Dimitrios Savva, Rico Cilliers
 - [Corrugated Iron](https://polyhaven.com/a/corrugated_iron) (texture, 4k): Jenelle van Heerden, Dimitrios Savva
+- [Fabric Pattern 07](https://polyhaven.com/a/fabric_pattern_07) (texture, 4k): Rob Tuytel
 - [Brown Leather](https://polyhaven.com/a/brown_leather) (texture, 4k): Rob Tuytel
 - [Denim Fabric](https://polyhaven.com/a/denim_fabric) (texture, 4k): Rob Tuytel
 - [Clay Roof Tiles 02](https://polyhaven.com/a/clay_roof_tiles_02) (texture, 4k): Amal Kumar
@@ -105,7 +113,7 @@ Thanks to the artists who scanned and published them:
 - [Aerial Rocks 02](https://polyhaven.com/a/aerial_rocks_02) (texture, 4k): Rob Tuytel
 - [Aerial Grass Rock](https://polyhaven.com/a/aerial_grass_rock) (texture, 4k): Rob Tuytel
 - [Rocks Ground 02](https://polyhaven.com/a/rocks_ground_02) (texture, 4k): Rob Tuytel
-- [Lichen Rock](https://polyhaven.com/a/lichen_rock) (texture, 4k): Rico Cilliers
+- [Coast Sand 01](https://polyhaven.com/a/coast_sand_01) (texture, 4k): Rob Tuytel
 - [Cliff Side](https://polyhaven.com/a/cliff_side) (texture, 4k): James Ray Cock, Jenelle van Heerden, Dario Barresi
 - [Dry Riverbed Rock](https://polyhaven.com/a/dry_riverbed_rock) (texture, 4k): Amal Kumar
 - [Snow Field Aerial](https://polyhaven.com/a/snow_field_aerial) (texture, 4k): Rob Tuytel
@@ -124,6 +132,7 @@ Thanks to the artists who scanned and published them:
 - [Oak Veneer 01](https://polyhaven.com/a/oak_veneer_01) (texture, 4k): Jenelle van Heerden
 - [Rusty Metal 02](https://polyhaven.com/a/rusty_metal_02) (texture, 4k): Rob Tuytel
 - [Blue Metal Plate](https://polyhaven.com/a/blue_metal_plate) (texture, 4k): Rob Tuytel
+- [Fabric Pattern 05](https://polyhaven.com/a/fabric_pattern_05) (texture, 4k): Rob Tuytel
 - [Roof 09](https://polyhaven.com/a/roof_09) (texture, 4k): Rob Tuytel
 - [Ceramic Roof 01](https://polyhaven.com/a/ceramic_roof_01) (texture, 4k): Rob Tuytel
 - [Roof Tiles 14](https://polyhaven.com/a/roof_tiles_14) (texture, 4k): Rob Tuytel

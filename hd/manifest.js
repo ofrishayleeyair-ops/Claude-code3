@@ -14,6 +14,42 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/forrest_ground_01",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 833711,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1428763,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 296969,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3077552,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 5551101,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1160819,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
     "diff_4k.jpg": {
      "mime": "image/jpeg",
      "bytes": 10044373,
@@ -31,6 +67,12 @@ KitsuneHD.manifest({
      "bytes": 4166080,
      "parts": 1,
      "script": "arm_4k.jpg"
+    },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 321227,
+     "parts": 1,
+     "script": "disp_1k.jpg"
     },
     "disp_2k.jpg": {
      "mime": "image/jpeg",
@@ -54,6 +96,42 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/brown_mud_leaves_01",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1206953,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1486072,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 953367,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4539452,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 5688696,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3697743,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
     "diff_4k.jpg": {
      "mime": "image/jpeg",
      "bytes": 15548852,
@@ -72,6 +150,12 @@ KitsuneHD.manifest({
      "parts": 1,
      "script": "arm_4k.jpg"
     },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 582098,
+     "parts": 1,
+     "script": "disp_1k.jpg"
+    },
     "disp_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 1788400,
@@ -84,44 +168,86 @@ KitsuneHD.manifest({
     1.3
    ]
   },
-  "coast_sand_01": {
+  "sand_03": {
    "kind": "texture",
    "role": "sand",
    "res": "4k",
-   "name": "Coast Sand 01",
+   "name": "Sand 03",
    "authors": [
-    "Rob Tuytel"
+    "Charlotte Baglioni"
    ],
-   "page": "https://polyhaven.com/a/coast_sand_01",
+   "page": "https://polyhaven.com/a/sand_03",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 703132,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 884706,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 594822,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3353581,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3654915,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2454594,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
     "diff_4k.jpg": {
      "mime": "image/jpeg",
-     "bytes": 10814554,
+     "bytes": 14916951,
      "parts": 1,
      "script": "diff_4k.jpg"
     },
     "nor_4k.jpg": {
      "mime": "image/jpeg",
-     "bytes": 17348986,
+     "bytes": 14562883,
      "parts": 1,
      "script": "nor_4k.jpg"
     },
     "arm_4k.jpg": {
      "mime": "image/jpeg",
-     "bytes": 10261223,
+     "bytes": 10121274,
      "parts": 1,
      "script": "arm_4k.jpg"
     },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 286374,
+     "parts": 1,
+     "script": "disp_1k.jpg"
+    },
     "disp_2k.jpg": {
      "mime": "image/jpeg",
-     "bytes": 1042031,
+     "bytes": 894671,
      "parts": 1,
      "script": "disp_2k.jpg"
     }
    },
    "size_m": [
-    15.0,
-    15.0
+    2.0,
+    2.0
    ]
   },
   "forest_ground_04": {
@@ -135,6 +261,42 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/forest_ground_04",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1113899,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1326812,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 882694,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4529321,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 5288849,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3418726,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
     "diff_4k.jpg": {
      "mime": "image/jpeg",
      "bytes": 16611792,
@@ -152,6 +314,12 @@ KitsuneHD.manifest({
      "bytes": 12202613,
      "parts": 1,
      "script": "arm_4k.jpg"
+    },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 223545,
+     "parts": 1,
+     "script": "disp_1k.jpg"
     },
     "disp_2k.jpg": {
      "mime": "image/jpeg",
@@ -176,6 +344,42 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/river_small_rocks",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1028735,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1365737,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 932251,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3908784,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4999539,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3371627,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
     "diff_4k.jpg": {
      "mime": "image/jpeg",
      "bytes": 13879561,
@@ -193,6 +397,12 @@ KitsuneHD.manifest({
      "bytes": 11776281,
      "parts": 1,
      "script": "arm_4k.jpg"
+    },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 267156,
+     "parts": 1,
+     "script": "disp_1k.jpg"
     },
     "disp_2k.jpg": {
      "mime": "image/jpeg",
@@ -216,6 +426,42 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/mossy_rock",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1124438,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 995727,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 926941,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4535360,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4033031,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3799947,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
     "diff_4k.jpg": {
      "mime": "image/jpeg",
      "bytes": 16932614,
@@ -233,6 +479,12 @@ KitsuneHD.manifest({
      "bytes": 15011150,
      "parts": 1,
      "script": "arm_4k.jpg"
+    },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 208904,
+     "parts": 1,
+     "script": "disp_1k.jpg"
     },
     "disp_2k.jpg": {
      "mime": "image/jpeg",
@@ -257,6 +509,42 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/rock_face_03",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 927082,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1146788,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 793241,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3814362,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4473242,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3215097,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
     "diff_4k.jpg": {
      "mime": "image/jpeg",
      "bytes": 15319503,
@@ -274,6 +562,12 @@ KitsuneHD.manifest({
      "bytes": 12740820,
      "parts": 1,
      "script": "arm_4k.jpg"
+    },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 264231,
+     "parts": 1,
+     "script": "disp_1k.jpg"
     },
     "disp_2k.jpg": {
      "mime": "image/jpeg",
@@ -297,6 +591,42 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/snow_02",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 325497,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1081858,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 88100,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1314409,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4761595,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 390341,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
     "diff_4k.jpg": {
      "mime": "image/jpeg",
      "bytes": 4537020,
@@ -315,6 +645,12 @@ KitsuneHD.manifest({
      "parts": 1,
      "script": "arm_4k.jpg"
     },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 143888,
+     "parts": 1,
+     "script": "disp_1k.jpg"
+    },
     "disp_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 432399,
@@ -327,9 +663,338 @@ KitsuneHD.manifest({
     2.0
    ]
   },
+  "gravel_stones": {
+   "kind": "texture",
+   "role": "ash",
+   "res": "4k",
+   "name": "Gravel Stones",
+   "authors": [
+    "Amal Kumar"
+   ],
+   "page": "https://polyhaven.com/a/gravel_stones",
+   "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 802344,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1485214,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1051915,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3220057,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 5469483,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3805569,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
+    "diff_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 12777115,
+     "parts": 1,
+     "script": "diff_4k.jpg"
+    },
+    "nor_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 19292345,
+     "parts": 1,
+     "script": "nor_4k.jpg"
+    },
+    "arm_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 13573378,
+     "parts": 1,
+     "script": "arm_4k.jpg"
+    },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 633951,
+     "parts": 1,
+     "script": "disp_1k.jpg"
+    },
+    "disp_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1861900,
+     "parts": 1,
+     "script": "disp_2k.jpg"
+    }
+   },
+   "size_m": [
+    2.0,
+    2.0
+   ]
+  },
+  "lichen_rock": {
+   "kind": "texture",
+   "role": "rock-volcanic",
+   "res": "4k",
+   "name": "Lichen Rock",
+   "authors": [
+    "Rico Cilliers"
+   ],
+   "page": "https://polyhaven.com/a/lichen_rock",
+   "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1070311,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1259569,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 802718,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4010129,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4844348,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2978561,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
+    "diff_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 14408710,
+     "parts": 1,
+     "script": "diff_4k.jpg"
+    },
+    "nor_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 17843623,
+     "parts": 1,
+     "script": "nor_4k.jpg"
+    },
+    "arm_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 10349695,
+     "parts": 1,
+     "script": "arm_4k.jpg"
+    },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 322057,
+     "parts": 1,
+     "script": "disp_1k.jpg"
+    },
+    "disp_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 961417,
+     "parts": 1,
+     "script": "disp_2k.jpg"
+    }
+   },
+   "size_m": [
+    2.0,
+    2.0
+   ]
+  },
+  "rocky_trail": {
+   "kind": "texture",
+   "role": "trail",
+   "res": "4k",
+   "name": "Rocky Trail",
+   "authors": [
+    "Amal Kumar"
+   ],
+   "page": "https://polyhaven.com/a/rocky_trail",
+   "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1076180,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1398291,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1085984,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4208713,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 5525906,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3986946,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
+    "diff_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 15529297,
+     "parts": 1,
+     "script": "diff_4k.jpg"
+    },
+    "nor_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 21747920,
+     "parts": 1,
+     "script": "nor_4k.jpg"
+    },
+    "arm_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 14106767,
+     "parts": 1,
+     "script": "arm_4k.jpg"
+    },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 418491,
+     "parts": 1,
+     "script": "disp_1k.jpg"
+    },
+    "disp_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1244065,
+     "parts": 1,
+     "script": "disp_2k.jpg"
+    }
+   },
+   "size_m": [
+    2.0,
+    2.0
+   ]
+  },
+  "coast_sand_05": {
+   "kind": "texture",
+   "role": "sand-wet",
+   "res": "4k",
+   "name": "Coast Sand 05",
+   "authors": [
+    "Rob Tuytel",
+    "Dario Barresi"
+   ],
+   "page": "https://polyhaven.com/a/coast_sand_05",
+   "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 874077,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1318765,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 924313,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3348013,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4717979,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 3390422,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
+    "diff_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 10566703,
+     "parts": 1,
+     "script": "diff_4k.jpg"
+    },
+    "nor_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 14823009,
+     "parts": 1,
+     "script": "nor_4k.jpg"
+    },
+    "arm_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 11622234,
+     "parts": 1,
+     "script": "arm_4k.jpg"
+    },
+    "disp_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 439935,
+     "parts": 1,
+     "script": "disp_1k.jpg"
+    },
+    "disp_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1231913,
+     "parts": 1,
+     "script": "disp_2k.jpg"
+    }
+   },
+   "size_m": [
+    25.0,
+    25.0
+   ]
+  },
   "japanese_cedar_bark": {
    "kind": "texture",
-   "role": "bark cedar",
+   "role": "bark cedar hero",
    "res": "4k",
    "name": "Japanese Cedar Bark",
    "authors": [
@@ -337,6 +1002,42 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/japanese_cedar_bark",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1371666,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2053757,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1461095,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 5506299,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 7737423,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4885319,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
     "diff_4k.jpg": {
      "mime": "image/jpeg",
      "bytes": 22174540,
@@ -371,6 +1072,24 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/sakura_bark",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 959561,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1137033,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 974157,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
     "diff_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 3832004,
@@ -405,6 +1124,24 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/trident_maple_bark",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 761434,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1116838,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 722233,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
     "diff_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 3100517,
@@ -439,6 +1176,24 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/japanese_zelkova_bark",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1011629,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1086049,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 630848,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
     "diff_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 4182698,
@@ -473,6 +1228,24 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/metasequoia_bark",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 869551,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1077934,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 771422,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
     "diff_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 3320249,
@@ -507,6 +1280,24 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/pine_bark",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 837641,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1178440,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 810100,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
     "diff_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 3167561,
@@ -533,7 +1324,7 @@ KitsuneHD.manifest({
   },
   "hinoki_planks": {
    "kind": "texture",
-   "role": "wood planks",
+   "role": "wood planks hero",
    "res": "4k",
    "name": "Hinoki Planks",
    "authors": [
@@ -541,6 +1332,42 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/hinoki_planks",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 527974,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 456865,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 427287,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
+    "diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2117798,
+     "parts": 1,
+     "script": "diff_2k.jpg"
+    },
+    "nor_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2213410,
+     "parts": 1,
+     "script": "nor_2k.jpg"
+    },
+    "arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1852913,
+     "parts": 1,
+     "script": "arm_2k.jpg"
+    },
     "diff_4k.jpg": {
      "mime": "image/jpeg",
      "bytes": 8284068,
@@ -575,6 +1402,24 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/dark_wooden_planks",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 701221,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 658444,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 777830,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
     "diff_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 2884395,
@@ -609,6 +1454,24 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/raw_plank_wall",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 640551,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 741259,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 579601,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
     "diff_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 2522671,
@@ -643,6 +1506,24 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/grey_roof_tiles_02",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 402212,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 570336,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 174316,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
     "diff_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 1530646,
@@ -677,6 +1558,24 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/rock_wall_02",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 303985,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 198730,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 206132,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
     "diff_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 1209071,
@@ -712,6 +1611,24 @@ KitsuneHD.manifest({
    ],
    "page": "https://polyhaven.com/a/grassy_cobblestone",
    "files": {
+    "diff_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 742841,
+     "parts": 1,
+     "script": "diff_1k.jpg"
+    },
+    "nor_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 1040297,
+     "parts": 1,
+     "script": "nor_1k.jpg"
+    },
+    "arm_1k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 783391,
+     "parts": 1,
+     "script": "arm_1k.jpg"
+    },
     "diff_2k.jpg": {
      "mime": "image/jpeg",
      "bytes": 3004490,
@@ -2088,6 +3005,146 @@ KitsuneHD.manifest({
     19.026
    ]
   },
+  "coastal_cliff_04": {
+   "kind": "model",
+   "role": "rock cliff coast",
+   "res": "2k",
+   "name": "Coastal Cliff 04",
+   "authors": [
+    "Rob Tuytel",
+    "Rico Cilliers"
+   ],
+   "page": "https://polyhaven.com/a/coastal_cliff_04",
+   "files": {
+    "coastal_cliff_04_2k.gltf": {
+     "mime": "model/gltf+json",
+     "bytes": 2828,
+     "parts": 1,
+     "script": "coastal_cliff_04_2k.gltf"
+    },
+    "textures/coastal_cliff_04_diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2900951,
+     "parts": 1,
+     "script": "textures__coastal_cliff_04_diff_2k.jpg"
+    },
+    "coastal_cliff_04.bin": {
+     "mime": "application/octet-stream",
+     "bytes": 43704136,
+     "parts": 2,
+     "script": "coastal_cliff_04.bin"
+    },
+    "textures/coastal_cliff_04_nor_gl_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4733530,
+     "parts": 1,
+     "script": "textures__coastal_cliff_04_nor_gl_2k.jpg"
+    },
+    "textures/coastal_cliff_04_arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2753906,
+     "parts": 1,
+     "script": "textures__coastal_cliff_04_arm_2k.jpg"
+    }
+   },
+   "size_m": [
+    86.773,
+    24.248
+   ]
+  },
+  "coastal_cliff_02": {
+   "kind": "model",
+   "role": "rock cliff coast",
+   "res": "2k",
+   "name": "Coastal Cliff 02",
+   "authors": [
+    "Rob Tuytel"
+   ],
+   "page": "https://polyhaven.com/a/coastal_cliff_02",
+   "files": {
+    "coastal_cliff_02_2k.gltf": {
+     "mime": "model/gltf+json",
+     "bytes": 3220,
+     "parts": 1,
+     "script": "coastal_cliff_02_2k.gltf"
+    },
+    "textures/coastal_cliff_02_arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2299007,
+     "parts": 1,
+     "script": "textures__coastal_cliff_02_arm_2k.jpg"
+    },
+    "coastal_cliff_02.bin": {
+     "mime": "application/octet-stream",
+     "bytes": 26773008,
+     "parts": 1,
+     "script": "coastal_cliff_02.bin"
+    },
+    "textures/coastal_cliff_02_diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2655313,
+     "parts": 1,
+     "script": "textures__coastal_cliff_02_diff_2k.jpg"
+    },
+    "textures/coastal_cliff_02_nor_gl_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4057806,
+     "parts": 1,
+     "script": "textures__coastal_cliff_02_nor_gl_2k.jpg"
+    }
+   },
+   "size_m": [
+    40.93,
+    8.653
+   ]
+  },
+  "sand_rocks_small_01": {
+   "kind": "model",
+   "role": "rock coast",
+   "res": "2k",
+   "name": "Sand Rocks Small 01",
+   "authors": [
+    "Rob Tuytel",
+    "Rico Cilliers"
+   ],
+   "page": "https://polyhaven.com/a/sand_rocks_small_01",
+   "files": {
+    "sand_rocks_small_01_2k.gltf": {
+     "mime": "model/gltf+json",
+     "bytes": 2887,
+     "parts": 1,
+     "script": "sand_rocks_small_01_2k.gltf"
+    },
+    "sand_rocks_small_01.bin": {
+     "mime": "application/octet-stream",
+     "bytes": 21253052,
+     "parts": 1,
+     "script": "sand_rocks_small_01.bin"
+    },
+    "textures/sand_rocks_small_01_diff_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2785116,
+     "parts": 1,
+     "script": "textures__sand_rocks_small_01_diff_2k.jpg"
+    },
+    "textures/sand_rocks_small_01_nor_gl_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 4231854,
+     "parts": 1,
+     "script": "textures__sand_rocks_small_01_nor_gl_2k.jpg"
+    },
+    "textures/sand_rocks_small_01_arm_2k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2683303,
+     "parts": 1,
+     "script": "textures__sand_rocks_small_01_arm_2k.jpg"
+    }
+   },
+   "size_m": [
+    4.627,
+    3.884
+   ]
+  },
   "kloofendal_48d_partly_cloudy_puresky": {
    "kind": "hdri",
    "role": "sky",
@@ -3158,6 +4215,40 @@ KitsuneHD.manifest({
     1.12
    ]
   },
+  "fabric_pattern_07": {
+   "kind": "texture",
+   "role": "fabric",
+   "res": "4k",
+   "name": "Fabric Pattern 07",
+   "authors": [
+    "Rob Tuytel"
+   ],
+   "page": "https://polyhaven.com/a/fabric_pattern_07",
+   "files": {
+    "diff_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 8558160,
+     "parts": 1,
+     "script": "diff_4k.jpg"
+    },
+    "nor_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 6950285,
+     "parts": 1,
+     "script": "nor_4k.jpg"
+    },
+    "arm_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2508326,
+     "parts": 1,
+     "script": "arm_4k.jpg"
+    }
+   },
+   "size_m": [
+    0.4,
+    0.4
+   ]
+  },
   "brown_leather": {
    "kind": "texture",
    "role": "leather",
@@ -3759,44 +4850,44 @@ KitsuneHD.manifest({
     2.0
    ]
   },
-  "lichen_rock": {
+  "coast_sand_01": {
    "kind": "texture",
-   "role": "rock",
+   "role": "ground sand",
    "res": "4k",
-   "name": "Lichen Rock",
+   "name": "Coast Sand 01",
    "authors": [
-    "Rico Cilliers"
+    "Rob Tuytel"
    ],
-   "page": "https://polyhaven.com/a/lichen_rock",
+   "page": "https://polyhaven.com/a/coast_sand_01",
    "files": {
     "diff_4k.jpg": {
      "mime": "image/jpeg",
-     "bytes": 14408710,
+     "bytes": 10814554,
      "parts": 1,
      "script": "diff_4k.jpg"
     },
     "nor_4k.jpg": {
      "mime": "image/jpeg",
-     "bytes": 17843623,
+     "bytes": 17348986,
      "parts": 1,
      "script": "nor_4k.jpg"
     },
     "arm_4k.jpg": {
      "mime": "image/jpeg",
-     "bytes": 10349695,
+     "bytes": 10261223,
      "parts": 1,
      "script": "arm_4k.jpg"
     },
     "disp_2k.jpg": {
      "mime": "image/jpeg",
-     "bytes": 961417,
+     "bytes": 1042031,
      "parts": 1,
      "script": "disp_2k.jpg"
     }
    },
    "size_m": [
-    2.0,
-    2.0
+    15.0,
+    15.0
    ]
   },
   "cliff_side": {
@@ -4523,6 +5614,40 @@ KitsuneHD.manifest({
    "size_m": [
     2.5,
     2.5
+   ]
+  },
+  "fabric_pattern_05": {
+   "kind": "texture",
+   "role": "fabric",
+   "res": "4k",
+   "name": "Fabric Pattern 05",
+   "authors": [
+    "Rob Tuytel"
+   ],
+   "page": "https://polyhaven.com/a/fabric_pattern_05",
+   "files": {
+    "diff_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 10669919,
+     "parts": 1,
+     "script": "diff_4k.jpg"
+    },
+    "nor_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 8805171,
+     "parts": 1,
+     "script": "nor_4k.jpg"
+    },
+    "arm_4k.jpg": {
+     "mime": "image/jpeg",
+     "bytes": 2731420,
+     "parts": 1,
+     "script": "arm_4k.jpg"
+    }
+   },
+   "size_m": [
+    0.5,
+    0.5
    ]
   },
   "roof_09": {
@@ -8771,5 +9896,5 @@ KitsuneHD.manifest({
    ]
   }
  },
- "bytes": 4144029867
+ "bytes": 4715291954
 });
