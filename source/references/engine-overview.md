@@ -9,7 +9,7 @@ Read this page first, then the reference for the system you are touching.
 | File | `KE.modules` name | Main entry points | Reference | Test |
 |---|---|---|---|---|
 | `core.js` | (2.1 runtime) | `KE.terrain`, `KE.Loop`, `KE.Physics` (upright actors), `KE.Input`, `KE.FollowCamera`, `KE.SaveStore`, `KE.Audio`, `KE.Particles`, `KE.findPath` | runtime-api.md, rendering.md | test_core.cjs |
-| 00-core-v3 | `core-v3` | `KE.capabilities`, v3 settings and presets, `KE.cvars`, `KE.jobs`, `KE.profiler`, `KE.sceneUniforms`, `KE.FullScreenQuad`, `KE.GLSL` | rendering-v3.md §1, §7–8 | test_core.cjs |
+| 00-core-v3 | `core-v3` | `KE.capabilities`, v3 settings and presets (incl. Epic PC and GPU detection), `KE.cvars`, `KE.jobs`, `KE.WorkerPool` (all CPU threads, up to 64), `KE.profiler`, `KE.sceneUniforms`, `KE.FullScreenQuad`, `KE.GLSL` | rendering-v3.md §1, §7–8 | test_core.cjs |
 | 10-pipeline | `pipeline` | `KE.Pipeline` | rendering-v3.md §2 | test_pipeline.cjs |
 | 12-sky | `sky` | `KE.SkyAtmosphere` | rendering-v3.md §3 | test_sky.cjs |
 | 14-shadows | `shadows` | `KE.CascadedShadows` | rendering-v3.md §4 | test_shadows.cjs |
@@ -96,7 +96,7 @@ While the editor is open (F8) the game loop is paused and the editor runs its ow
 | Fur, VFX budget, pool lights | off, .35, 2 | on, .6, 4 | on, 1, 6 | on, 1, 8 | on, 1, 16 | on, 1, 12 |
 | Depth of field, motion blur in play | off | off | off | off | off | off (photo modes turn DOF on) |
 
-Epic (PC) is for desktop graphics cards of the RTX 3060/4060 Ti/5060 Ti or Radeon RX 6700 class and above: native resolution with every effect at its highest setting, 4096² shadows, full-detail trees and longer streaming radii (the open world streams trees to 240 m, bamboo to 130 m, grass to 40 m with shadows, and impostors to 1.4 km). On first launch `KE.detectPreset()` picks Epic when `WEBGL_debug_renderer_info` reports such a GPU (`KE.gpuInfo()`, `KE.isDesktopGPU()`) on a machine with 8 or more threads; browsers that hide the GPU name keep the core detection. Cinematic supersamples instead (render scale 1.6) and costs more per pixel. No frame rate is claimed for any preset; measure with `stat unit` and `stat gpu`.
+Epic (PC) is for desktop graphics cards of the RTX 3060/4060 Ti/5060 Ti or Radeon RX 6700 class and above: native resolution with every effect at its highest setting, 4096² shadows, full-detail trees and longer streaming radii (the open world streams trees to 180 m, bamboo to 96 m, grass to 40 m with shadows, and impostors to 1.4 km). On first launch `KE.detectPreset()` picks Epic when `WEBGL_debug_renderer_info` reports such a GPU (`KE.gpuInfo()`, `KE.isDesktopGPU()`) on a machine with 8 or more threads; browsers that hide the GPU name keep the core detection. Cinematic supersamples instead (render scale 1.6) and costs more per pixel. No frame rate is claimed for any preset; measure with `stat unit` and `stat gpu`.
 
 ## 5. Mobile budgets (from public WebGL2 survey data)
 

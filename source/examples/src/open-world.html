@@ -42,7 +42,7 @@ select.pill{appearance:none;-webkit-appearance:none}
 (async()=>{'use strict';
 const KE=window.KitsuneEngine,T=window.THREE,S=KE.settings,has=n=>!!KE.modules[n],$=id=>document.getElementById(id);
 const fail=error=>{console.error(error);const el=document.createElement('div');el.className='error';const c=document.createElement('div');const h=document.createElement('h2');h.textContent='The world could not open.';const p=document.createElement('p');p.textContent=String(error&&error.message||error);c.append(h,p);el.append(c);document.body.append(el);};
-const status=(text,f)=>{$('load-text').textContent=text;$('load-bar').style.width=Math.round(f*100)+'%';};
+const loadTimes=[],t0Load=performance.now(),status=(text,f)=>{loadTimes.push([text,Math.round(performance.now()-t0Load)]);$('load-text').textContent=text;$('load-bar').style.width=Math.round(f*100)+'%';};
 const nextFrame=()=>new Promise(r=>requestAnimationFrame(()=>r()));
 // Run a KE.jobs promise to completion while keeping the page responsive.
 const drain=async promise=>{let done=false;promise.then(()=>{done=true;},()=>{done=true;});while(!done){KE.jobs.run(14);await nextFrame();}return promise;};
@@ -58,17 +58,20 @@ const sun=new T.DirectionalLight(0xfff0c9,3),hemi=new T.HemisphereLight(0xd5edff
 KE.applyRendererSettings(T,renderer,camera,sun,scene);
 
 /* ---------- the land: generated, eroded, drawn as one CDLOD terrain ---------- */
-status('Shaping the island',.04);await nextFrame();
-const SEED=7,WORLD=2048;
-const hf=await drain(KE.Heightfield.generate({size:1025,worldSize:WORLD,seed:SEED,islands:true,falloff:.38,amplitude:230,mountains:.8,ridged:.75,jobs:KE.jobs}));
+/* terrain generation and erosion run on every CPU thread the browser reports (up to 64), then the workers are released */
+const cpu=KE.WorkerPool&&KE.Heightfield.workers?KE.Heightfield.workers():null,threads=cpu&&cpu.size?cpu.size+1:1;
+status(`Shaping the island on ${threads} CPU thread${threads>1?'s':''}`,.04);await nextFrame();
+const SEED=7,WORLD=2048,genOpts={size:1025,worldSize:WORLD,seed:SEED,islands:true,falloff:.38,amplitude:230,mountains:.8,ridged:.75};
+const hf=cpu&&cpu.size?await KE.Heightfield.generate({...genOpts,workers:cpu}):await drain(KE.Heightfield.generate({...genOpts,jobs:KE.jobs}));
 /* The volcano: a concave cone (steep near the summit, gentle at the foot) with a summit crater, merged into the island
    with a smooth maximum before erosion, which then cuts gullies down its flanks. Its top rises above the snow line. */
 status('Raising the volcano',.18);await nextFrame();
 const FUJI={x:-470,z:-520,R:640,H:430};
 {const s=hf.size,sp=hf.spacing,d=hf.data,m=18;for(let j=0;j<s;j++)for(let i=0;i<s;i++){const x=hf.originX+i*sp,z=hf.originZ+j*sp,r=Math.hypot(x-FUJI.x,z-FUJI.z);if(r>=FUJI.R)continue;
   let c=FUJI.H*Math.pow(1-r/FUJI.R,1.5)-6;if(r<36)c-=22*(1-(r/36)**2);const k=j*s+i,h=d[k];d[k]=Math.max(h,c)+Math.max(m-Math.abs(h-c),0)**2/(4*m);}hf.recomputeRange();hf.version++;}
-status('Running rain over it for a few thousand years',.3);await nextFrame();
-await drain(KE.Heightfield.erode(hf,{iterations:90000,seed:3,spawnAbove:0,jobs:KE.jobs}));
+status(`Running rain over it for a few thousand years (${threads} threads)`,.3);await nextFrame();
+if(cpu&&cpu.size)await KE.Heightfield.erode(hf,{iterations:90000,seed:3,spawnAbove:0,workers:cpu});else await drain(KE.Heightfield.erode(hf,{iterations:90000,seed:3,spawnAbove:0,jobs:KE.jobs}));
+if(cpu)cpu.dispose();
 KE.Heightfield.thermalErode(hf,{iterations:3,talus:1.1});
 /* The river: from the northern mountains down to the bay. Its profile falls monotonically and stays below the ground;
    carving cuts the bed, a low bank and valley walls, and marks the bed so the biome painter lays gravel there. */
@@ -101,7 +104,7 @@ const pipeline=new KE.Pipeline(T,renderer,{sun,exposureKey:.2,minExposure:.3,max
 /* ---------- forests streamed in cells, impostors beyond ---------- */
 status('Growing forests',.74);await nextFrame();
 const merge=g=>{const m=T.BufferGeometryUtils.mergeBufferGeometries([g.trunk,g.leaves],true);g.trunk.dispose();g.leaves.dispose();return m;};
-const EPIC=S.preset==='epic',lod=EPIC?1:Math.min(.8,Math.max(.35,(S.lod||1)*.5)),texSize=S.preset==='low'?256:EPIC?1024:512,kit=[];   // Epic: full-detail trees and 1024² leaf/bark atlases
+const EPIC=S.preset==='epic',lod=EPIC?.72:Math.min(.8,Math.max(.35,(S.lod||1)*.5)),texSize=S.preset==='low'?256:EPIC?1024:512,kit=[];   // Epic: denser trees and 1024² leaf/bark atlases (full detail everywhere measured 177M triangles a frame)
 /* Japanese forest: tall cedars (sugi) from the valleys to the volcano's flanks, evergreen broadleaf and red maples
    lower down, sakura near the river, and bamboo in groves. A point picks a species first and is dropped outside
    that species' band, so the bands overlap widely. */
@@ -130,15 +133,15 @@ const clear=(x,z,bank)=>(x-spawn.x)**2+(z-spawn.z)**2>196&&(x-landmark.x)**2+(z-
 const scatterOpts={cellSize:128,terrain,spacing:({low:9.5,medium:8})[S.preset]||7,density,seed:SEED,waterLevel:.6,castShadow:true,receiveShadow:true,filter:(x,y,z,ti)=>clear(x,z,3)&&(grove(x,z)<=GROVE||types[ti].name==='bush')&&(!inView(x,z)||types[ti].name==='bush'||types[ti].name==='rock')};
 /* bamboo stands stream in their own 64 m cells within a short radius (impostors beyond): a stand is ~10k triangles */
 const bambooOpts={cellSize:64,terrain,spacing:6,density:(x,z)=>grove(x,z)>GROVE?1:0,seed:SEED+2,waterLevel:.6,castShadow:true,receiveShadow:true,filter:(x,y,z)=>clear(x,z,1.5)};
-const wp=new KE.WorldPartition({cellSize:128,loadRadius:({low:70,medium:90,high:120,ultra:160,epic:240,cinematic:200})[S.preset]||120,budgetMs:3,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
+const wp=new KE.WorldPartition({cellSize:128,loadRadius:({low:70,medium:90,high:120,ultra:160,epic:180,cinematic:200})[S.preset]||120,budgetMs:3,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
   load:cell=>{const g=KE.scatterCell(T,{...scatterOpts,cell,types});scene.add(g);return g;},
   unload:(cell,g)=>{if(g)g.userData.dispose();},
   hlod:proxyTypes.some(Boolean)?cell=>{const list=proxyTypes.map((p,i)=>p||{...types[i],geometry:types[i].geometry,material:types[i].material,density:0});const g=KE.scatterCell(T,{...scatterOpts,cell,types:list,castShadow:false});scene.add(g);return {dispose(){g.userData.dispose();}};}:null,
   hlodRadius:({low:520,medium:720,high:950,ultra:1100,epic:1400,cinematic:1200})[S.preset]||950});
-const bamboo=bambooTypes.length?new KE.WorldPartition({cellSize:64,loadRadius:({low:36,medium:48,high:64,ultra:84,epic:130,cinematic:104})[S.preset]||64,budgetMs:2,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
+const bamboo=bambooTypes.length?new KE.WorldPartition({cellSize:64,loadRadius:({low:36,medium:48,high:64,ultra:84,epic:96,cinematic:104})[S.preset]||64,budgetMs:2,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
   load:cell=>{const g=KE.scatterCell(T,{...bambooOpts,cell,types:bambooTypes});scene.add(g);return g;},unload:(cell,g)=>{if(g)g.userData.dispose();},
   hlod:bambooProxy[0]?cell=>{const g=KE.scatterCell(T,{...bambooOpts,cell,types:[bambooProxy[0]],castShadow:false});scene.add(g);return {dispose(){g.userData.dispose();}};}:null,hlodRadius:({low:220,medium:320,high:450,ultra:550,epic:750,cinematic:600})[S.preset]||450}):null;
-const csm=new KE.CascadedShadows(T,scene,{sun,maxFar:EPIC?420:220,margin:EPIC?120:80});csm.setupScene();
+const csm=new KE.CascadedShadows(T,scene,{sun,maxFar:EPIC?300:220,margin:EPIC?100:80});csm.setupScene();
 for(const t of [...types,...bambooTypes])for(const m of [t.material].flat())csm.setupMaterial(m);
 pipeline.setShadowSource(csm);if(KE.foliage)KE.foliage.setShadowSource(csm);
 
@@ -222,7 +225,7 @@ const coverTypes=[];if(KE.fernClump){const fernMat=KE.foliageMaterial(T,{vertexC
   for(const [hex,w] of [[0xe86a9a,.35],[0xf2c14e,.35],[0xf4f0e0,.3]]){const fm=new T.MeshStandardMaterial({vertexColors:true,roughness:.7,side:T.DoubleSide,color:new T.Color(hex)});if(KE.foliage)KE.foliage.applyWind(T,fm,{windAttribute:true});const fg=KE.flowerHead(T,{seed:hex&255});coverKit.push(fm,fg);
     coverTypes.push({name:'flower',geometry:fg,material:fm,weight:w*1.6,scale:[1.3,2.1],height:[1.4,70],slope:[0,.5],castShadow:false});}}
 const coverNoise=KE.noise2D(SEED+23);
-const cover=coverTypes.length?new KE.WorldPartition({cellSize:32,loadRadius:[28,40,52,80][coverTier],budgetMs:2,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
+const cover=coverTypes.length?new KE.WorldPartition({cellSize:32,loadRadius:[28,40,52,66][coverTier],budgetMs:2,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
   load:cell=>{const g=KE.scatterCell(T,{cell,cellSize:32,terrain,spacing:2.4,density:(x,z)=>coverNoise(x*.02,z*.02)>-.35?.6:.15,seed:SEED+5,waterLevel:1.2,castShadow:false,receiveShadow:true,types:coverTypes});scene.add(g);return g;},
   unload:(cell,g)=>{if(g)g.userData.dispose();}}):null;
 
@@ -290,7 +293,7 @@ const loop=new KE.Loop({onError:fail,update(dt){
   if(++frame%15===0){const st=terrain.stats(),ws=wp.stats(),r=renderer.info.render;$('stats').textContent=`${fps} FPS · ${S.preset}${pipeline.enabled?' · Tenko '+pipeline.stats.passes+' passes':''}\n${r.calls} draws · ${(r.triangles/1e6).toFixed(2)}M tris · terrain ${st.patches} patches in ${st.drawCalls} draw\ncells ${ws.loaded} loaded · ${ws.hlod} impostor · alt ${(flying?camera.position.y:player.y).toFixed(0)} m${boating?' · boat '+(Math.abs(drive.speed)*3.6).toFixed(0)+' km/h':''}`;}
  }});loop.start();
 
-window.demo={KE,loop,renderer,scene,camera,terrain,heightfield:hf,partition:wp,player,sky,water,river,boats,torii,jetty,daisugi,bambooPartition:bamboo,volcano:FUJI,spawn,grove:groveAt,landmark,board,ashore,boating:()=>boating,boatState:()=>({...drive}),setBoatState:o=>Object.assign(drive,o),waterUnder,csm,pipeline:()=>pipeline,fox,gait,fur,vfx,sound,weather,
+window.demo={KE,loop,cpuThreads:threads,loadTimes,renderer,scene,camera,terrain,heightfield:hf,partition:wp,player,sky,water,river,boats,torii,jetty,daisugi,bambooPartition:bamboo,volcano:FUJI,spawn,grove:groveAt,landmark,board,ashore,boating:()=>boating,boatState:()=>({...drive}),setBoatState:o=>Object.assign(drive,o),waterUnder,csm,pipeline:()=>pipeline,fox,gait,fur,vfx,sound,weather,
  getState:()=>({x:player.x,z:player.z,y:player.y,day,flying,raining,cells:wp.stats().loaded}),setDay,setRain,setFly,
  flyTo(x,y,z,yaw=fly.yaw,pitch=fly.pitch){setFly(true);fly.pos.set(x,y,z);fly.yaw=yaw;fly.pitch=pitch;},
  teleport(x,z){if(boating){const b=boating;b.mode=waterUnder(drive.x,drive.z,b.draft)&&waterUnder(drive.x,drive.z,b.draft).river?'moored':'sea';b.x=drive.x;b.z=drive.z;b.y=drive.y;b.yaw=drive.heading;boating=null;if(wakeFx)wakeFx.stop();follow.distance=7.5;follow.height=1.1;$('board').textContent='⛵ Board (E)';}player.x=x;player.z=z;player.y=ground(x,z)+.5;player.vx=player.vz=player.vy=0;follow.initialized=false;if(gait)gait.reset();},

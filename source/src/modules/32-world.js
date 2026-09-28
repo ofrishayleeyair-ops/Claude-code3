@@ -147,9 +147,18 @@ function* generateSteps(o,hf,fn){const s=hf.size,d=hf.data,sp=hf.spacing;
 Heightfield.terrainFunction=terrainFunction;
 /* generate(opts) -> Heightfield (synchronous) or, with opts.jobs (a KE.Jobs queue), a promise resolved when
    the rows have been produced under that queue's frame budget. */
+/* Options that can cross into a worker: numbers, booleans, strings and number arrays (functions such as a custom falloff
+   keep the work on the main thread). */
+const plainOptions=o=>{const out={};for(const [k,v] of Object.entries(o||{})){if(typeof v==='number'||typeof v==='boolean'||typeof v==='string'||(Array.isArray(v)&&v.every(x=>typeof x==='number')))out[k]=v;else if(typeof v==='function'&&k!=='jobs')return null;}return out;};
+/* Rows split into bands, one task per band, spread over the pool; the result is identical to the single-threaded bake. */
+async function generateParallel(o,hf,pool){const size=hf.size,worldSize=hf.worldSize,sp=hf.spacing,base=plainOptions(o),bands=Math.min(size,pool.size*4),tasks=[];
+  const fo={...base,worldSize,centerX:hf.originX+worldSize/2,centerZ:hf.originZ+worldSize/2};
+  for(let b=0;b<bands;b++){const j0=Math.floor(b*size/bands),j1=Math.floor((b+1)*size/bands);if(j1>j0)tasks.push(pool.run('rows',{o:fo,j0,j1,size,originX:hf.originX,originZ:hf.originZ,sp}).then(out=>hf.data.set(out,j0*size)));}
+  await Promise.all(tasks);hf.recomputeRange();hf.version++;return hf;}
 Heightfield.generate=(o={})=>{
   const size=o.size||1024,worldSize=o.worldSize||2048;
   const hf=new Heightfield({size,worldSize,originX:o.originX,originZ:o.originZ});
+  if(o.workers&&o.workers.size>0&&plainOptions(o))return generateParallel(o,hf,o.workers);
   const fn=terrainFunction({...o,worldSize,centerX:hf.originX+worldSize/2,centerZ:hf.originZ+worldSize/2}),steps=generateSteps(o,hf,fn);
   if(o.jobs)return o.jobs.add(steps,{name:'heightfield.generate',priority:o.priority||0});
   let r;do r=steps.next();while(!r.done);return hf;
@@ -226,14 +235,14 @@ function* erodeSteps(hf,o){
   const S=hf.size,N=S*S,src=hf.data,lo=hf.minHeight,H=o.heightScale||Math.max(1e-6,hf.maxHeight-hf.minHeight);
   const iterations=Math.max(0,Math.round(o.iterations===undefined?80000:o.iterations)),rnd=KE.random((o.seed===undefined?1:o.seed)>>>0);
   const sim=clamp(Math.round(o.simSize===undefined?Math.min(S,385):o.simSize),16,S),stats={eroded:0,lost:0,lifetime:0};
-  const po={...o,_spawnMin:o.spawnAbove===undefined?-Infinity:(o.spawnAbove-lo)/H};
+  const po={...o,_spawnMin:o.spawnAbove===undefined?-Infinity:(o.spawnAbove-lo)/H},seed=(o.seed===undefined?1:o.seed)>>>0,pool=o._pool&&plainOptions(o)?o._pool:null;
   const flow=o.masks===false?null:(hf.masks&&hf.masks.flow&&hf.masks.flow.length===N?hf.masks.flow:new Float32Array(N));
   const change=new Float32Array(N),passes=o.smoothing===undefined?2:Math.max(0,o.smoothing|0);let simCell=1;
   if(sim<S){
     // coarse pass: resample, simulate, upsample the change with exact volume correction
     const M=sim*sim,map=new Float32Array(M),f=(S-1)/(sim-1),cflow=flow?new Float32Array(M):null;simCell=f*f;
     for(let j=0;j<sim;j++)for(let i=0;i<sim;i++)map[j*sim+i]=(bilinearGrid(src,S,i*f,j*f)-lo)/H;
-    const before=new Float32Array(map);yield* dropletPass(map,sim,po,rnd,cflow,iterations,stats);
+    const before=new Float32Array(map);if(pool)yield dropletsParallel(pool,map,sim,po,cflow,iterations,stats,seed);else yield* dropletPass(map,sim,po,rnd,cflow,iterations,stats);
     const cch=new Float32Array(M);let target=0;for(let i=0;i<M;i++){cch[i]=map[i]-before[i];target+=cch[i];}
     if(passes)blurChange(cch,sim,passes);yield .9;
     let sum=0,abs=0;const inv=1/f;
@@ -245,16 +254,27 @@ function* erodeSteps(hf,o){
   }
   const detail=sim<S?Math.max(0,Math.round(o.detailIterations||0)):iterations;
   if(detail>0){const map=new Float32Array(N);for(let i=0;i<N;i++)map[i]=(src[i]-lo)/H+change[i];const before=new Float32Array(map);
-    yield* dropletPass(map,S,{...po,lifetime:o.detailLifetime||o.lifetime},rnd,flow,detail,stats);const fch=new Float32Array(N);for(let i=0;i<N;i++)fch[i]=map[i]-before[i];
+    const dpo={...po,lifetime:o.detailLifetime||o.lifetime};if(pool)yield dropletsParallel(pool,map,S,dpo,flow,detail,stats,(seed^0x9e3779b9)>>>0);else yield* dropletPass(map,S,dpo,rnd,flow,detail,stats);const fch=new Float32Array(N);for(let i=0;i<N;i++)fch[i]=map[i]-before[i];
     if(passes)blurChange(fch,S,sim<S?1:passes);for(let i=0;i<N;i++)change[i]+=fch[i];}
   yield 1;
   const delta=o.masks===false?null:(hf.masks&&hf.masks.delta&&hf.masks.delta.length===N?hf.masks.delta:new Float32Array(N));
   for(let i=0;i<N;i++){const v=src[i]+change[i]*H;if(delta)delta[i]+=v-src[i];src[i]=v;}
   if(flow||delta)hf.masks={...(hf.masks||{}),flow,delta};
-  const cell=hf.spacing*hf.spacing;hf.erosionStats={droplets:iterations,detailDroplets:sim<S?detail:0,simSize:sim,erodedVolume:stats.eroded*H*cell,lostVolume:stats.lost*H*cell,lifetime:stats.lifetime};
+  const cell=hf.spacing*hf.spacing;hf.erosionStats={droplets:iterations,detailDroplets:sim<S?detail:0,simSize:sim,erodedVolume:stats.eroded*H*cell,lostVolume:stats.lost*H*cell,lifetime:stats.lifetime,parallel:stats.parallel||null};
   hf.recomputeRange();hf.version++;return hf;
 }
-Heightfield.erode=(hf,o={})=>{const steps=erodeSteps(hf,o);if(o.jobs)return o.jobs.add(steps,{name:'heightfield.erode',priority:o.priority||0});let r;do r=steps.next();while(!r.done);return hf;};
+/* Parallel droplets: `rounds` rounds; in each, every worker runs its share of droplets on a copy of the current map and
+   returns its height change, and the changes are summed before the next round, so later droplets follow the channels
+   earlier rounds cut. Droplets in the same round do not see each other, so the result is statistically like the serial
+   simulation rather than identical to it. */
+async function dropletsParallel(pool,map,S,po,flow,iterations,stats,seed){const W=pool.size,rounds=Math.max(4,Math.min(16,Math.round(iterations/6000))),per=Math.max(1,Math.floor(iterations/(rounds*W))),opts=plainOptions(po)||{};
+  for(let r=0;r<rounds;r++){const res=await Promise.all(Array.from({length:W},(_,w)=>{const m=map.slice();return pool.run('erode',{map:m,S,o:opts,seed:hashInts(seed,r+1,w+1),iterations:per,flow:!!flow},[m.buffer]);}));
+    for(const t of res){const d=t.delta;for(let i=0;i<d.length;i++)map[i]+=d[i];if(flow&&t.flow)for(let i=0;i<flow.length;i++)flow[i]+=t.flow[i];stats.eroded+=t.eroded;stats.lost+=t.lost;stats.lifetime=t.lifetime;}}
+  stats.parallel={workers:W,rounds,dropletsPerTask:per};}
+Heightfield.erode=(hf,o={})=>{
+  if(o.workers&&o.workers.size>0){/* async path: run the steps, awaiting the parallel droplet rounds */
+    return (async()=>{const steps=erodeSteps(hf,{...o,_pool:o.workers});let r;while(!(r=steps.next()).done)if(r.value&&typeof r.value.then==='function')await r.value;return hf;})();}
+  const steps=erodeSteps(hf,o);if(o.jobs)return o.jobs.add(steps,{name:'heightfield.erode',priority:o.priority||0});let r;do r=steps.next();while(!r.done);return hf;};
 
 /* ---------- thermal erosion ----------
    Talus relaxation: wherever the drop to an 8-neighbour exceeds talus * distance, a fraction of the largest
@@ -346,6 +366,24 @@ Heightfield.biomes=(a,b,c)=>{
   return t;
 };
 KE.Heightfield=Heightfield;
+/* A worker pool whose kernel is this module's own noise, landscape function and droplet simulation (their source
+   text), sized to the CPU (up to 64 threads). Pass it as {workers} to generate() and erode(); dispose it when done. */
+Heightfield.workers=(o={})=>new KE.WorkerPool(`'use strict';const clamp=${clamp};const smooth=${smooth};const hashInts=${hashInts};const KE={random:${KE.random}};
+${makeNoise}
+const ND=new Float64Array(2);
+${noise2}
+${fbm}
+${erodedFbm}
+${ridgedFbm}
+${terrainFunction}
+${dropletPass}
+${depositAt}
+const TASKS={
+  rows(a){const fn=terrainFunction(a.o),out=new Float32Array((a.j1-a.j0)*a.size);for(let j=a.j0;j<a.j1;j++){const z=a.originZ+j*a.sp,row=(j-a.j0)*a.size;for(let i=0;i<a.size;i++)out[row+i]=fn(a.originX+i*a.sp,z);}return {out,transfer:[out.buffer]};},
+  erode(a){const map=a.map,before=map.slice(),flow=a.flow?new Float32Array(map.length):null,stats={eroded:0,lost:0,lifetime:0},it=dropletPass(map,a.S,a.o,KE.random(a.seed),flow,a.iterations,stats);while(!it.next().done);
+    for(let i=0;i<map.length;i++)map[i]-=before[i];return {out:{delta:map,flow,...stats},transfer:flow?[map.buffer,flow.buffer]:[map.buffer]};}
+};
+${KE.WorkerPool.dispatcher}`,o);
 KE.noise2D=(seed=1)=>{const n=makeNoise(seed);return (x,y)=>noise2(n,x,y);};
 
 /* ---------- GPU CDLOD terrain ----------

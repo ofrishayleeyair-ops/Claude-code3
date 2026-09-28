@@ -7,7 +7,7 @@ const clamp=KE.clamp;
 Object.assign(KE,{name:'kitsune enginev3',version:'3.0.0',edition:'Tenko',previousVersion:'2.1.0'});
 KE.modules={};
 KE.registerModule=(name,info={})=>(KE.modules[name]={name,version:KE.version,...info});
-KE.registerModule('core-v3',{provides:['capabilities','settings','cvars','jobs','profiler','sceneUniforms','FullScreenQuad','GLSL']});
+KE.registerModule('core-v3',{provides:['capabilities','settings','cvars','jobs','profiler','sceneUniforms','FullScreenQuad','GLSL','WorkerPool']});
 
 /* Render layers. Objects on TRANSLUCENT are drawn after the opaque scene has been copied, so their
    shaders may sample KE.sceneUniforms scene color/depth (water, soft particles, refraction). */
@@ -176,6 +176,30 @@ KE.GPUTimer=class{
 KE.GPUTimer.instances=new Set();KE.GPUTimer.enabledAll=false;
 KE.GPUTimer.setEnabled=v=>{KE.GPUTimer.enabledAll=!!v;for(const t of KE.GPUTimer.instances){t.enabled=!!v;if(!v)t.reset();}return !!v;};
 KE.cvars.register('r.ProfileGPU',{type:'boolean',help:'Per-pass GPU timings through timer queries (see stat gpu)',get:()=>KE.GPUTimer.enabledAll,set:v=>KE.GPUTimer.setEnabled(v)});
+
+/* ---------- worker pool ----------
+   Runs named tasks on every CPU thread the browser reports (navigator.hardwareConcurrency, minus one for the main
+   thread, capped at 64). The worker script is built from source text in a Blob URL, so it works from a single
+   offline file (file://). Tasks are plain functions of structured-cloneable arguments; results come back through
+   postMessage with transferable buffers. Modules build their own pool from self-contained kernel functions
+   (for example KE.Heightfield.workers()). If workers cannot start (old browser, policy), size is 0 and callers
+   fall back to the main thread. */
+KE.cpuThreads=()=>Math.max(1,(typeof navigator!=='undefined'&&navigator.hardwareConcurrency)||4);
+KE.WorkerPool=class{
+  constructor(source,{size=null,max=64}={}){this.size=0;this.workers=[];this.idle=[];this.queue=[];this.pending=new Map();this._id=0;this.url=null;this.tasksRun=0;
+    const want=Math.max(0,Math.min(max,size!=null?size:KE.cpuThreads()-1));if(!want||typeof Worker==='undefined'||typeof Blob==='undefined')return;
+    try{this.url=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));for(let i=0;i<want;i++){const w=new Worker(this.url);w.onmessage=e=>this._done(w,e.data);w.onerror=e=>{e.preventDefault&&e.preventDefault();this._crash(w,e);};this.workers.push(w);this.idle.push(w);}}
+    catch(e){for(const w of this.workers)w.terminate();this.workers=[];this.idle=[];if(this.url)URL.revokeObjectURL(this.url);this.url=null;}
+    this.size=this.workers.length;}
+  /* run(task, args, transfer) → Promise of the task's result. */
+  run(task,args,transfer=[]){if(!this.size)return Promise.reject(new Error('KE.WorkerPool: no workers'));return new Promise((resolve,reject)=>{this.queue.push({task,args,transfer,resolve,reject});this._pump();});}
+  _pump(){while(this.idle.length&&this.queue.length){const w=this.idle.pop(),j=this.queue.shift(),id=++this._id;this.pending.set(id,j);w._job=id;try{w.postMessage({id,task:j.task,args:j.args},j.transfer);}catch(e){this.pending.delete(id);w._job=null;this.idle.push(w);j.reject(e);}}}
+  _done(w,d){const j=this.pending.get(d.id);this.pending.delete(d.id);w._job=null;this.idle.push(w);this.tasksRun++;if(j){if(d.error)j.reject(new Error(d.error));else j.resolve(d.result);}this._pump();}
+  _crash(w,e){const j=this.pending.get(w._job);if(j){this.pending.delete(w._job);j.reject(new Error('KE.WorkerPool: worker error '+(e&&e.message||'')));}w._job=null;this.idle.push(w);this._pump();}
+  dispose(){for(const w of this.workers)w.terminate();for(const j of this.pending.values())j.reject(new Error('KE.WorkerPool disposed'));for(const j of this.queue)j.reject(new Error('KE.WorkerPool disposed'));this.pending.clear();this.queue=[];this.workers=[];this.idle=[];this.size=0;if(this.url)URL.revokeObjectURL(this.url);this.url=null;}
+};
+/* Worker boilerplate: TASKS is an object of name → (args) => ({out, transfer}) defined by the kernel source. */
+KE.WorkerPool.dispatcher="onmessage=e=>{const {id,task,args}=e.data;try{const r=TASKS[task](args);postMessage({id,result:r.out},r.transfer||[]);}catch(err){postMessage({id,error:String(err&&err.stack||err)});}};";
 
 /* ---------- shared scene uniforms ---------- */
 /* One set of uniform objects shared by reference across materials. KE.Pipeline fills them each frame;

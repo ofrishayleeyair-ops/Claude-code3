@@ -164,6 +164,13 @@ async function browserTests(){
   check('sculpt flatten/smooth/lower and setHeightRegion',Math.abs(misc.flatten-3)<.01&&misc.region===42,{flatten:misc.flatten,region:misc.region});
   check('erosion is time-sliceable through KE.jobs and deterministic',misc.jobs.same&&misc.jobs.resolved&&misc.jobs.runs>3,misc.jobs);
 
+  const par=await page.evaluate(async()=>{const KE=W.KE,H=KE.Heightfield,o={size:257,worldSize:1024,seed:5,islands:true,amplitude:120};const pool=H.workers({size:3});const out={workers:pool.size};
+    const a=H.generate(o),b=await H.generate({...o,workers:pool});let maxd=0;for(let i=0;i<a.data.length;i++)maxd=Math.max(maxd,Math.abs(a.data[i]-b.data[i]));out.maxDiff=maxd;
+    const fnOk=H.generate({...o,workers:pool,falloff:()=>1});out.fnFallbackSync=!(fnOk&&typeof fnOk.then==='function');
+    const v0=b.volume(),e=await H.erode(b,{iterations:12000,seed:3,workers:pool});out.vol=+(e.volume()/v0).toFixed(5);out.parallel=e.erosionStats.parallel;out.eroded=e.erosionStats.erodedVolume>0;
+    let changed=0;for(let i=0;i<a.data.length;i++)if(Math.abs(a.data[i]-e.data[i])>1e-3)changed++;out.changed=changed;out.flow=!!(e.masks&&e.masks.flow);out.tasks=pool.tasksRun;pool.dispose();out.disposed=pool.size===0;return out;});
+  check('worker pool: parallel generation equals the single-threaded bake; parallel erosion conserves volume and carves',par.workers>0&&par.maxDiff===0&&par.parallel&&par.parallel.workers===par.workers&&par.fnFallbackSync&&Math.abs(par.vol-1)<.002&&par.eroded&&par.changed>1000&&par.flow&&par.disposed,par);
+
   const sc=await page.evaluate(()=>{const {T,KE,renderer,scene,camera,terrain,hf}=W;
     const part=(g,hex)=>{const c=new T.Color(hex),n=g.attributes.position.count,a=new Float32Array(n*3);for(let i=0;i<n;i++){a[i*3]=c.r;a[i*3+1]=c.g;a[i*3+2]=c.b;}g.setAttribute('color',new T.BufferAttribute(a,3));return g;};
     const pine=T.BufferGeometryUtils.mergeBufferGeometries([part(new T.CylinderGeometry(.22,.34,2.6,6).translate(0,1.3,0),0x5a4030),part(new T.ConeGeometry(2.3,5.5,8).translate(0,4.6,0),0x2c5226),

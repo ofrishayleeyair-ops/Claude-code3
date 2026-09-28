@@ -90,6 +90,23 @@ In this repository's test (headless Chromium with software WebGL, shared 4-CPU m
 
 `KE.Heightfield.biomes(hf, options)` (or `biomes(THREE, hf, options)`) returns an RGBA8 `DataTexture` of splat weights per sample: R grass, G sand, B rock, A snow, and dirt as the remainder (1 − r − g − b − a). Without `THREE` it returns `{data, size, layers}`. Rules: sand on low flat ground near and below the water line; rock on steep or convex ground and on steep ground above the snow line; snow above a noisy snow line where it is flat enough to settle; dirt in erosion channels and deposition fans, on dry mid slopes and in the alpine band; grass elsewhere. Options: `waterLevel` 0, `beachHeight`, `snowLine`, `alpineLine`, `rockSlope` [.55, .95], `snowSlope` [.55, 1.1] (slope range over which snow slides off), `snowOverRock` false (above the snow line snow covers rock instead of rock winning on steep ground, for a snow-capped volcano), `moistureScale` 260, `seed`, and 0–1 multipliers `dirt`, `sand`, `snow`, `rock`. `GPUTerrain` passes `biomeOptions` through. `texture.userData.update(i0, j0, i1, j1)` reclassifies a sample rectangle with the thresholds captured at creation.
 
+### Using every CPU core
+
+`KE.Heightfield.workers({size})` returns a `KE.WorkerPool` whose workers run this module's own noise, landscape function and droplet simulation (built from their source text into a Blob URL, so it works from a single offline file). By default it has one worker per CPU thread the browser reports, minus one for the main thread, capped at 64 (`KE.cpuThreads()` reads `navigator.hardwareConcurrency`). Pass it as `workers`:
+
+```js
+const pool = KE.Heightfield.workers();                          // e.g. 11 workers on a 12-thread Ryzen 5
+const hf = await KE.Heightfield.generate({...options, workers: pool});   // identical to the single-threaded bake
+await KE.Heightfield.erode(hf, {iterations: 90000, seed: 3, workers: pool});
+pool.dispose();
+```
+
+`generate` splits the rows into bands (four per worker) and the result is bit-for-bit the same as without workers; options that are functions (such as a custom `falloff`) keep the work on the main thread. `erode` runs the droplet simulation in rounds: in each round every worker runs its share of droplets on a copy of the current map (the coarse map, then the full-resolution detail pass) and returns its height change, and the changes are summed before the next round, so later droplets follow channels cut by earlier rounds. Droplets in the same round do not see each other, so the result is statistically like the serial simulation rather than identical (volume is conserved the same way); `hf.erosionStats.parallel` reports `{workers, rounds, dropletsPerTask}`. The upsampling and blur stay on the main thread, and so does erosion with function-valued options. If workers cannot start, `pool.size` is 0; check it and fall back to `jobs`.
+
+Texture painting (`KE.paintTile`, the ground painter, leaf atlases) draws on CPU-backed canvases (`willReadFrequently`), because reading back a GPU-backed canvas was the largest load cost. `KE.boatModel` shares its painted wood and roof tiles between boats (a few seed variants, released when the last boat using one is disposed).
+
+`new KE.WorkerPool(source, {size, max:64})` is the general pool (in `00-core-v3`): `run(task, args, transfer)` returns a promise; the source defines `TASKS` (name → `args => ({out, transfer})`) and ends with `KE.WorkerPool.dispatcher`. `tasksRun`, `size`, `dispose()`.
+
 ### Heightfield instance
 
 Fields: `data`, `size`, `worldSize`, `spacing`, `originX`, `originZ`, `minHeight`, `maxHeight`, `masks`, `version` (incremented by every edit), `erosionStats`. Methods: `heightAt(x,z)` (bilinear, clamped at the edges), `gradientAt(x,z,out)`, `normalAt(x,z,out)`, `slopeAt(x,z)` (|∇h|, 1 = 45°), `sample(i,j)`, `contains(x,z)`, `clone()`, `volume()`, `recomputeRange()`, `toTexture(THREE, {format:'auto'|'float'|'half'|'rgba8', renderer})` (nearest-filtered; `'float'` shares `data`). `KE.noise2D(seed)` exposes the seeded gradient noise.

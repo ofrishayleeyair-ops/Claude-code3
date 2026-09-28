@@ -246,9 +246,14 @@ KE.River=class{
    roofed cabin and paper lanterns (emissive) along the eaves. The hull is lofted from cross-sections (outer and
    inner skins, gunwale rim, transom); planks come from the wood tile running along the hull. Local frame: +x bow,
    y up, waterline at y = draft. Returns {group, length, width, draft, materials, dispose}. */
+/* painted tiles shared between boats (a few seed variants, reference counted): painting is the slow part of a boat */
+const tileCache=new Map();
+const sharedTile=(THREE,kind,size,seed)=>{const key=kind+'|'+size+'|'+seed;let e=tileCache.get(key);
+  if(!e){const tex=KE.paintTile(THREE,kind,size,seed);tex.encoding=THREE.sRGBEncoding;tex.wrapS=tex.wrapT=THREE.RepeatWrapping;e={tex,refs:0};tileCache.set(key,e);}
+  e.refs++;let done=false;return {tex:e.tex,release(){if(done)return;done=true;if(--e.refs<=0){e.tex.dispose();tileCache.delete(key);}}};};
 KE.boatModel=(THREE,o={})=>{
   const style=o.style||'wasen',yak=style==='yakatabune',L=o.length||(yak?9.5:5.6),W=o.width||(yak?2.3:1.35),D=o.depth||(yak?.75:.55),r=KE.random((o.seed||1)*977+17),th=.035,N=18;
-  const woodTex=KE.paintTile(THREE,'wood',o.textureSize||256,(o.seed||1)*13+5);woodTex.encoding=THREE.sRGBEncoding;woodTex.wrapS=woodTex.wrapT=THREE.RepeatWrapping;
+  const wood=sharedTile(THREE,'wood',o.textureSize||256,((o.seed||1)%3)*13+5),woodTex=wood.tex,tiles=[wood];
   const tone=new THREE.Color(o.color||(yak?0x9a7650:0x8b6b4a)),outer=new THREE.MeshStandardMaterial({map:woodTex,color:tone,roughness:.82}),inner=new THREE.MeshStandardMaterial({map:woodTex,color:tone.clone().multiplyScalar(.78),roughness:.88,side:THREE.DoubleSide});
   const group=new THREE.Group();group.name='ke-boat-'+style;const mats=[outer,inner],geos=[];
   const hw=t=>W/2*Math.min(1,.8+.4*t)*(1-.97*Math.pow(rsmooth(.6,1,t),1.5)),top=t=>D+D*.8*Math.pow(rsmooth(.55,1,t),2)+(yak?0:D*.12*Math.pow(1-t,3)),bot=t=>D*.55*Math.pow(rsmooth(.68,1,t),2)+.04*Math.pow(1-t,6);
@@ -266,7 +271,7 @@ KE.boatModel=(THREE,o={})=>{
   const box=(sx,sy,sz,x,y,z,m=inner)=>{const g=new THREE.BoxGeometry(sx,sy,sz);g.translate(x,y,z);return add(g,m);};
   for(const t of yak?[.2,.45,.7]:[.3,.62])box(.16,.04,hw(t)*2-.08,-L/2+t*L,top(t)-.12,0);
   if(yak){/* cabin: posts, a gently arched roof with overhanging eaves, and paper lanterns */
-    const roofTex=KE.paintTile(THREE,'roof',256,(o.seed||1)*7+3);roofTex.encoding=THREE.sRGBEncoding;const roofMat=new THREE.MeshStandardMaterial({map:roofTex,color:0x5b5750,roughness:.75,side:THREE.DoubleSide}),lamp=new THREE.MeshStandardMaterial({color:0xf6dcc0,emissive:0xff6a2a,emissiveIntensity:o.lanterns===false?0:1.6,roughness:.9});mats.push(roofMat,lamp);
+    const roof=sharedTile(THREE,'roof',256,((o.seed||1)%2)*7+3),roofTex=roof.tex;tiles.push(roof);const roofMat=new THREE.MeshStandardMaterial({map:roofTex,color:0x5b5750,roughness:.75,side:THREE.DoubleSide}),lamp=new THREE.MeshStandardMaterial({color:0xf6dcc0,emissive:0xff6a2a,emissiveIntensity:o.lanterns===false?0:1.6,roughness:.9});mats.push(roofMat,lamp);
     const x0=-L*.3,x1=L*.28,cw=W*.46,ph=1.45,base=top(.5)-.1;
     for(const x of [x0,(x0+x1)/2,x1])for(const z of [-cw,cw])box(.09,ph,.09,x,base+ph/2,z);
     const rg=new THREE.PlaneGeometry(x1-x0+1.1,cw*2+.9,10,6),rp=rg.attributes.position;for(let i=0;i<rp.count;i++){const y=rp.getY(i);rp.setZ(i,-(y*y)*.28);}rg.computeVertexNormals();rg.rotateX(-Math.PI/2);rg.translate((x0+x1)/2,base+ph+.18,0);add(rg,roofMat);
@@ -282,7 +287,7 @@ KE.boatModel=(THREE,o={})=>{
     for(const list of byMat.values()){if(list.length<2)continue;const parts=list.map(m=>{m.updateMatrix();const g=m.geometry.clone().applyMatrix4(m.matrix);return g.index?g:g;});const merged=BU.mergeBufferGeometries(parts,false);for(const g of parts)g.dispose();if(!merged)continue;
       const mesh=new THREE.Mesh(merged,list[0].material);mesh.castShadow=list[0].castShadow;mesh.receiveShadow=true;for(const m of list)group.remove(m);group.add(mesh);geos.push(merged);}}
   return {group,style,length:L,width:W,draft,materials:mats,
-    dispose(){for(const g of geos)g.dispose();for(const m of mats)m.dispose();woodTex.dispose();group.parent&&group.parent.remove(group);}};
+    dispose(){for(const g of geos)g.dispose();for(const m of mats)m.dispose();for(const t of tiles)t.release();group.parent&&group.parent.remove(group);}};
 };
 
 KE.registerModule('water',{provides:['Water','waterWaves','River','boatModel']});

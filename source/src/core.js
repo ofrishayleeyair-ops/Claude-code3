@@ -48,14 +48,14 @@ KE.tileNoise=(x,y,S,P)=>pnz(x*P/S,y*P/S,P)*.5+pnz(x*P*2/S+17,y*P*2/S,P*2)*.3+pnz
 KE.noise=pnz;
 
 /* ---------- procedural materials ---------- */
-function canvasTex(THREE,S,draw,rep,aniso){const c=document.createElement('canvas');c.width=c.height=S;draw(c.getContext('2d'),S);const t=new THREE.CanvasTexture(c);
+function canvasTex(THREE,S,draw,rep,aniso){const c=document.createElement('canvas');c.width=c.height=S;draw(c.getContext('2d',{willReadFrequently:true}),S);const t=new THREE.CanvasTexture(c);
   t.wrapS=t.wrapT=THREE.RepeatWrapping;if(rep)t.repeat.set(rep,rep);t.anisotropy=aniso||KE.settings.aniso||1;return t;}
 KE.canvasTex=canvasTex;
 KE.MATERIAL_KINDS=['grass','sand','dirt','stone','rock','snow','ash','wood'];
 /* ---------- Genshin-style painterly ground materials (v3.1) ---------- */
 function tileCanvas(S){const c=document.createElement('canvas');c.width=c.height=S;return c;}
-function blurTile(src,px){const S=src.width,big=tileCanvas(S*3),bg=big.getContext('2d');for(let y=0;y<3;y++)for(let x=0;x<3;x++)bg.drawImage(src,x*S,y*S);
-  const out=tileCanvas(S),og=out.getContext('2d');og.filter=`blur(${px}px)`;og.drawImage(big,-S,-S);og.filter='none';return out;}
+function blurTile(src,px){const S=src.width,big=tileCanvas(S*3),bg=big.getContext('2d',{willReadFrequently:true});for(let y=0;y<3;y++)for(let x=0;x<3;x++)bg.drawImage(src,x*S,y*S);
+  const out=tileCanvas(S),og=out.getContext('2d',{willReadFrequently:true});og.filter=`blur(${px}px)`;og.drawImage(big,-S,-S);og.filter='none';return out;}
 function painter(g,S){const wrap=(x,y,r,fn)=>{for(const ox of (x<r?[0,S]:x>S-r?[0,-S]:[0]))for(const oy of (y<r?[0,S]:y>S-r?[0,-S]:[0]))fn(x+ox,y+oy);};
   return {blob(x,y,rx,ry,rot,col){wrap(x,y,Math.max(rx,ry),(X,Y)=>{g.fillStyle=col;g.beginPath();g.ellipse(X,Y,rx,ry,rot,0,Math.PI*2);g.fill();});},
     stroke(x,y,x2,y2,w,col){wrap(x,y,Math.hypot(x2-x,y2-y)+w,(X,Y)=>{g.strokeStyle=col;g.lineWidth=w;g.lineCap='round';g.beginPath();g.moveTo(X,Y);g.lineTo(X+x2-x,Y+y2-y);g.stroke();});},
@@ -63,8 +63,8 @@ function painter(g,S){const wrap=(x,y,r,fn)=>{for(const ox of (x<r?[0,S]:x>S-r?[
       wrap(cx,cy,r,(X,Y)=>{g.beginPath();pts.forEach(([px,py],i)=>{const a=px-cx+X,b=py-cy+Y;i?g.lineTo(a,b):g.moveTo(a,b);});g.closePath();g.fillStyle=col;g.fill();if(line){g.strokeStyle=line;g.lineWidth=S/256*1.5;g.stroke();}});}};}
 const hsl=(h,s,l,a=1)=>`hsla(${h},${s}%,${l}%,${a})`;
 KE.materials=(THREE,size)=>{const S=size||KE.settings.tex||256,f=S/256,R=Math.random,rr=(a,b)=>a+R()*(b-a);
-  const make=(kind)=>{let c=tileCanvas(S),g=c.getContext('2d'),P=painter(g,S);
-    const layer=(n,rmin,rmax,cols,blur)=>{const l=tileCanvas(S),lg=l.getContext('2d'),LP=painter(lg,S);for(let i=0;i<n;i++){const r=rr(rmin,rmax)*S;LP.blob(R()*S,R()*S,r,r*rr(.5,1),R()*3,cols[i%cols.length]);}g.drawImage(blur?blurTile(l,blur*f):l,0,0);};
+  const make=(kind)=>{let c=tileCanvas(S),g=c.getContext('2d',{willReadFrequently:true}),P=painter(g,S);
+    const layer=(n,rmin,rmax,cols,blur)=>{const l=tileCanvas(S),lg=l.getContext('2d',{willReadFrequently:true}),LP=painter(lg,S);for(let i=0;i<n;i++){const r=rr(rmin,rmax)*S;LP.blob(R()*S,R()*S,r,r*rr(.5,1),R()*3,cols[i%cols.length]);}g.drawImage(blur?blurTile(l,blur*f):l,0,0);};
     if(kind==='grass'){g.fillStyle='#74b243';g.fillRect(0,0,S,S);layer(160,.04,.13,[hsl(96,48,38,.55),hsl(84,58,52,.5),hsl(78,62,58,.45),hsl(104,45,33,.5)],6);
       for(let i=0;i<2600*f*f;i++){const x=R()*S,y=R()*S,l=rr(4,10)*f,dark=R()<.45;for(let k=-1;k<=1;k++){const a=-Math.PI/2+k*.35+rr(-.15,.15);P.stroke(x,y,x+Math.cos(a)*l*.5,y+Math.sin(a)*l,1.3*f,dark?hsl(104,48,30,.45):hsl(82,65,66,.5));}}
       for(let i=0;i<14;i++){const cx=R()*S,cy=R()*S,col=[hsl(0,0,98),hsl(48,95,68),hsl(330,80,82)][i%3];for(let k=0;k<5;k++)P.blob(cx+rr(-8,8)*f,cy+rr(-8,8)*f,1.6*f,1.6*f,0,col);}}
@@ -82,7 +82,7 @@ KE.materials=(THREE,size)=>{const S=size||KE.settings.tex||256,f=S/256,R=Math.ra
     else if(kind==='rock'){g.fillStyle='#857c70';g.fillRect(0,0,S,S);
       for(let i=0;i<50;i++){const x=R()*S,y=R()*S,r=rr(.06,.17)*S,k=5+Math.floor(R()*3),pts=[];for(let a=0;a<k;a++){const an=a/k*Math.PI*2+rr(-.2,.2);pts.push([x+Math.cos(an)*r*rr(.7,1.15),y+Math.sin(an)*r*rr(.45,.8)]);}
         P.poly(pts,hsl(rr(26,40),rr(8,16),rr(38,60)),hsl(25,18,28,.55));}
-      c=blurTile(c,1.3*f);g=c.getContext('2d');P=painter(g,S);
+      c=blurTile(c,1.3*f);g=c.getContext('2d',{willReadFrequently:true});P=painter(g,S);
       for(let k=0;k<7;k++){const y0=k*S/7+rr(-4,4)*f;g.strokeStyle=hsl(28,22,28,.35);g.lineWidth=2.5*f;g.beginPath();for(let x=0;x<=S;x+=8){const y=y0+Math.sin(x/S*Math.PI*2+k)*4*f;x?g.lineTo(x,y):g.moveTo(x,y);}g.stroke();
         g.strokeStyle=hsl(40,40,80,.28);g.lineWidth=1.6*f;g.beginPath();for(let x=0;x<=S;x+=8){const y=y0-3*f+Math.sin(x/S*Math.PI*2+k)*4*f;x?g.lineTo(x,y):g.moveTo(x,y);}g.stroke();}
       for(let i=0;i<70;i++){const x=R()*S,y=R()*S,a=rr(-2.6,-1.9);P.stroke(x,y,x+Math.cos(a)*rr(8,22)*f,y+Math.sin(a)*rr(8,22)*f,2.2*f,hsl(40,45,84,.35));}
@@ -95,10 +95,10 @@ KE.materials=(THREE,size)=>{const S=size||KE.settings.tex||256,f=S/256,R=Math.ra
         for(let k=0;k<14;k++){g.strokeStyle=hsl(26,40,rr(26,34),.35);g.lineWidth=1.2*f;g.beginPath();const y=j*rh+rr(4,rh-4);g.moveTo(0,y);for(let x=0;x<=S;x+=16)g.lineTo(x,y+Math.sin(x*.03+k)*2*f);g.stroke();}
         g.fillStyle=hsl(24,40,18,.8);g.fillRect(0,j*rh,S,2.5*f);g.fillStyle=hsl(36,50,70,.35);g.fillRect(0,j*rh+2.5*f,S,1.5*f);}}
     const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=KE.settings.aniso||4;
-    const d=c.getContext('2d').getImageData(0,0,S,S).data;let r=0,gg=0,b=0,n=0;for(let i=0;i<d.length;i+=64){r+=d[i];gg+=d[i+1];b+=d[i+2];n++;}t.userData=t.userData||{};t.userData.avg=[r/n/255,gg/n/255,b/n/255];return t;};
+    const d=c.getContext('2d',{willReadFrequently:true}).getImageData(0,0,S,S).data;let r=0,gg=0,b=0,n=0;for(let i=0;i<d.length;i+=64){r+=d[i];gg+=d[i+1];b+=d[i+2];n++;}t.userData=t.userData||{};t.userData.avg=[r/n/255,gg/n/255,b/n/255];return t;};
   return KE.MATERIAL_KINDS.map(make);};
 KE.splatMaterial=(THREE,mats,opts={})=>{
-  const ramp=(()=>{const c=tileCanvas(4);c.height=1;const g=c.getContext('2d');[78,150,228,255].forEach((v,i)=>{g.fillStyle=`rgb(${v},${v},${v})`;g.fillRect(i,0,1,1);});const t=new THREE.CanvasTexture(c);
+  const ramp=(()=>{const c=tileCanvas(4);c.height=1;const g=c.getContext('2d',{willReadFrequently:true});[78,150,228,255].forEach((v,i)=>{g.fillStyle=`rgb(${v},${v},${v})`;g.fillRect(i,0,1,1);});const t=new THREE.CanvasTexture(c);
     t.minFilter=t.magFilter=THREE.LinearFilter;t.generateMipmaps=false;return t;})();
   const mat=opts.flat?new THREE.MeshPhongMaterial({vertexColors:true,shininess:4,specular:0x0a0a0a}):new THREE.MeshToonMaterial({vertexColors:true,gradientMap:ramp});
   const macro=canvasTex(THREE,256,(g,s)=>{const d=g.createImageData(s,s);for(let y=0;y<s;y++)for(let x=0;x<s;x++){const v=KE.tileNoise(x,y,s,4),w=KE.tileNoise(x+71,y+13,s,16);d.data.set([v*255,w*255,KE.tileNoise(x+9,y+40,s,32)*255,255],(y*s+x)*4);}g.putImageData(d,0,0);});
@@ -124,10 +124,10 @@ diffuseColor.rgb*=pow(max(kc,vec3(0.0)),vec3(1.12))*1.18;`);};
   return mat;};
 
 /* ---------- object detail textures (grayscale, multiplied by each object's own color) ---------- */
-KE.toonRamp=(THREE)=>{if(KE._ramp)return KE._ramp;const c=tileCanvas(4);c.height=1;const g=c.getContext('2d');[88,158,230,255].forEach((v,i)=>{g.fillStyle=`rgb(${v},${v},${v})`;g.fillRect(i,0,1,1);});
+KE.toonRamp=(THREE)=>{if(KE._ramp)return KE._ramp;const c=tileCanvas(4);c.height=1;const g=c.getContext('2d',{willReadFrequently:true});[88,158,230,255].forEach((v,i)=>{g.fillStyle=`rgb(${v},${v},${v})`;g.fillRect(i,0,1,1);});
   const t=new THREE.CanvasTexture(c);t.minFilter=t.magFilter=THREE.LinearFilter;t.generateMipmaps=false;return KE._ramp=t;};
 KE.objectTextures=(THREE)=>{if(KE._objTex)return KE._objTex;const S=256,R=Math.random,rr=(a,b)=>a+R()*(b-a),out={};
-  const mk=(kind,draw)=>{const c=tileCanvas(S),g=c.getContext('2d'),P=painter(g,S);draw(g,P,c);const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=KE.settings.aniso||4;out[kind]=t;};
+  const mk=(kind,draw)=>{const c=tileCanvas(S),g=c.getContext('2d',{willReadFrequently:true}),P=painter(g,S);draw(g,P,c);const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=KE.settings.aniso||4;out[kind]=t;};
   const gray=(l,a=1)=>`hsla(0,0%,${l}%,${a})`;
   mk('plaster',(g,P,c)=>{g.fillStyle=gray(92);g.fillRect(0,0,S,S);for(let i=0;i<120;i++)P.blob(R()*S,R()*S,rr(8,30),rr(6,20),R()*3,gray(rr(82,100),.35));
     g.drawImage(blurTile(c,4),0,0);g.fillStyle=gray(62,.9);g.fillRect(0,0,S,8);g.fillRect(0,S/2-3,S,6);g.fillRect(0,0,8,S);g.fillRect(S/2-4,0,8,S);});
@@ -516,7 +516,7 @@ KE.loadVisualAssets=()=>{if(KE._visualReady)return KE._visualReady;KE._visualRea
 KE.legacyRendering={materials:KE.materials,splatMaterial:KE.splatMaterial,water:KE.water};
 // Each tile wraps every brush mark across its edges. Identical seeds repeat exactly.
 KE.paintTile=(THREE,kind,size=512,seed=7241)=>{
- const S=Math.max(64,Math.min(1024,Math.round(size))),c=document.createElement('canvas');c.width=c.height=S;const g=c.getContext('2d'),r=KE.random(seed+Array.from(kind).reduce((s,v)=>s+v.charCodeAt(0)*31,0)),f=S/512;
+ const S=Math.max(64,Math.min(1024,Math.round(size))),c=document.createElement('canvas');c.width=c.height=S;const g=c.getContext('2d',{willReadFrequently:true}),r=KE.random(seed+Array.from(kind).reduce((s,v)=>s+v.charCodeAt(0)*31,0)),f=S/512;
  const mix=(a,b,t)=>a+(b-a)*t,colors={grass:[85,113,45],sand:[194,172,121],dirt:[116,89,59],stone:[123,134,124],rock:[111,120,113],snow:[208,223,231],ash:[62,62,62],wood:[132,95,56],bark:[127,127,127],roof:[136,136,136],leaf:[183,183,183],plaster:[199,199,199],lacquer:[198,198,198]};
  const atlasIndex={grass:0,sand:1,rock:2,stone:3}[kind];
  if(KE._atlasImage&&atlasIndex!==undefined){const img=KE._atlasImage,w=img.width/2,h=img.height/2;g.drawImage(img,(atlasIndex%2)*w,Math.floor(atlasIndex/2)*h,w,h,0,0,S,S);const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.MirroredRepeatWrapping;t.anisotropy=KE.settings.aniso||4;const d=g.getImageData(0,0,S,S).data,a=[0,0,0];let n=0;for(let k=0;k<d.length;k+=64){for(let j=0;j<3;j++)a[j]+=d[k+j]/255;n++;}t.userData={avg:a.map(x=>x/n),kind,detailEdition:2,generated:true};return t;}
@@ -566,7 +566,7 @@ KE.paintTile=(THREE,kind,size=512,seed=7241)=>{
 KE.materials=(THREE,size)=>{const S=Math.max(64,Math.min(1024,Math.round(size||KE.settings.tex||512))),mats=KE.MATERIAL_KINDS.map(kind=>KE.paintTile(THREE,kind,S));
  // Raw RGBA bytes preserve all eight independent heights, including the alpha channel.
  for(const t of mats)t.wrapS=t.wrapT=THREE.MirroredRepeatWrapping;
- const packs=[];for(let group=0;group<2;group++){const bytes=new Uint8Array(S*S*4),data=mats.slice(group*4,group*4+4).map(t=>t.image.getContext('2d').getImageData(0,0,S,S).data);for(let i=0;i<S*S;i++)for(let ch=0;ch<4;ch++){const a=data[ch],k=i*4;const target=((S-1-Math.floor(i/S))*S+i%S)*4+ch;bytes[target]=Math.round(a[k]*.299+a[k+1]*.587+a[k+2]*.114);}const t=new THREE.DataTexture(bytes,S,S,THREE.RGBAFormat);t.minFilter=THREE.LinearMipmapLinearFilter;t.magFilter=THREE.LinearFilter;t.generateMipmaps=true;t.flipY=false;t.anisotropy=KE.settings.aniso||4;t.wrapS=t.wrapT=THREE.MirroredRepeatWrapping;t.needsUpdate=true;packs.push(t);}mats.heightMaps=packs;for(const t of mats)t.userData.heightMaps=packs;return mats;
+ const packs=[];for(let group=0;group<2;group++){const bytes=new Uint8Array(S*S*4),data=mats.slice(group*4,group*4+4).map(t=>t.image.getContext('2d',{willReadFrequently:true}).getImageData(0,0,S,S).data);for(let i=0;i<S*S;i++)for(let ch=0;ch<4;ch++){const a=data[ch],k=i*4;const target=((S-1-Math.floor(i/S))*S+i%S)*4+ch;bytes[target]=Math.round(a[k]*.299+a[k+1]*.587+a[k+2]*.114);}const t=new THREE.DataTexture(bytes,S,S,THREE.RGBAFormat);t.minFilter=THREE.LinearMipmapLinearFilter;t.magFilter=THREE.LinearFilter;t.generateMipmaps=true;t.flipY=false;t.anisotropy=KE.settings.aniso||4;t.wrapS=t.wrapT=THREE.MirroredRepeatWrapping;t.needsUpdate=true;packs.push(t);}mats.heightMaps=packs;for(const t of mats)t.userData.heightMaps=packs;return mats;
 };
 const keReliefGLSL=`vec3 keReliefNormal(vec3 pos,vec3 n,float h,float strength){vec3 sx=dFdx(pos),sy=dFdy(pos);vec3 r1=cross(sy,n),r2=cross(n,sx);float det=dot(sx,r1);vec3 grad=sign(det)*(dFdx(h)*r1+dFdy(h)*r2);return normalize(abs(det)*n-strength*grad);}`;
 KE.splatMaterial=(THREE,mats,o={})=>{
@@ -613,7 +613,7 @@ KE.surface=(THREE,kind,o={})=>{
 };
 // Alpha-tested leaf sprays produce irregular silhouettes rather than solid green balls.
 KE.leafSprayTexture=(THREE)=>{
- const S=256,c=document.createElement('canvas');c.width=c.height=S;const g=c.getContext('2d'),r=KE.random(312);g.clearRect(0,0,S,S);
+ const S=256,c=document.createElement('canvas');c.width=c.height=S;const g=c.getContext('2d',{willReadFrequently:true}),r=KE.random(312);g.clearRect(0,0,S,S);
  for(let branch=0;branch<7;branch++){const angle=branch/7*Math.PI*2,dx=Math.cos(angle),dy=Math.sin(angle),len=60+r()*49;g.strokeStyle='#667147';g.lineWidth=2;g.beginPath();g.moveTo(128,128);g.lineTo(128+dx*len,128+dy*len);g.stroke();for(let i=1;i<6;i++){const t=i/6,x=128+dx*len*t,y=128+dy*len*t;for(const side of [-1,1]){const a=angle+side*.9,l=12+r()*9;g.save();g.translate(x,y);g.rotate(a);const gr=g.createLinearGradient(0,-5,l,7);gr.addColorStop(0,'#e2e6b8');gr.addColorStop(.5,'#b2c184');gr.addColorStop(1,'#768953');g.fillStyle=gr;g.beginPath();g.moveTo(0,0);g.quadraticCurveTo(l*.45,-l*.46,l,0);g.quadraticCurveTo(l*.5,l*.36,0,0);g.fill();g.strokeStyle='#edf1c177';g.lineWidth=.7;g.beginPath();g.moveTo(1,0);g.lineTo(l-2,0);g.stroke();g.restore();}}}
  return new THREE.CanvasTexture(c);
 };
@@ -635,7 +635,7 @@ KE.water=(THREE,scene,o={})=>{
 
 // Small procedural sky cubemap supplies real image-based reflections to standard materials.
 KE.environment=(THREE)=>{
- const faces=[];for(let face=0;face<6;face++){const c=document.createElement('canvas');c.width=c.height=128;const g=c.getContext('2d'),d=g.createImageData(128,128);for(let y=0;y<128;y++)for(let x=0;x<128;x++){const u=x/127*2-1,v=y/127*2-1;let dir;if(face===0)dir=[1,-v,-u];else if(face===1)dir=[-1,-v,u];else if(face===2)dir=[u,1,v];else if(face===3)dir=[u,-1,-v];else if(face===4)dir=[u,-v,1];else dir=[-u,-v,-1];const len=Math.hypot(...dir),h=dir[1]/len,sun=Math.pow(Math.max(0,(dir[0]*.62+dir[1]*.55-dir[2]*.56)/len),180);let rgb;if(h>0){const t=Math.pow(h,.5);rgb=[.65-.29*t,.72-.18*t,.73-.08*t];}else rgb=[.12,.16,.095];for(let k=0;k<3;k++)d.data[(y*128+x)*4+k]=clamp((rgb[k]+sun*.6)*255,0,255);d.data[(y*128+x)*4+3]=255;}g.putImageData(d,0,0);faces.push(c);}const t=new THREE.CubeTexture(faces);t.needsUpdate=true;t.encoding=THREE.sRGBEncoding;return t;
+ const faces=[];for(let face=0;face<6;face++){const c=document.createElement('canvas');c.width=c.height=128;const g=c.getContext('2d',{willReadFrequently:true}),d=g.createImageData(128,128);for(let y=0;y<128;y++)for(let x=0;x<128;x++){const u=x/127*2-1,v=y/127*2-1;let dir;if(face===0)dir=[1,-v,-u];else if(face===1)dir=[-1,-v,u];else if(face===2)dir=[u,1,v];else if(face===3)dir=[u,-1,-v];else if(face===4)dir=[u,-v,1];else dir=[-u,-v,-1];const len=Math.hypot(...dir),h=dir[1]/len,sun=Math.pow(Math.max(0,(dir[0]*.62+dir[1]*.55-dir[2]*.56)/len),180);let rgb;if(h>0){const t=Math.pow(h,.5);rgb=[.65-.29*t,.72-.18*t,.73-.08*t];}else rgb=[.12,.16,.095];for(let k=0;k<3;k++)d.data[(y*128+x)*4+k]=clamp((rgb[k]+sun*.6)*255,0,255);d.data[(y*128+x)*4+3]=255;}g.putImageData(d,0,0);faces.push(c);}const t=new THREE.CubeTexture(faces);t.needsUpdate=true;t.encoding=THREE.sRGBEncoding;return t;
 };
 
 // Merge static, opaque leaf meshes by material and spatial cell. Dynamic objects stay separate.
