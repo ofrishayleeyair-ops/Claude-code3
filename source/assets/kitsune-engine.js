@@ -347,9 +347,9 @@ KE.sanitizeSettings=(raw={})=>{
   const name=Object.prototype.hasOwnProperty.call(KE.PRESETS,raw.preset)?raw.preset:KE.detectPreset();
   const s={...KE.PRESETS[name],auto:true,showFps:false,custom:false};
   for(const key of ['auto','showFps','shadows','bloom','aa','fx','custom'])if(typeof raw[key]==='boolean')s[key]=raw[key];
-  for(const [key,min,max] of [['scale',.5,2],['grass',0,20000],['view',30,300],['aniso',1,16]])if(Number.isFinite(raw[key]))s[key]=clamp(raw[key],min,max);
+  for(const [key,min,max] of [['scale',.5,2],['grass',0,40000],['view',30,300],['aniso',1,16]])if(Number.isFinite(raw[key]))s[key]=clamp(raw[key],min,max);
   s.grass=Math.round(s.grass);
-  for(const [key,allowed] of [['tex',[128,256,512]],['shadowRes',[512,1024,1536,2048]],['terrain',[1,2,3]],['cam',['follow','classic']]])if(allowed.includes(raw[key]))s[key]=raw[key];
+  for(const [key,allowed] of [['tex',[128,256,512,1024]],['shadowRes',[512,1024,1536,2048,3072,4096]],['terrain',[1,2,3]],['cam',['follow','classic']]])if(allowed.includes(raw[key]))s[key]=raw[key];
   return s;
 };
 {const valid=KE.sanitizeSettings(KE.settings);for(const key of Object.keys(KE.settings))if(!Object.prototype.hasOwnProperty.call(valid,key))delete KE.settings[key];Object.assign(KE.settings,valid);}
@@ -703,7 +703,21 @@ const V3={
 };
 for(const [name,extra] of Object.entries(V3))Object.assign(KE.PRESETS[name],extra);
 KE.PRESETS.cinematic={...KE.PRESETS.ultra,preset:'cinematic',scale:1.6,shadowRes:2048,tex:512,grass:20000,view:220,aniso:16,dof:false,motionBlur:false,lod:1.5,lights:12};/* no gameplay depth of field or motion blur: they blurred the whole landscape behind the player; photo modes enable DOF themselves */
-KE.PRESET_ORDER=['cinematic','ultra','high','medium','low'];
+/* Epic (PC): everything at its maximum at native resolution, for desktop GPUs of the RTX 3060/4060 Ti/RX 6700 class and
+   above: 4096² shadows in four cascades, full-detail trees (lod 2 gives full leaf density), 32k grass blades with longer
+   streaming radii, 1024² textures, SSGI, probe GI, volumetrics and high-quality clouds; no gameplay DOF or motion blur.
+   Cinematic supersamples instead (render scale 1.6) and is heavier per pixel. */
+KE.PRESETS.epic={...KE.PRESETS.ultra,preset:'epic',scale:1.43,upscale:1,shadowRes:4096,cascades:4,tex:1024,grass:32000,view:300,aniso:16,lod:2,lights:16,clouds:2,
+  pipeline:true,gi:true,taa:true,gtao:true,ssr:true,ssgi:true,volumetrics:true,autoExposure:true,fur:true,vfx:1,dynamicRes:false,dof:false,motionBlur:false};
+KE.PRESET_ORDER=['cinematic','epic','ultra','high','medium','low'];
+/* Desktop GPU detection for the first launch: an RTX 20/30/40/50-series 60-class or better, a Radeon RX 6700/7700/9000 or
+   better, or an Arc A750/A770 on a machine with 8+ threads starts on Epic. Reads WEBGL_debug_renderer_info from a throwaway
+   context; browsers that mask the string (Firefox with resistFingerprinting, Safari) keep the core detection. */
+KE.gpuInfo=()=>{if(KE._gpuInfo!==undefined)return KE._gpuInfo;let r='';try{const c=document.createElement('canvas'),gl=c.getContext('webgl2')||c.getContext('webgl');
+  if(gl){const d=gl.getExtension('WEBGL_debug_renderer_info');r=String((d?gl.getParameter(d.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER))||'');const l=gl.getExtension('WEBGL_lose_context');if(l)l.loseContext();}}catch(e){}return KE._gpuInfo=r;};
+KE.isDesktopGPU=(g=KE.gpuInfo())=>/RTX\s?(20[6-9]0|30[6-9]0|40[6-9]0|50[6-9]0)|RTX\s?A[4-6]000|Radeon\s?RX\s?(6[7-9]\d\d|7[7-9]\d\d|9\d\d\d)|Arc\s?A7[5-7]0/i.test(g);
+{const baseDetect=KE.detectPreset;KE.detectPreset=()=>{const base=baseDetect(),mobile=typeof navigator!=='undefined'&&/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent||'');
+  return !mobile&&(navigator.hardwareConcurrency||4)>=8&&KE.isDesktopGPU()?'epic':base;};}
 const BOOL_V3=['pipeline','gi','taa','gtao','ssr','ssgi','volumetrics','dof','motionBlur','autoExposure','fur','dynamicRes'];
 const NUM_V3=[['upscale',.5,1,false],['clouds',0,2,true],['cascades',1,4,true],['lod',.25,2,false],['vfx',0,1,false],['lights',0,16,true]];
 const baseSanitize=KE.sanitizeSettings;
@@ -712,11 +726,11 @@ KE.sanitizeSettings=(raw={})=>{
   const s=baseSanitize(raw),preset=KE.PRESETS[s.preset];
   for(const key of BOOL_V3)s[key]=typeof raw[key]==='boolean'?raw[key]:preset[key];
   for(const [key,min,max,integer] of NUM_V3){const v=Number.isFinite(raw[key])?clamp(raw[key],min,max):preset[key];s[key]=integer?Math.round(v):v;}
-  if(raw.preset==='cinematic'&&!Number.isFinite(raw.view))s.view=preset.view;
+  if((raw.preset==='cinematic'||raw.preset==='epic')&&!Number.isFinite(raw.view))s.view=preset.view;
   return s;
 };
 {let raw=null;try{raw=JSON.parse(localStorage.getItem('ke_settings')||'null');}catch(e){}
-  const valid=KE.sanitizeSettings(raw&&typeof raw==='object'?raw:{...KE.settings});for(const k of Object.keys(KE.settings))if(!(k in valid))delete KE.settings[k];Object.assign(KE.settings,valid);}
+  const valid=KE.sanitizeSettings(raw&&typeof raw==='object'?raw:{preset:KE.detectPreset(),auto:true});/* first launch: v3 detection (can pick Epic) */for(const k of Object.keys(KE.settings))if(!(k in valid))delete KE.settings[k];Object.assign(KE.settings,valid);}
 /* FPS auto-quality steps down through all five presets. Pass a callback that rebuilds dependent resources. */
 KE.FPS.tick=function(now,onDowngrade){this._f++;if(!this._t)this._t=now;const e=now-this._t;if(e>=1000){this.fps=Math.round(this._f*1000/e);this._f=0;this._t=now;
   if(KE.settings.auto&&this.fps<24){if(++this._low>=5){this._low=0;const i=KE.PRESET_ORDER.indexOf(KE.settings.preset);if(i>=0&&i<KE.PRESET_ORDER.length-1){const s=KE.applyPreset(KE.PRESET_ORDER[i+1],{auto:true});onDowngrade&&onDowngrade(s);}}}else this._low=0;}return this.fps;};
@@ -1175,7 +1189,7 @@ KE.Pipeline=class{
   /* Map KE.settings quality keys onto pipeline passes. */
   applySettings(s=KE.settings){const o=this.options;o.taa=!!s.taa&&this.depthOK;o.gtao=!!s.gtao&&this.depthOK;o.ssgi=!!s.ssgi&&this.depthOK&&this.hdr;o.bloom=s.bloom!==false;o.volumetrics=!!s.volumetrics;o.autoExposure=!!s.autoExposure&&this.hdr;
     o.fxaa=!!s.aa&&!o.taa;o.upscale=Number.isFinite(s.upscale)?s.upscale:1;this._baseUpscale=o.upscale;this._dr=null;o.dynamicResolution.enabled=!!s.dynamicRes;o.dof.enabled=!!s.dof&&this.depthOK;o.motionBlur.enabled=!!s.motionBlur&&this.depthOK;this.uniforms.keSSR.value=s.ssr?1:0;this.enabled=s.pipeline!==false;
-    const q=s.preset==='ultra'||s.preset==='cinematic';this.m.gtao.defines.SLICES=q?3:2;this.m.gtao.defines.STEPS=q?8:6;this.m.gtao.needsUpdate=true;this.historyValid=false;return this;}
+    const q=s.preset==='ultra'||s.preset==='cinematic'||s.preset==='epic',e=s.preset==='epic';this.m.gtao.defines.SLICES=e?4:q?3:2;this.m.gtao.defines.STEPS=e?10:q?8:6;if(e){this.options.volumetricFog.steps=32;}this.m.gtao.needsUpdate=true;this.historyValid=false;return this;}
   /* Dynamic resolution: an exponential average of the frame time (the dt passed to render) steps the TAA internal
      resolution down by `step` after `downHold` seconds above `downThreshold` × the target frame time, and back up toward
      the preset's value after `upHold` seconds below `upThreshold` ×. Steps are quantised because each change reallocates
@@ -2530,7 +2544,7 @@ function textureSets(THREE,S){
 }
 
 /* ---------- material library ---------- */
-const LIBS=new Map(),POM_STEPS={low:8,medium:12,high:16,ultra:24,cinematic:32};
+const LIBS=new Map(),POM_STEPS={low:8,medium:12,high:16,ultra:24,cinematic:32,epic:32};
 KE.materialLibrary=(THREE,{size}={})=>{
   if(LIBS.has(THREE))return LIBS.get(THREE);
   let sets=null;const S=size||Math.max(128,Math.min(512,KE.settings.tex||256)),T=()=>sets||(sets=textureSets(THREE,S));
@@ -2762,7 +2776,7 @@ KE.Water=class{
     if(o2.heightAt)this.bakeDepth(o2.heightAt,o2.bakedCenter||new THREE.Vector3(),o2.bakedSize);
     this.material=new THREE.ShaderMaterial({vertexShader:VS,fragmentShader:FS,uniforms:this.uniforms,defines:{WAVES:this.waves.length},transparent:true,depthWrite:true,side:THREE.DoubleSide,toneMapped:true});
     this.material.extensions={derivatives:true};
-    const rings=o2.rings||(lo?48:88),segs=o2.segments||(lo?96:176);this.mesh=new THREE.Mesh(radialGrid(THREE,rings,segs,.12,o2.radius),this.material);this.mesh.frustumCulled=false;this.mesh.name='ke-water';this.mesh.layers.set(KE.LAYERS.TRANSLUCENT);
+    const epic=q==='epic',rings=o2.rings||(lo?48:epic?128:88),segs=o2.segments||(lo?96:epic?256:176);this.mesh=new THREE.Mesh(radialGrid(THREE,rings,segs,.12,o2.radius),this.material);this.mesh.frustumCulled=false;this.mesh.name='ke-water';this.mesh.layers.set(KE.LAYERS.TRANSLUCENT);
     this.mesh.position.y=o2.level;scene.add(this.mesh);this._v=new THREE.Vector3();this._n=new THREE.Vector3();this._fogSaved=null;
     if(o2.sky)this.setSky(o2.sky);}
   setWaves(list){this.waves=list.slice(0,MAXW);const A=this.uniforms.uWaveA.value,B=this.uniforms.uWaveB.value;for(let i=0;i<MAXW;i++){const w=this.waves[i];if(w){A[i].set(w.dir[0],w.dir[1],w.k,w.amplitude);B[i].set(w.steepness,w.omega,w.phase,0);}else{A[i].set(1,0,0,0);B[i].set(0,0,0,0);}}
@@ -2811,7 +2825,7 @@ float ign(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))
 vec3 skyAt(vec3 d){if(uHasSky>.5)return textureCube(tSky,d).rgb;return mix(uHorizon,uZenith,clamp(d.y,0.,1.));}
 void main(){vec3 V=normalize(cameraPosition-vWorld);float dist=length(cameraPosition-vWorld),fade=1.-smoothstep(30.,180.,dist);
  vec2 fd=normalize(vFlow.xy+vec2(1e-5,0.)),fs=vec2(-fd.y,fd.x);float sp=vFlow.z;
- vec3 a=texture2D(tNormal,vec2(vRib.x,vRib.y-uTime*sp)*.16).xyz*2.-1.,b=texture2D(tNormal,vec2(vRib.x*1.3+5.,vRib.y*.8-uTime*sp*1.35)*.37).xyz*2.-1.;
+ vec3 a=texture2D(tNormal,vec2(vRib.x,vRib.y-uTime*sp*.8)*.13).xyz*2.-1.,b=texture2D(tNormal,vec2(vRib.x*1.1+5.,vRib.y*.9-uTime*sp)*.29).xyz*2.-1.;
  vec2 d=(a.xy+b.xy)*uDetail*(1.+sp*.35)*fade;vec3 N=normalize(vec3(0.,1.,0.)+vec3(fs.x,0.,fs.y)*d.x+vec3(fd.x,0.,fd.y)*d.y);
  if(uRain>0.){vec2 c=texture2D(tNormal,vWorld.xz*.9+vec2(uTime*.7,-uTime*.5)).xy*2.-1.;N=normalize(N+vec3(c.x,0.,c.y)*uRain*.35*fade);}
  float NdV=clamp(dot(N,V),0.,1.),F=.02+.98*pow(1.-NdV,5.);vec3 sunI=keSunColor*max(keSunDirection.y,0.);
@@ -2821,8 +2835,8 @@ void main(){vec3 V=normalize(cameraPosition-vWorld);float dist=length(cameraPosi
  vec3 transm=exp(-uAbsorb*thick),refr=below*transm+uScatter*(uAmbient+sunI*.35)*(1.-transm);
  vec3 H=normalize(V+keSunDirection);float spec=pow(max(dot(N,H),0.),700.)*10.+pow(max(dot(N,H),0.),90.)*.25;
  float fn=texture2D(tNormal,vec2(vRib.x*.45,vRib.y*.12-uTime*sp*.12)).r*.6+texture2D(tNormal,vec2(vRib.x*.9+.3,vRib.y*.3-uTime*sp*.3)).g*.4;fn=clamp((fn-.5)*2.6+.5,0.,1.);
- float bank=keHasScene*(1.-smoothstep(0.,uFoamDepth,thick*max(V.y,.2))),white=smoothstep(2.2,4.5,sp);
- float foam=clamp(bank*smoothstep(.55,.9,fn)*(.25+.55*white)+white*smoothstep(.5,.85,fn)*.8,0.,1.);
+ float bank=keHasScene*(1.-smoothstep(0.,uFoamDepth,thick*max(V.y,.2))),white=smoothstep(2.6,5.,sp);
+ float foam=clamp(bank*smoothstep(.55,.9,fn)*(.25+.55*white)+white*smoothstep(.62,.9,fn)*.55,0.,1.);
  vec3 col=mix(refr,refl,F)+keSunColor*spec*uSunGlint;col=mix(col,uFoamColor*(uAmbient+sunI*.8),foam*.85);
  gl_FragColor=vec4(col,keHasScene>.5?1.:clamp(uOpacity+F*.3+foam,0.,1.));
  #include <tonemapping_fragment>
@@ -2873,16 +2887,16 @@ KE.River=class{
        the result continuous where two reaches at different water levels are about equally near (a nearest-segment
        choice would leave a step there). A soft minimum rounds the crease where the walls meet the land. */
     const bank=o.bank===undefined?5:o.bank,valley=o.valley===undefined?150:o.valley,slope=o.valleySlope===undefined?.45:o.valleySlope,lip=o.lip===undefined?.5:o.lip;
-    const S=hf.size,sp=hf.spacing,D=hf.data,tgt=new Float32Array(S*S).fill(Infinity),best=new Float32Array(S*S).fill(Infinity),lev=new Float32Array(S*S),P=path.pts;
+    const S=hf.size,sp=hf.spacing,D=hf.data,tgt=new Float32Array(S*S).fill(Infinity),best=new Float32Array(S*S).fill(Infinity),lev=new Float32Array(S*S),ru=new Float32Array(S*S),P=path.pts;
     for(let i=0;i<P.length-1;i++){const a=P[i],b=P[i+1],R=valley+Math.max(a.w,b.w)*.5+bank,ex=b.x-a.x,ez=b.z-a.z,el=ex*ex+ez*ez||1;
       const i0=Math.max(0,Math.floor((Math.min(a.x,b.x)-R-hf.originX)/sp)),i1=Math.min(S-1,Math.ceil((Math.max(a.x,b.x)+R-hf.originX)/sp)),j0=Math.max(0,Math.floor((Math.min(a.z,b.z)-R-hf.originZ)/sp)),j1=Math.min(S-1,Math.ceil((Math.max(a.z,b.z)+R-hf.originZ)/sp));
       for(let jj=j0;jj<=j1;jj++){const z=hf.originZ+jj*sp;for(let ii=i0;ii<=i1;ii++){const x=hf.originX+ii*sp,t=Math.min(1,Math.max(0,((x-a.x)*ex+(z-a.z)*ez)/el)),dx=x-a.x-ex*t,dz=z-a.z-ez*t,dist=Math.sqrt(dx*dx+dz*dz);
         const hw=(a.w+(b.w-a.w)*t)*.5;if(dist>hw+bank+valley)continue;const y=a.y+(b.y-a.y)*t,dep=a.depth+(b.depth-a.depth)*t,k=jj*S+ii,q=Math.min(1,dist/hw),u=Math.max(0,dist-hw-bank),edge=Math.max(0,(u-valley*.7)/(valley*.3));
         const target=dist<hw?y-dep*(1-q*q)-.1:y+lip*rsmooth(hw,hw+bank,dist)+u*slope+edge*edge*valley*1.5;if(target<tgt[k])tgt[k]=target;
-        if(dist-hw<best[k]){best[k]=dist-hw;lev[k]=dist>hw*.9&&dist<hw+bank?y+lip*rsmooth(hw*.9,hw+bank*.6,dist)-.05:-Infinity;}}}}
-    const flow=hf.masks&&hf.masks.flow,sk=6;let carved=0;
-    for(let k=0;k<S*S;k++){const target=tgt[k];if(target===Infinity)continue;const h=D[k];
-      let nh=Math.min(h,target)-Math.max(sk-Math.abs(h-target),0)**2/(4*sk);if(nh>h)nh=h;nh=Math.max(nh,lev[k]);   // a low levee where the land beside the river lies below the water
+        if(dist-hw<best[k]){best[k]=dist-hw;lev[k]=dist>hw*.9?y+(dist<hw+bank?lip*rsmooth(hw*.9,hw+bank*.6,dist)-.05:.15):-Infinity;ru[k]=u;}}}}
+    const flow=hf.masks&&hf.masks.flow;let carved=0;
+    for(let k=0;k<S*S;k++){const target=tgt[k];if(target===Infinity)continue;const h=D[k],sk=.01+6*rsmooth(4,24,ru[k]);   /* round the crease only up on the valley walls, never next to the water */
+      let nh=Math.min(h,target)-Math.max(sk-Math.abs(h-target),0)**2/(4*sk);if(nh>h)nh=h;nh=Math.max(nh,lev[k]);   // land beside the river never lies below its surface (a low levee where it would)
       if(nh!==h){D[k]=nh;carved++;}if(flow&&best[k]<bank)flow[k]=Math.max(flow[k],4000*Math.min(1,1-best[k]/(bank*2)));}
     hf.recomputeRange();hf.version++;return {carved};}
   _index(cell){this._cell=cell;const m=this._grid=new Map(),P=this.pts,reach=cell;
@@ -2930,7 +2944,7 @@ KE.boatModel=(THREE,o={})=>{
   /* gunwale rim and transom */
   {const pos=[],idx=[];for(let i=0;i<=N;i++){const t=i/N,x=-L/2+t*L,h=hw(t),tp=top(t);pos.push(x,tp,-h,x,tp,-Math.max(0,h-th*2),x,tp,h,x,tp,Math.max(0,h-th*2));}
     for(let i=0;i<N;i++){const a=i*4,c=a+4;idx.push(a,c,a+1,a+1,c,c+1,a+2,a+3,c+2,a+3,c+3,c+2);}
-    const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setIndex(idx);g.computeVertexNormals();add(g,inner,false);
+    const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setAttribute('uv',new THREE.Float32BufferAttribute(new Float32Array(pos.length/3*2),2));g.setIndex(idx);g.computeVertexNormals();add(g,inner,false);
     const p=prof(0,0),tr=new THREE.Shape();tr.moveTo(p[0][0],p[0][1]);for(const q of p.slice(1))tr.lineTo(q[0],q[1]);const tg=new THREE.ShapeGeometry(tr);tg.rotateY(-Math.PI/2);tg.translate(-L/2,0,0);add(tg,outer);}
   const box=(sx,sy,sz,x,y,z,m=inner)=>{const g=new THREE.BoxGeometry(sx,sy,sz);g.translate(x,y,z);return add(g,m);};
   for(const t of yak?[.2,.45,.7]:[.3,.62])box(.16,.04,hw(t)*2-.08,-L/2+t*L,top(t)-.12,0);
@@ -2946,6 +2960,10 @@ KE.boatModel=(THREE,o={})=>{
     const head=new THREE.SphereGeometry(.12,12,10);head.translate(bx,by+1.2,0);add(head,skinM);const hat=new THREE.ConeGeometry(.36,.2,16,1,true);hat.translate(bx,by+1.35,0);add(hat,straw);
     const pole=new THREE.CylinderGeometry(.025,.025,3.6,6);pole.rotateZ(.5);pole.translate(bx-.55,by+1.,.18);add(pole,inner);}
   const draft=o.draft||D*.38;
+  /* merge the parts per material (a boat is then 2–6 draws instead of 10–18); lanterns stay separate so games can find them */
+  const BU=THREE.BufferGeometryUtils;if(BU&&BU.mergeBufferGeometries&&o.merge!==false){const byMat=new Map();for(const m of group.children.slice())if(m.isMesh&&!m.userData.lantern){const k=m.material.uuid+'|'+m.castShadow;if(!byMat.has(k))byMat.set(k,[]);byMat.get(k).push(m);}
+    for(const list of byMat.values()){if(list.length<2)continue;const parts=list.map(m=>{m.updateMatrix();const g=m.geometry.clone().applyMatrix4(m.matrix);return g.index?g:g;});const merged=BU.mergeBufferGeometries(parts,false);for(const g of parts)g.dispose();if(!merged)continue;
+      const mesh=new THREE.Mesh(merged,list[0].material);mesh.castShadow=list[0].castShadow;mesh.receiveShadow=true;for(const m of list)group.remove(m);group.add(mesh);geos.push(merged);}}
   return {group,style,length:L,width:W,draft,materials:mats,
     dispose(){for(const g of geos)g.dispose();for(const m of mats)m.dispose();woodTex.dispose();group.parent&&group.parent.remove(group);}};
 };
@@ -10477,7 +10495,8 @@ const QUALITY={
   medium:   {maxVoices:32,hrtf:true, irSeconds:2.5,reverbSlots:2,occlusionChecks:4, musicNotes:40},
   high:     {maxVoices:48,hrtf:true, irSeconds:3.5,reverbSlots:3,occlusionChecks:8, musicNotes:64},
   ultra:    {maxVoices:64,hrtf:true, irSeconds:5,  reverbSlots:3,occlusionChecks:12,musicNotes:96},
-  cinematic:{maxVoices:64,hrtf:true, irSeconds:6,  reverbSlots:3,occlusionChecks:16,musicNotes:128}
+  cinematic:{maxVoices:64,hrtf:true, irSeconds:6,  reverbSlots:3,occlusionChecks:16,musicNotes:128},
+  epic:     {maxVoices:64,hrtf:true, irSeconds:6,  reverbSlots:3,occlusionChecks:16,musicNotes:128}
 };
 const quality=()=>QUALITY[KE.settings&&KE.settings.preset]||QUALITY.high;
 const ACtor=()=>typeof window!=='undefined'&&(window.AudioContext||window.webkitAudioContext)||null;

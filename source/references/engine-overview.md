@@ -83,17 +83,20 @@ While the editor is open (F8) the game loop is paused and the editor runs its ow
 
 `KE.applyPreset(name)` sets every key at once; `KE.detectPreset()` picks a starting preset from the device (headless and 4-thread machines get Low). Console variables (`r.*`, `fx.*`, `foliage.*`, `t.*`) change single keys; `list` in the console prints them.
 
-| key | low | medium | high | ultra | cinematic |
-|---|---|---|---|---|---|
-| HDR pipeline | off | on | on | on | on |
-| TAA / internal resolution | off | on / .67 | on / .8 | on / 1 | on / 1 |
-| Dynamic resolution | off | on | on | off | off |
-| GTAO / SSR / SSGI | off | off | on / on / off | on | on |
-| Probe GI | off | off | on | on | on |
-| Volumetrics, clouds | off, 0 | off, 1 | on, 1 | on, 2 | on, 2 |
-| Shadow cascades | 1 | 2 | 3 | 4 | 4 |
-| Fur, VFX budget, pool lights | off, .35, 2 | on, .6, 4 | on, 1, 6 | on, 1, 8 | on, 1, 12 |
-| Depth of field, motion blur in play | off | off | off | off | off (photo modes turn DOF on) |
+| key | low | medium | high | ultra | epic (PC) | cinematic |
+|---|---|---|---|---|---|---|
+| HDR pipeline | off | on | on | on | on | on |
+| TAA / internal resolution | off | on / .67 | on / .8 | on / 1 | on / 1 (native pixel ratio) | on / 1 |
+| Dynamic resolution | off | on | on | off | off | off |
+| GTAO / SSR / SSGI | off | off | on / on / off | on | on (GTAO 4 slices × 10 steps) | on |
+| Probe GI | off | off | on | on | on | on |
+| Volumetrics, clouds | off, 0 | off, 1 | on, 1 | on, 2 | on, 2 (32 fog steps) | on, 2 |
+| Shadow cascades, map size | 1, 1024 | 2, 1024 | 3, 1536 | 4, 2048 | 4, 4096 | 4, 2048 |
+| Textures, grass blades, LOD scale | 128, 0, .6 | 256, 3000, .8 | 256, 7000, 1 | 512, 14000, 1.25 | 1024, 32000, 2 | 512, 20000, 1.5 |
+| Fur, VFX budget, pool lights | off, .35, 2 | on, .6, 4 | on, 1, 6 | on, 1, 8 | on, 1, 16 | on, 1, 12 |
+| Depth of field, motion blur in play | off | off | off | off | off | off (photo modes turn DOF on) |
+
+Epic (PC) is for desktop graphics cards of the RTX 3060/4060 Ti or Radeon RX 6700 class and above: native resolution with every effect at its highest setting, 4096² shadows, full-detail trees and longer streaming radii (the open world streams trees to 240 m, bamboo to 130 m, grass to 40 m with shadows, and impostors to 1.4 km). On first launch `KE.detectPreset()` picks Epic when `WEBGL_debug_renderer_info` reports such a GPU (`KE.gpuInfo()`, `KE.isDesktopGPU()`) on a machine with 8 or more threads; browsers that hide the GPU name keep the core detection. Cinematic supersamples instead (render scale 1.6) and costs more per pixel. No frame rate is claimed for any preset; measure with `stat unit` and `stat gpu`.
 
 ## 5. Mobile budgets (from public WebGL2 survey data)
 

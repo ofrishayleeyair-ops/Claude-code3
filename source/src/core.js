@@ -347,9 +347,9 @@ KE.sanitizeSettings=(raw={})=>{
   const name=Object.prototype.hasOwnProperty.call(KE.PRESETS,raw.preset)?raw.preset:KE.detectPreset();
   const s={...KE.PRESETS[name],auto:true,showFps:false,custom:false};
   for(const key of ['auto','showFps','shadows','bloom','aa','fx','custom'])if(typeof raw[key]==='boolean')s[key]=raw[key];
-  for(const [key,min,max] of [['scale',.5,2],['grass',0,20000],['view',30,300],['aniso',1,16]])if(Number.isFinite(raw[key]))s[key]=clamp(raw[key],min,max);
+  for(const [key,min,max] of [['scale',.5,2],['grass',0,40000],['view',30,300],['aniso',1,16]])if(Number.isFinite(raw[key]))s[key]=clamp(raw[key],min,max);
   s.grass=Math.round(s.grass);
-  for(const [key,allowed] of [['tex',[128,256,512]],['shadowRes',[512,1024,1536,2048]],['terrain',[1,2,3]],['cam',['follow','classic']]])if(allowed.includes(raw[key]))s[key]=raw[key];
+  for(const [key,allowed] of [['tex',[128,256,512,1024]],['shadowRes',[512,1024,1536,2048,3072,4096]],['terrain',[1,2,3]],['cam',['follow','classic']]])if(allowed.includes(raw[key]))s[key]=raw[key];
   return s;
 };
 {const valid=KE.sanitizeSettings(KE.settings);for(const key of Object.keys(KE.settings))if(!Object.prototype.hasOwnProperty.call(valid,key))delete KE.settings[key];Object.assign(KE.settings,valid);}

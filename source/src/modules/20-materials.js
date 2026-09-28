@@ -726,7 +726,7 @@ function textureSets(THREE,S){
 }
 
 /* ---------- material library ---------- */
-const LIBS=new Map(),POM_STEPS={low:8,medium:12,high:16,ultra:24,cinematic:32};
+const LIBS=new Map(),POM_STEPS={low:8,medium:12,high:16,ultra:24,cinematic:32,epic:32};
 KE.materialLibrary=(THREE,{size}={})=>{
   if(LIBS.has(THREE))return LIBS.get(THREE);
   let sets=null;const S=size||Math.max(128,Math.min(512,KE.settings.tex||256)),T=()=>sets||(sets=textureSets(THREE,S));

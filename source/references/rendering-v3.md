@@ -124,7 +124,7 @@ It does not simulate fluid dynamics, flow maps, or wakes; SSR only reflects what
 
 ### Boats: KE.boatModel
 
-`KE.boatModel(THREE, {style:'wasen'|'yakatabune', length, width, depth, seed, color, textureSize, boatman:true, lanterns:true})` builds a Japanese wooden boat: a hull lofted from cross-sections (flat bottom, transom stern, tall raked bow; outer and inner skins, gunwale rim, transom) with planks from the wood tile along the hull, thwarts, and for `wasen` an optional boatman in a sedge hat with a pole; `yakatabune` adds a cabin with an arched roof and four paper lanterns (emissive). Local frame: +x toward the bow, waterline at `y = draft`. Returns `{group, style, length, width, draft, materials, dispose()}`. Float it yourself: the open world sets height and tilt from `water.heightAt/normalAt` in the bay and follows `river.pointAt` on the river.
+`KE.boatModel(THREE, {style:'wasen'|'yakatabune', length, width, depth, seed, color, textureSize, boatman:true, lanterns:true})` builds a Japanese wooden boat: a hull lofted from cross-sections (flat bottom, transom stern, tall raked bow; outer and inner skins, gunwale rim, transom) with planks from the wood tile along the hull, thwarts, and for `wasen` an optional boatman in a sedge hat with a pole; `yakatabune` adds a cabin with an arched roof and four paper lanterns (emissive). Local frame: +x toward the bow, waterline at `y = draft`. Returns `{group, style, length, width, draft, materials, dispose()}`. Float it yourself: the open world sets height and tilt from `water.heightAt/normalAt` in the bay and follows `river.pointAt` on the river. The open world also lets the player drive any boat (`examples/src/open-world.html`, `board`/`driveBoat`/`ashore`): throttle and rudder with damped speed, the river current from `river.flowAt` added to the hull's velocity, a navigability test that keeps the hull inside the river channel (`river.nearest`) or over sea deeper than its draft (checked at the centre and at the bow), lean into turns, a foam wake from a `KE.VFX` emitter with `rateOverDistance`, and stepping ashore onto the nearest dry, gentle ground.
 
 ## 7. Shared uniforms, layers and custom translucent materials
 
@@ -147,18 +147,18 @@ mesh.layers.set(KE.LAYERS.TRANSLUCENT);
 
 ## 8. Quality settings, console variables and costs
 
-| Setting | Low | Medium | High | Ultra | Cinematic |
-|---|---|---|---|---|---|
-| pipeline (HDR post) | off | on | on | on | on |
-| gi (probe volume) | – | – | ✓ | ✓ | ✓ |
-| upscale (internal resolution) | 1 | .67 | .8 | 1 | 1 |
-| taa / gtao / ssr | – / – / – | ✓ / – / – | ✓ / ✓ / ✓ | ✓ / ✓ / ✓ | ✓ / ✓ / ✓ |
-| ssgi | – | – | – | ✓ | ✓ |
-| volumetrics (shafts, fog inscatter) | – | – | ✓ | ✓ | ✓ |
-| clouds | off | fast | fast | rich | rich |
-| cascades | 1 | 2 | 3 | 4 | 4 |
-| dynamic point lights | 2 | 4 | 6 | 8 | 12 |
-| dof / motion blur | – | – | – | – | ✓ / ✓ |
+| Setting | Low | Medium | High | Ultra | Epic (PC) | Cinematic |
+|---|---|---|---|---|---|---|
+| pipeline (HDR post) | off | on | on | on | on | on |
+| gi (probe volume) | – | – | ✓ | ✓ | ✓ | ✓ |
+| upscale (internal resolution) | 1 | .67 | .8 | 1 | 1 | 1 |
+| taa / gtao / ssr | – / – / – | ✓ / – / – | ✓ / ✓ / ✓ | ✓ / ✓ / ✓ | ✓ / ✓ (4×10) / ✓ | ✓ / ✓ / ✓ |
+| ssgi | – | – | – | ✓ | ✓ | ✓ |
+| volumetrics (shafts, fog inscatter) | – | – | ✓ | ✓ | ✓ (32 steps) | ✓ |
+| clouds | off | fast | fast | rich | rich | rich |
+| cascades, shadow map | 1, 1024 | 2, 1024 | 3, 1536 | 4, 2048 | 4, 4096 | 4, 2048 |
+| dynamic point lights | 2 | 4 | 6 | 8 | 16 | 12 |
+| dof / motion blur in play | – | – | – | – | – | – (photo modes enable DOF) |
 
 Console variables (`KE.cvars`, also typed into the console UI): `r.GI`, `r.TAA`, `r.GTAO`, `r.SSR`, `r.SSGI`, `r.Bloom`, `r.Shadows`, `r.Shadow.Cascades`, `r.Shadow.Resolution`, `r.Volumetrics`, `r.Clouds`, `r.DOF`, `r.MotionBlur`, `r.AutoExposure`, `r.Pipeline`, `r.ScreenPercentage`, `r.Upscale`, `r.ViewDistance`, `r.LODBias`, `r.Lights`, `foliage.Grass`, `fx.Budget`, `r.Fur`, `r.ViewMode`.
 

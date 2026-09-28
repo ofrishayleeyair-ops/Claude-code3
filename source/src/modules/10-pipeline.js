@@ -294,7 +294,7 @@ KE.Pipeline=class{
   /* Map KE.settings quality keys onto pipeline passes. */
   applySettings(s=KE.settings){const o=this.options;o.taa=!!s.taa&&this.depthOK;o.gtao=!!s.gtao&&this.depthOK;o.ssgi=!!s.ssgi&&this.depthOK&&this.hdr;o.bloom=s.bloom!==false;o.volumetrics=!!s.volumetrics;o.autoExposure=!!s.autoExposure&&this.hdr;
     o.fxaa=!!s.aa&&!o.taa;o.upscale=Number.isFinite(s.upscale)?s.upscale:1;this._baseUpscale=o.upscale;this._dr=null;o.dynamicResolution.enabled=!!s.dynamicRes;o.dof.enabled=!!s.dof&&this.depthOK;o.motionBlur.enabled=!!s.motionBlur&&this.depthOK;this.uniforms.keSSR.value=s.ssr?1:0;this.enabled=s.pipeline!==false;
-    const q=s.preset==='ultra'||s.preset==='cinematic';this.m.gtao.defines.SLICES=q?3:2;this.m.gtao.defines.STEPS=q?8:6;this.m.gtao.needsUpdate=true;this.historyValid=false;return this;}
+    const q=s.preset==='ultra'||s.preset==='cinematic'||s.preset==='epic',e=s.preset==='epic';this.m.gtao.defines.SLICES=e?4:q?3:2;this.m.gtao.defines.STEPS=e?10:q?8:6;if(e){this.options.volumetricFog.steps=32;}this.m.gtao.needsUpdate=true;this.historyValid=false;return this;}
   /* Dynamic resolution: an exponential average of the frame time (the dt passed to render) steps the TAA internal
      resolution down by `step` after `downHold` seconds above `downThreshold` × the target frame time, and back up toward
      the preset's value after `upHold` seconds below `upThreshold` ×. Steps are quantised because each change reallocates

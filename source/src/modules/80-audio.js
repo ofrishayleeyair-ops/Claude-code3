@@ -20,7 +20,8 @@ const QUALITY={
   medium:   {maxVoices:32,hrtf:true, irSeconds:2.5,reverbSlots:2,occlusionChecks:4, musicNotes:40},
   high:     {maxVoices:48,hrtf:true, irSeconds:3.5,reverbSlots:3,occlusionChecks:8, musicNotes:64},
   ultra:    {maxVoices:64,hrtf:true, irSeconds:5,  reverbSlots:3,occlusionChecks:12,musicNotes:96},
-  cinematic:{maxVoices:64,hrtf:true, irSeconds:6,  reverbSlots:3,occlusionChecks:16,musicNotes:128}
+  cinematic:{maxVoices:64,hrtf:true, irSeconds:6,  reverbSlots:3,occlusionChecks:16,musicNotes:128},
+  epic:     {maxVoices:64,hrtf:true, irSeconds:6,  reverbSlots:3,occlusionChecks:16,musicNotes:128}
 };
 const quality=()=>QUALITY[KE.settings&&KE.settings.preset]||QUALITY.high;
 const ACtor=()=>typeof window!=='undefined'&&(window.AudioContext||window.webkitAudioContext)||null;

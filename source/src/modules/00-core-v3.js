@@ -35,7 +35,21 @@ const V3={
 };
 for(const [name,extra] of Object.entries(V3))Object.assign(KE.PRESETS[name],extra);
 KE.PRESETS.cinematic={...KE.PRESETS.ultra,preset:'cinematic',scale:1.6,shadowRes:2048,tex:512,grass:20000,view:220,aniso:16,dof:false,motionBlur:false,lod:1.5,lights:12};/* no gameplay depth of field or motion blur: they blurred the whole landscape behind the player; photo modes enable DOF themselves */
-KE.PRESET_ORDER=['cinematic','ultra','high','medium','low'];
+/* Epic (PC): everything at its maximum at native resolution, for desktop GPUs of the RTX 3060/4060 Ti/RX 6700 class and
+   above: 4096² shadows in four cascades, full-detail trees (lod 2 gives full leaf density), 32k grass blades with longer
+   streaming radii, 1024² textures, SSGI, probe GI, volumetrics and high-quality clouds; no gameplay DOF or motion blur.
+   Cinematic supersamples instead (render scale 1.6) and is heavier per pixel. */
+KE.PRESETS.epic={...KE.PRESETS.ultra,preset:'epic',scale:1.43,upscale:1,shadowRes:4096,cascades:4,tex:1024,grass:32000,view:300,aniso:16,lod:2,lights:16,clouds:2,
+  pipeline:true,gi:true,taa:true,gtao:true,ssr:true,ssgi:true,volumetrics:true,autoExposure:true,fur:true,vfx:1,dynamicRes:false,dof:false,motionBlur:false};
+KE.PRESET_ORDER=['cinematic','epic','ultra','high','medium','low'];
+/* Desktop GPU detection for the first launch: an RTX 20/30/40/50-series 60-class or better, a Radeon RX 6700/7700/9000 or
+   better, or an Arc A750/A770 on a machine with 8+ threads starts on Epic. Reads WEBGL_debug_renderer_info from a throwaway
+   context; browsers that mask the string (Firefox with resistFingerprinting, Safari) keep the core detection. */
+KE.gpuInfo=()=>{if(KE._gpuInfo!==undefined)return KE._gpuInfo;let r='';try{const c=document.createElement('canvas'),gl=c.getContext('webgl2')||c.getContext('webgl');
+  if(gl){const d=gl.getExtension('WEBGL_debug_renderer_info');r=String((d?gl.getParameter(d.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER))||'');const l=gl.getExtension('WEBGL_lose_context');if(l)l.loseContext();}}catch(e){}return KE._gpuInfo=r;};
+KE.isDesktopGPU=(g=KE.gpuInfo())=>/RTX\s?(20[6-9]0|30[6-9]0|40[6-9]0|50[6-9]0)|RTX\s?A[4-6]000|Radeon\s?RX\s?(6[7-9]\d\d|7[7-9]\d\d|9\d\d\d)|Arc\s?A7[5-7]0/i.test(g);
+{const baseDetect=KE.detectPreset;KE.detectPreset=()=>{const base=baseDetect(),mobile=typeof navigator!=='undefined'&&/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent||'');
+  return !mobile&&(navigator.hardwareConcurrency||4)>=8&&KE.isDesktopGPU()?'epic':base;};}
 const BOOL_V3=['pipeline','gi','taa','gtao','ssr','ssgi','volumetrics','dof','motionBlur','autoExposure','fur','dynamicRes'];
 const NUM_V3=[['upscale',.5,1,false],['clouds',0,2,true],['cascades',1,4,true],['lod',.25,2,false],['vfx',0,1,false],['lights',0,16,true]];
 const baseSanitize=KE.sanitizeSettings;
@@ -44,11 +58,11 @@ KE.sanitizeSettings=(raw={})=>{
   const s=baseSanitize(raw),preset=KE.PRESETS[s.preset];
   for(const key of BOOL_V3)s[key]=typeof raw[key]==='boolean'?raw[key]:preset[key];
   for(const [key,min,max,integer] of NUM_V3){const v=Number.isFinite(raw[key])?clamp(raw[key],min,max):preset[key];s[key]=integer?Math.round(v):v;}
-  if(raw.preset==='cinematic'&&!Number.isFinite(raw.view))s.view=preset.view;
+  if((raw.preset==='cinematic'||raw.preset==='epic')&&!Number.isFinite(raw.view))s.view=preset.view;
   return s;
 };
 {let raw=null;try{raw=JSON.parse(localStorage.getItem('ke_settings')||'null');}catch(e){}
-  const valid=KE.sanitizeSettings(raw&&typeof raw==='object'?raw:{...KE.settings});for(const k of Object.keys(KE.settings))if(!(k in valid))delete KE.settings[k];Object.assign(KE.settings,valid);}
+  const valid=KE.sanitizeSettings(raw&&typeof raw==='object'?raw:{preset:KE.detectPreset(),auto:true});/* first launch: v3 detection (can pick Epic) */for(const k of Object.keys(KE.settings))if(!(k in valid))delete KE.settings[k];Object.assign(KE.settings,valid);}
 /* FPS auto-quality steps down through all five presets. Pass a callback that rebuilds dependent resources. */
 KE.FPS.tick=function(now,onDowngrade){this._f++;if(!this._t)this._t=now;const e=now-this._t;if(e>=1000){this.fps=Math.round(this._f*1000/e);this._f=0;this._t=now;
   if(KE.settings.auto&&this.fps<24){if(++this._low>=5){this._low=0;const i=KE.PRESET_ORDER.indexOf(KE.settings.preset);if(i>=0&&i<KE.PRESET_ORDER.length-1){const s=KE.applyPreset(KE.PRESET_ORDER[i+1],{auto:true});onDowngrade&&onDowngrade(s);}}}else this._low=0;}return this.fps;};

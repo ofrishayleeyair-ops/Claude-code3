@@ -5,9 +5,9 @@ An offline browser game engine on Three.js r128 (WebGL2) that builds every game 
 | Spirit Isle | Open World |
 |---|---|
 | ![Spirit Isle: the fox on the lantern path to the torii gates](media/spirit-isle-day.png) | ![Open World: a snow-capped volcano over cedar forest, bamboo and a river](media/open-world.png) |
-| `spirit-isle.html`: find five spirit stones with a wisp as your guide; day and night, rain, photo mode, F8 editor | `open-world.html`: a 2 km Japanese island generated and eroded on load: a snow-capped volcano, a river with boats down to the bay, tall cedars, red maples, sakura, bamboo groves and a daisugi; fly mode |
+| `spirit-isle.html`: find five spirit stones with a wisp as your guide; day and night, rain, photo mode, F8 editor | `open-world.html`: a 2 km Japanese island generated and eroded on load: a snow-capped volcano, a river down to the bay with boats you can board and steer (E), tall cedars, red maples, sakura, bamboo groves and a daisugi; fly mode |
 
-Open either file in a desktop or mobile browser with WebGL2; no server, account or network request is needed. Low-power machines start on the Low preset; choose High or Ultra in Settings for the full renderer. [START-HERE.html](START-HERE.html) has controls and more screenshots.
+Open either file in a desktop or mobile browser with WebGL2; no server, account or network request is needed. Low-power machines start on the Low preset; choose High or Ultra in Settings for the full renderer. Desktops with an RTX 3060/4060 Ti or Radeon RX 6700-class card (or better) start on **Epic (PC)**: native resolution, 4096² shadows, full-detail trees, grass with shadows and the longest draw distances. Pick it by hand in the quality menu if your browser hides the GPU name. [START-HERE.html](START-HERE.html) has controls and more screenshots.
 
 ## What is inside
 

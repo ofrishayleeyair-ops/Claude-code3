@@ -5,7 +5,7 @@ description: Build and improve offline, single-file 3D browser games with kitsun
 
 # kitsune enginev3 (Tenko)
 
-A reusable game runtime delivered as self-contained HTML files. `KE.version === '3.0.0'`. The engine is `assets/kitsune-engine.js`: the 2.1 runtime plus twenty-one modules built from `src/`. Spirit Isle (`assets/starter.html`) is a playable fox exploration game that uses every system and is the reference integration; `examples/src/open-world.html` is the reference for a streamed 2 km world: a Japanese island with a snow-capped volcano, a river carved into the terrain (`KE.River`), cedar, maple and sakura forest, bamboo groves, a daisugi, wooden boats (`KE.boatModel`), GPU terrain, World Partition, impostor HLOD and fly mode.
+A reusable game runtime delivered as self-contained HTML files. `KE.version === '3.0.0'`. The engine is `assets/kitsune-engine.js`: the 2.1 runtime plus twenty-one modules built from `src/`. Spirit Isle (`assets/starter.html`) is a playable fox exploration game that uses every system and is the reference integration; `examples/src/open-world.html` is the reference for a streamed 2 km world: a Japanese island with a snow-capped volcano, a river carved into the terrain (`KE.River`), cedar, maple and sakura forest, bamboo groves, a daisugi, wooden boats you can board and steer (`KE.boatModel`), GPU terrain, World Partition, impostor HLOD and fly mode.
 
 ## Start with the runnable source
 

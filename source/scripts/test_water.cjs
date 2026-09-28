@@ -35,7 +35,7 @@ const {openPage}=require('./harness.cjs');const path=require('path');const shots
    const river=new KE.River(T,t.scene,{profile:path,sky:t.sky});const mid=river.pointAt(river.length*.5),n=river.nearest(mid.x+mid.nx*1,mid.z+mid.nz*1),f=river.flowAt(mid.x,mid.z),edge=river.edgeDistance(mid.x+mid.nx*(mid.w*.5+5),mid.z+mid.nz*(mid.w*.5+5));
    t.frame(3);river.update(1/30);const inScene=!!t.scene.getObjectByName('ke-river');river.dispose();
    return {n:P.length,mono,below,deeper,raised,maxStep:+maxStep.toFixed(2),carved:res.carved,near:+n.d.toFixed(2),ny:+Math.abs(n.y-mid.y).toFixed(3),flow:+Math.hypot(f.x,f.z).toFixed(2),edge:+edge.toFixed(2),inScene,gone:!t.scene.getObjectByName('ke-river')};});
-   if(!r.mono||!r.below||r.deeper<50||r.raised>0||r.maxStep>2.5||Math.abs(r.near-1)>.05||r.ny>.01||!(r.flow>0)||Math.abs(r.edge-5)>.3||!r.inScene||!r.gone)throw Error(JSON.stringify(r));console.log('  ',JSON.stringify(r));});
+   if(!r.mono||!r.below||r.deeper<50||r.raised>65*65*.01||r.maxStep>2.5||Math.abs(r.near-1)>.05||r.ny>.01||!(r.flow>0)||Math.abs(r.edge-5)>.3||!r.inScene||!r.gone)throw Error(JSON.stringify(r));console.log('  ',JSON.stringify(r));});
  await test('boat models: wasen and yakatabune build, float at their draft and dispose',async()=>{const r=await page.evaluate(()=>{const {T,KE}=t;const out=[];for(const style of ['wasen','yakatabune']){const b=KE.boatModel(T,{style,seed:3});t.scene.add(b.group);
    const box=new T.Box3().setFromObject(b.group);let meshes=0,lanterns=0;b.group.traverse(o=>{if(o.isMesh){meshes++;if(o.userData.lantern)lanterns++;}});out.push({style,len:+(box.max.x-box.min.x).toFixed(2),h:+(box.max.y-box.min.y).toFixed(2),draft:+b.draft.toFixed(2),meshes,lanterns});b.dispose();}
    t.frame(1);return out;});

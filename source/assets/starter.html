@@ -161,7 +161,7 @@ let grass=null,pipeline=null,csm=null;
 const grassOptions=()=>({count:S.grass,radius:19,heightAt:ground,density:(x,z)=>ground(x,z)>1.5&&Math.abs(x-48-Math.sin(z*.13)*2)>2?.8:0,color:()=>[.5,.7,.31]});
 const pipelineOptions={sun,exposureKey:.2,minExposure:.35,maxExposure:4.5,bloomStrength:.05,aoRadius:1,fog:{density:.0065,falloff:.09,height:0,start:8,maxOpacity:.85,inscatter:1,inscatterExponent:10,sky:.2},grading:{saturation:1.08,contrast:1.05,vignette:.2,grain:.01,chromaticAberration:.12}};
 function applyQuality(){KE.applyRendererSettings(T,renderer,camera,sun,scene);renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=S.shadows;
- if(grass)grass.dispose();grass=has('foliage')?(S.grass>0?KE.grassField(T,scene,{count:Math.round(S.grass*1.4),radius:18,ambient:3.2,heightAt:ground,density:(x,z)=>ground(x,z)>1.5&&Math.abs(x-48-Math.sin(z*.13)*2)>2?.85:0}):null):KE.grass(T,scene,grassOptions());if(grass&&csm)(grass.setShadowSource?grass.setShadowSource(csm):csm.setupMaterial(grass.mesh.material));
+ if(grass)grass.dispose();grass=has('foliage')?(S.grass>0?KE.grassField(T,scene,{count:Math.round(S.grass*1.4),radius:S.preset==='epic'?24:18,castShadow:S.preset==='epic',ambient:3.2,heightAt:ground,density:(x,z)=>ground(x,z)>1.5&&Math.abs(x-48-Math.sin(z*.13)*2)>2?.85:0}):null):KE.grass(T,scene,grassOptions());if(grass&&csm)(grass.setShadowSource?grass.setShadowSource(csm):csm.setupMaterial(grass.mesh.material));
  if(!pipeline)pipeline=new KE.Pipeline(T,renderer,pipelineOptions);else pipeline.applySettings(S);pipeline.resetHistory();
  if(csm){csm.enabled=S.shadows;}
  scene.traverse(o=>{for(const m of [o.material].flat())if(m)m.needsUpdate=true;});}
@@ -171,7 +171,7 @@ applyQuality();
 if(!has('characters'))throw new Error('Spirit Isle needs the characters module (src/modules/62-characters.js) in kitsune-engine.js');
 const fox=KE.foxModel(T,{textureSize:detailSize}),hero=fox.group;scene.add(hero);const {orange,cream}=fox.materials,foxLegs=fox.legs,foxTail=fox.tail;
 /* Shell fur on the orange and cream coat; a procedural gait plants the paws on the terrain and a spring swings the tail. */
-const fur=has('foliage')?KE.fur(T,hero,{renderer,shells:S.preset==='ultra'||S.preset==='cinematic'?24:16,length:.075,lod:{maxDistance:30},include:m=>m.material===orange?1:m.material===cream?.7:false}):null;
+const fur=has('foliage')?KE.fur(T,hero,{renderer,shells:S.preset==='ultra'||S.preset==='cinematic'||S.preset==='epic'?24:16,length:.075,lod:{maxDistance:30},include:m=>m.material===orange?1:m.material===cream?.7:false}):null;
 let foxGait=null,tailSpring=null,wasAirborne=false;
 if(has('animation')){const foxBody=new T.Group();while(hero.children.length)foxBody.add(hero.children[0]);hero.add(foxBody);
  foxGait=new KE.ProceduralGait(T,{body:foxBody,heightAt:ground,legs:foxLegs.map((leg,i)=>({hip:leg,foot:leg.children[2],group:i===0||i===3?0:1})),stepLength:.42,stepHeight:.1,stepDuration:.17});
