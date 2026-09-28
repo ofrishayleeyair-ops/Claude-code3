@@ -16943,9 +16943,9 @@ KE.cvars.register('r.ProfileGPU',{type:'boolean',help:'Per-pass GPU timings thro
 KE.sceneUniforms=THREE=>{if(KE._sceneUniforms)return KE._sceneUniforms;return KE._sceneUniforms={
   keSceneColor:{value:null},keSceneDepth:{value:null},keHasScene:{value:0},keResolution:{value:new THREE.Vector2(1,1)},keNearFar:{value:new THREE.Vector2(.1,1000)},
   keInvProjection:{value:new THREE.Matrix4()},keProjection:{value:new THREE.Matrix4()},keViewMatrix:{value:new THREE.Matrix4()},keInvView:{value:new THREE.Matrix4()},
-  keTime:{value:0},keFrame:{value:0},keSSR:{value:1},keSunDirection:{value:new THREE.Vector3(.3,.8,.2).normalize()},keSunColor:{value:new THREE.Color(1,1,1)},keExposure:{value:1}};};
+  keTime:{value:0},keFrame:{value:0},keSSR:{value:1},kePrevViewProj:{value:new THREE.Matrix4()},kePrevView:{value:new THREE.Matrix4()},kePrevScene:{value:0},keSunDirection:{value:new THREE.Vector3(.3,.8,.2).normalize()},keSunColor:{value:new THREE.Color(1,1,1)},keExposure:{value:1}};};
 /* GLSL declarations matching KE.sceneUniforms; merge the uniform objects into a material with Object.assign(material.uniforms, KE.sceneUniforms(THREE)). */
-KE.GLSL_SCENE_DECL='uniform sampler2D keSceneColor;uniform sampler2D keSceneDepth;uniform float keHasScene;uniform vec2 keResolution;uniform vec2 keNearFar;uniform mat4 keInvProjection;uniform mat4 keProjection;uniform mat4 keViewMatrix;uniform mat4 keInvView;uniform float keTime;uniform float keFrame;uniform float keSSR;uniform vec3 keSunDirection;uniform vec3 keSunColor;uniform float keExposure;';
+KE.GLSL_SCENE_DECL='uniform sampler2D keSceneColor;uniform sampler2D keSceneDepth;uniform float keHasScene;uniform vec2 keResolution;uniform vec2 keNearFar;uniform mat4 keInvProjection;uniform mat4 keProjection;uniform mat4 keViewMatrix;uniform mat4 keInvView;uniform float keTime;uniform float keFrame;uniform float keSSR;uniform mat4 kePrevViewProj;uniform mat4 kePrevView;uniform float kePrevScene;uniform vec3 keSunDirection;uniform vec3 keSunColor;uniform float keExposure;';
 
 /* ---------- full-screen pass helper ---------- */
 KE.FullScreenQuad=class{
@@ -17022,6 +17022,22 @@ KE.GLSL.ssr=`vec4 keTraceSSR(vec3 vpos,vec3 vnormal,float roughness,float jitter
  if(hitUV.x<0.)return vec4(0.);
  vec2 e=smoothstep(0.,.12,hitUV)*smoothstep(1.,.88,hitUV);float conf=e.x*e.y*(1.-smoothstep(.3,.7,roughness))*smoothstep(.2,-.1,dir.z);
  return vec4(texture2D(keSceneColor,hitUV).rgb,conf);}`;
+
+/* Screen-space reflections for opaque materials, traced in world space against the previous frame's scene colour and
+   linear depth (still bound while the current frame's opaque pass draws). kePrevViewProj/kePrevView are the matrices that
+   frame was rendered with; kePrevScene is 0 on the first frame and after resizes. Returns rgb + confidence. */
+KE.GLSL.ssrPrev=`vec4 keTraceSSRPrev(vec3 wpos,vec3 wnormal,float roughness,float jitter){
+ if(kePrevScene<.5||keSSR<.5||roughness>.6)return vec4(0.);
+ vec3 camPos=keInvView[3].xyz;vec3 R=reflect(normalize(wpos-camPos),normalize(wnormal));
+ float stepLen=.3;vec3 p=wpos+wnormal*.04+R*stepLen*(.5+jitter);vec2 hit=vec2(-1.);
+ for(int i=0;i<28;i++){vec4 c=kePrevViewProj*vec4(p,1.);if(c.w<=0.)break;vec2 uv=c.xy/c.w*.5+.5;if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.)break;
+  float rayZ=-(kePrevView*vec4(p,1.)).z;float diff=rayZ-texture2D(keSceneDepth,uv).r;
+  if(diff>0.&&diff<.5+stepLen*1.6){vec3 a=p-R*stepLen,b=p;for(int j=0;j<5;j++){vec3 m=(a+b)*.5;vec4 cm=kePrevViewProj*vec4(m,1.);vec2 um=cm.xy/cm.w*.5+.5;if(-(kePrevView*vec4(m,1.)).z>texture2D(keSceneDepth,um).r)b=m;else a=m;}
+   vec4 cb=kePrevViewProj*vec4(b,1.);hit=cb.xy/cb.w*.5+.5;break;}
+  p+=R*stepLen;stepLen*=1.13;}
+ if(hit.x<0.)return vec4(0.);
+ vec2 e=smoothstep(0.,.1,hit)*smoothstep(1.,.9,hit);float conf=e.x*e.y*(1.-smoothstep(.15,.6,roughness));
+ return vec4(texture2D(keSceneColor,hit).rgb,conf);}`;
 
 const GTAO_FS=`${DEPTH_GLSL}
 uniform float uRadius;uniform float uProjScale;uniform float uFrame;uniform float uPower;varying vec2 vUv;
@@ -17215,7 +17231,7 @@ KE.Pipeline=class{
       volumetrics:true,shaftStrength:.25,volumetricFog:{enabled:true,density:.012,falloff:.22,height:0,anisotropy:.45,intensity:1,maxDistance:50,steps:20},dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
       grading:{saturation:1.05,contrast:1.04,temperature:0,tint:0,lift:[0,0,0],gamma:[1,1,1],gain:[1,1,1],vignette:.22,grain:.012,chromaticAberration:.15},sun:null,debugView:'lit'};
     this.set(o);
-    this.uniforms=KE.sceneUniforms(THREE);this.quad=new KE.FullScreenQuad(THREE);this.gpu=new KE.GPUTimer(renderer,{name:'pipeline'});
+    this.uniforms=KE.sceneUniforms(THREE);this.quad=new KE.FullScreenQuad(THREE);this.gpu=new KE.GPUTimer(renderer,{name:'pipeline'});this._prevVP=new THREE.Matrix4();this._prevV=new THREE.Matrix4();this._prevOK=false;
     this.proj=new THREE.Matrix4();this.invProj=new THREE.Matrix4();this.invProjU=new THREE.Matrix4();this.viewProj=new THREE.Matrix4();this.prevViewProj=new THREE.Matrix4();
     this._v2=new THREE.Vector2();this._v3=new THREE.Vector3();this._fwd=new THREE.Vector3();this._sunWorld=new THREE.Vector3();this._fogColor=new THREE.Color();
     const M=(fs,u,defines={})=>new THREE.ShaderMaterial({vertexShader:VS,fragmentShader:fs,uniforms:u,defines,depthTest:false,depthWrite:false,toneMapped:false});
@@ -17301,7 +17317,7 @@ KE.Pipeline=class{
   render(scene,camera,dt=1/60){
     const R=this.renderer,T=this.THREE,o=this.options,U=this.uniforms;
     const G=this.gpu;G.frame();if(this.enabled)this._dynamicResolution(dt);
-    if(!this.enabled){KE.prepareCamera(camera);G.begin('Scene (direct)');R.render(scene,camera);G.end();return;}
+    if(!this.enabled){U.kePrevScene.value=0;this._prevOK=false;KE.prepareCamera(camera);G.begin('Scene (direct)');R.render(scene,camera);G.end();return;}
     const t0=performance.now();this.setSize();const [W,H]=this.size,[IW,IH]=this.internal;this.frame++;this.stats.passes=0;
     const prevTarget=R.getRenderTarget(),prevTone=R.toneMapping,prevAutoClear=R.autoClear,prevInfo=R.info.autoReset,prevFog=scene.fog,prevBg=scene.background,prevMask=camera.layers.mask;
     R.info.autoReset=false;R.info.reset();
@@ -17313,6 +17329,7 @@ KE.Pipeline=class{
     const near=camera.near,far=camera.far,texel=this._v2.set(1/IW,1/IH),dtexel=(this._dt||(this._dt=new T.Vector2())).set(1/W,1/H),frameValid=this.historyValid;
     Object.assign(U.keNearFar.value,{x:near,y:far});U.keResolution.value.set(IW,IH);U.keProjection.value.copy(this.proj);U.keInvProjection.value.copy(this.invProj);U.keViewMatrix.value.copy(camera.matrixWorldInverse);U.keInvView.value.copy(camera.matrixWorld);U.keTime.value+=dt;U.keFrame.value=this.frame;
     const sun=o.sun;if(sun){this._sunWorld.copy(sun.position).sub(sun.target.position).normalize();U.keSunDirection.value.copy(this._sunWorld);U.keSunColor.value.copy(sun.color).multiplyScalar(sun.intensity);}
+    U.kePrevScene.value=this._prevOK&&this.depthOK?1:0;U.kePrevViewProj.value.copy(this._prevVP);U.kePrevView.value.copy(this._prevV);
     try{
       // 1. Opaque scene into the HDR target (linear, no tone mapping), without the translucent layer.
       G.begin('Scene (opaque)');
@@ -17323,6 +17340,7 @@ KE.Pipeline=class{
       this.m.copy.uniforms.tSrc.value=this.scene.texture;this.pass(this.m.copy,this.colorCopy);
       if(this.depthOK){this.bindDepth(this.m.linearDepth,near,far,texel);this.pass(this.m.linearDepth,this.linearDepth);}
       U.keSceneColor.value=this.colorCopy.texture;U.keSceneDepth.value=this.depthOK?this.linearDepth.texture:null;U.keHasScene.value=this.depthOK?1:0;
+      this._prevVP.multiplyMatrices(this.proj,camera.matrixWorldInverse);this._prevV.copy(camera.matrixWorldInverse);this._prevOK=true;
       // 3. Translucent layer drawn over the opaque result with depth testing.
       G.begin('Translucent');
       camera.layers.mask=TRANSLUCENT_BIT;scene.background=null;const sm=R.shadowMap,au=sm.autoUpdate,nu=sm.needsUpdate;sm.autoUpdate=false;sm.needsUpdate=false;R.autoClear=false;R.setRenderTarget(this.scene);R.render(scene,camera);sm.autoUpdate=au;sm.needsUpdate=nu;
@@ -17399,10 +17417,10 @@ KE.Pipeline=class{
   blur(pair,halfTexel,channel){const b=this.m.blur;b.uniforms.uDepthChannel.value=channel;b.uniforms.tSrc.value=pair[0].texture;b.uniforms.uDir.value.set(halfTexel.x,0);this.pass(b,pair[1]);b.uniforms.tSrc.value=pair[1].texture;b.uniforms.uDir.value.set(0,halfTexel.y);this.pass(b,pair[0]);}
   /* Approximate white balance multiplier from temperature (-1 cool .. +1 warm) and tint (-1 green .. +1 magenta). */
   whiteBalance(t,tint){const v=this._wb||(this._wb=new this.THREE.Vector3());v.set(1+t*.18-tint*.04,1-Math.abs(t)*.02+tint*.12*-1,1-t*.22-tint*.04);const l=v.x*.2126+v.y*.7152+v.z*.0722;return v.multiplyScalar(1/l);}
-  disposeTargets(){for(const t of this.targets){if(t.depthTexture)t.depthTexture.dispose();t.dispose();}this.targets.length=0;this.size=[0,0];this.internal=[0,0];}
+  disposeTargets(){this._prevOK=false;for(const t of this.targets){if(t.depthTexture)t.depthTexture.dispose();t.dispose();}this.targets.length=0;this.size=[0,0];this.internal=[0,0];}
   dispose(){this.gpu.dispose();this.disposeTargets();for(const m of Object.values(this.m))m.dispose();this.quad.dispose();this._black.dispose();this._white.dispose();if(this.onSettings)this.onSettings();const U=this.uniforms;U.keSceneColor.value=null;U.keSceneDepth.value=null;U.keHasScene.value=0;this.enabled=false;}
 };
-KE.registerModule('pipeline',{provides:['Pipeline','GLSL.ssr']});
+KE.registerModule('pipeline',{provides:['Pipeline','GLSL.ssr','GLSL.ssrPrev']});
 })();
 
 /* ===== module: 12-sky.js ===== */
@@ -19916,7 +19934,7 @@ vec2 keWxRipple(vec2 p,float t){vec2 g=vec2(0.);
  return g*.55;}`;
 
 /* Injected before emissive: diffuseColor, roughnessFactor, metalnessFactor and the view-space normal are final. */
-const FRAG_MAIN=`{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWxN,0.)).xyz);
+const FRAG_MAIN=`float keWxPudOut=0.;{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWxN,0.)).xyz);
  float keExposed=smoothstep(-.35,.45,keUp);
  float keWet=keWxWet*keExposed*keWxPorosityScale;
  /* puddles: flat ground, low-frequency noise mask whose threshold drops as the puddle level rises */
@@ -19925,7 +19943,7 @@ const FRAG_MAIN=`{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWx
  /* snow: upward faces with a noisy slope threshold; snow sits on top of puddles and wet ground */
  float keSn=keWxNoise(vKeWxPos.xz*1.7)*.6+keWxNoise(vKeWxPos.xz*7.3)*.4;
  float keTh=mix(1.25,.36,keWxSnow);float keSnow=smoothstep(keTh,keTh+.18,keUp*.85+keSn*.3)*step(.001,keWxSnow);
- kePud*=1.-keSnow;keWet*=1.-keSnow;
+ kePud*=1.-keSnow;keWet*=1.-keSnow;keWxPudOut=kePud;
  float keFm=metalnessFactor;
  diffuseColor.rgb*=mix(1.,mix(.42,1.,1.-keWxPorosity),keWet*(1.-keFm));
  roughnessFactor=mix(roughnessFactor,max(.2,roughnessFactor*.5),keWet);
@@ -19940,9 +19958,15 @@ const FRAG_MAIN=`{float keUp=vKeWxN.y;vec3 keNv=normalize((viewMatrix*vec4(vKeWx
   normal=normalize(mix(normal,keSnowN,keSnow*.8));}
 }`;
 
+/* Puddle reflections: after lighting, the puddle's indirect specular is replaced (by Fresnel and puddle weight) with a
+   screen-space reflection traced against the previous frame (KE.GLSL.ssrPrev from the pipeline module). */
+const FRAG_LATE=`if(keWxPudOut>.01){vec3 keWn=inverseTransformDirection(normal,viewMatrix);vec4 keR=keTraceSSRPrev(vKeWxPos,keWn,.04,fract(52.9829189*fract(dot(gl_FragCoord.xy,vec2(.06711056,.00583715)))));
+ float keF=.02+.98*pow(1.-clamp(dot(normal,normalize(vViewPosition)),0.,1.),5.);reflectedLight.indirectSpecular=mix(reflectedLight.indirectSpecular,keR.rgb*keF,keR.a*keWxPudOut);}`;
+const SSR_UNIFORMS=[['sampler2D','keSceneColor'],['sampler2D','keSceneDepth'],['mat4','keInvView'],['float','keSSR'],['mat4','kePrevViewProj'],['mat4','kePrevView'],['float','kePrevScene']];
+
 KE.SurfaceWeather=class{
-  constructor(THREE,{wetness=0,puddles=0,snow=0,rain=0,puddleScale=.18,puddleCoverage=1,porosity=.6,snowColor=0xf2f5fa,wetRate=.08,dryRate=.012,puddleRate=.025,drainRate=.008,snowRate=.02,meltRate=.01,ripples=null}={}){
-    this.THREE=THREE;Object.assign(this,{wetRate,dryRate,puddleRate,drainRate,snowRate,meltRate});
+  constructor(THREE,{wetness=0,puddles=0,snow=0,rain=0,puddleScale=.18,puddleCoverage=1,porosity=.6,reflections=true,snowColor=0xf2f5fa,wetRate=.08,dryRate=.012,puddleRate=.025,drainRate=.008,snowRate=.02,meltRate=.01,ripples=null}={}){
+    this.THREE=THREE;this.reflections=reflections;Object.assign(this,{wetRate,dryRate,puddleRate,drainRate,snowRate,meltRate});
     this.uniforms={keWxWet:{value:clamp(wetness,0,1)},keWxPuddles:{value:clamp(puddles,0,1)},keWxSnow:{value:clamp(snow,0,1)},keWxRain:{value:clamp(rain,0,1)},keWxTime:{value:0},
       keWxPuddleScale:{value:puddleScale},keWxRipples:{value:1},keWxPorosity:{value:clamp(porosity,0,1)},keWxCoverage:{value:clamp(puddleCoverage,0,2)},keWxSnowColor:{value:new THREE.Color(snowColor).convertSRGBToLinear()}};
     this._ripplesOverride=ripples;this.materials=new Set();this.restore=new Map();
@@ -19953,13 +19977,16 @@ KE.SurfaceWeather=class{
   setupMaterial(m){
     if(!m||this.materials.has(m)||!m.isMeshStandardMaterial||m.userData.keNoWeather||m.transparent)return m;
     const prev=m.onBeforeCompile,ownKey=Object.prototype.hasOwnProperty.call(m,'customProgramCacheKey')?m.customProgramCacheKey:null,prevKey=m.customProgramCacheKey.bind(m),U=this.uniforms;
-    const porosity=Number.isFinite(m.userData.kePorosity)?clamp(m.userData.kePorosity,0,1):1;
+    const porosity=Number.isFinite(m.userData.kePorosity)?clamp(m.userData.kePorosity,0,1):1,ssr=this.reflections&&!!(KE.GLSL&&KE.GLSL.ssrPrev&&KE.sceneUniforms);
     this.restore.set(m,{prev,ownKey});
     m.onBeforeCompile=(sh,r)=>{if(prev)prev.call(m,sh,r);Object.assign(sh.uniforms,U);
       if(!/#include <defaultnormal_vertex>/.test(sh.vertexShader)||!/#include <project_vertex>/.test(sh.vertexShader)||!/#include <emissivemap_fragment>/.test(sh.fragmentShader))throw new Error('KE.SurfaceWeather: unexpected Standard material shader (Three.js r128 required)');
       sh.vertexShader=VERT_PARS+'\n'+sh.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\n'+VERT_MAIN);
-      sh.fragmentShader=FRAG_PARS+'\n#define keWxPorosityScale '+porosity.toFixed(3)+'\n'+sh.fragmentShader.replace('#include <emissivemap_fragment>',FRAG_MAIN+'\n#include <emissivemap_fragment>');};
-    m.customProgramCacheKey=()=>prevKey()+':ke-wx'+porosity.toFixed(3);m.needsUpdate=true;this.materials.add(m);return m;}
+      sh.fragmentShader=FRAG_PARS+'\n#define keWxPorosityScale '+porosity.toFixed(3)+'\n'+sh.fragmentShader.replace('#include <emissivemap_fragment>',FRAG_MAIN+'\n#include <emissivemap_fragment>');
+      if(ssr&&/#include <lights_fragment_end>/.test(sh.fragmentShader)){const SU=KE.sceneUniforms(this.THREE);let decl='';
+        for(const [type,name] of SSR_UNIFORMS){if(!sh.uniforms[name])sh.uniforms[name]=SU[name];if(!new RegExp('uniform\\s+'+type+'\\s+'+name+'\\b').test(sh.fragmentShader))decl+='uniform '+type+' '+name+';';}
+        sh.fragmentShader=decl+'\n'+(/keTraceSSRPrev/.test(sh.fragmentShader)?'':KE.GLSL.ssrPrev+'\n')+sh.fragmentShader.replace('#include <lights_fragment_end>','#include <lights_fragment_end>\n'+FRAG_LATE);}};
+    m.customProgramCacheKey=()=>prevKey()+':ke-wx'+porosity.toFixed(3)+(ssr?':ssr':'');m.needsUpdate=true;this.materials.add(m);return m;}
   setupScene(root){root.traverse(o=>{if(o.material&&!o.userData.keNoWeather)for(const m of [o.material].flat())this.setupMaterial(m);});return this;}
   /* Direct control, all 0..1. */
   set({wetness,puddles,snow,rain}={}){const U=this.uniforms;if(wetness!==undefined)U.keWxWet.value=clamp(+wetness||0,0,1);if(puddles!==undefined)U.keWxPuddles.value=clamp(+puddles||0,0,1);
@@ -22586,6 +22613,112 @@ KE.Physics3D={
   World:PhysicsWorld,Body,Joint,CharacterController,Vehicle
 };
 KE.registerModule('physics3d',{provides:['Physics3D']});
+})();
+
+/* ===== module: 42-cloth.js ===== */
+/* KE.Cloth — position-based cloth for flags, banners, curtains and capes.
+   A grid of particles integrated with damped Verlet steps, then projected onto distance constraints (structural,
+   shear and bend springs, each with its own stiffness) for a fixed number of Gauss–Seidel iterations per substep.
+   Wind acts per triangle as an aerodynamic force proportional to the normal component of the relative air velocity
+   (so fabric flutters and luffs instead of drifting), with gusts from travelling value noise. Pins hold particles
+   at points fixed in an anchor object's frame, so a banner follows its pole. Sphere and capsule colliders and a
+   ground height push particles out with friction. The mesh is simulated in world space (identity transform). */
+(function(){'use strict';
+const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const vec=(v,out)=>v.isVector3?v:Array.isArray(v)?out.set(v[0],v[1],v[2]):out.set(v.x,v.y,v.z);
+const hash=(x,y)=>{const s=Math.sin(x*127.1+y*311.7)*43758.5453;return s-Math.floor(s);};
+const vnoise=(x,y)=>{const ix=Math.floor(x),iy=Math.floor(y),fx=x-ix,fy=y-iy,u=fx*fx*(3-2*fx),v=fy*fy*(3-2*fy);
+  const a=hash(ix,iy),b=hash(ix+1,iy),c=hash(ix,iy+1),d=hash(ix+1,iy+1);return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;};
+
+KE.Cloth=class{
+  constructor(THREE,{width=1,height=1.6,segmentsX=12,segmentsY=20,pins='top',anchor=null,position=null,quaternion=null,material=null,
+      mass=.3,stiffness=1,shearStiffness=.8,bendStiffness=.25,damping=.012,gravity=[0,-9.81,0],wind=null,windStrength=1,gustStrength=.6,gustScale=.35,
+      drag=1.2,skin=.2,iterations=6,substeps=2,colliders=[],ground=null,friction=.35,thickness=.02,maxDt=1/30,castShadow=true,receiveShadow=true}={}){
+    const T=this.THREE=THREE;Object.assign(this,{width,height,nx:Math.max(1,segmentsX|0),ny:Math.max(1,segmentsY|0),anchor,stiffness,shearStiffness,bendStiffness,damping,drag,skin,
+      iterations:Math.max(1,iterations|0),substeps:Math.max(1,substeps|0),colliders,ground,friction,thickness,maxDt,windStrength,gustStrength,gustScale,time:0,enabled:true});
+    this.gravity=new T.Vector3(...gravity);this.wind=wind;this._windVec=new T.Vector3();
+    const nx=this.nx,ny=this.ny,n=(nx+1)*(ny+1);this.count=n;
+    this.pos=new Float32Array(n*3);this.prev=new Float32Array(n*3);this.rest=new Float32Array(n*3);this.invMass=new Float32Array(n);this.force=new Float32Array(n*3);
+    // Rest layout in the cloth's local frame: x across, y down from the top edge (top row j=0 at y=0), z = 0.
+    // A millimetre of seeded out-of-plane ripple: a perfectly flat sheet under in-plane forces never buckles or folds.
+    for(let j=0;j<=ny;j++)for(let i=0;i<=nx;i++){const k=j*(nx+1)+i;this.rest[k*3]=(i/nx-.5)*width;this.rest[k*3+1]=-j/ny*height;this.rest[k*3+2]=(hash(i*1.7,j*2.3)-.5)*.002*Math.min(width,height);}
+    this.frame=new T.Matrix4();if(anchor){anchor.updateWorldMatrix(true,false);this.frame.copy(anchor.matrixWorld);}
+    // Optional placement of the rest grid inside the anchor's frame (or the world when there is no anchor).
+    const pv=position?vec(position,new T.Vector3()).clone():new T.Vector3(),q=quaternion?(quaternion.isQuaternion?quaternion:new T.Quaternion().setFromEuler(new T.Euler(...quaternion))):new T.Quaternion();
+    this.local=new T.Matrix4().compose(pv,q,new T.Vector3(1,1,1));
+    const pm=this.particleMass=mass/n;const v=new T.Vector3();
+    for(let k=0;k<n;k++){v.fromArray(this.rest,k*3).applyMatrix4(this.local).applyMatrix4(this.frame);v.toArray(this.pos,k*3);v.toArray(this.prev,k*3);this.invMass[k]=1/pm;}
+    // Pins: 'top' | 'left' | 'right' | 'corners' | 'topCorners' | array of [i,j] | fn(i,j) → bool
+    this.pins=[];const isPin=typeof pins==='function'?pins:(i,j)=>pins==='top'?j===0:pins==='left'?i===0:pins==='right'?i===nx:pins==='corners'?(j===0||j===ny)&&(i===0||i===nx):pins==='topCorners'?j===0&&(i===0||i===nx):Array.isArray(pins)&&pins.some(p=>p[0]===i&&p[1]===j);
+    for(let j=0;j<=ny;j++)for(let i=0;i<=nx;i++)if(isPin(i,j)){const k=j*(nx+1)+i;this.invMass[k]=0;this.pins.push(k);}
+    // Constraints: [a, b, restLength, stiffness]
+    const cons=[],add=(a,b,s)=>{const dx=this.rest[a*3]-this.rest[b*3],dy=this.rest[a*3+1]-this.rest[b*3+1];cons.push(a,b,Math.hypot(dx,dy),s);},id=(i,j)=>j*(nx+1)+i;
+    for(let j=0;j<=ny;j++)for(let i=0;i<=nx;i++){if(i<nx)add(id(i,j),id(i+1,j),stiffness);if(j<ny)add(id(i,j),id(i,j+1),stiffness);
+      if(i<nx&&j<ny){add(id(i,j),id(i+1,j+1),shearStiffness);add(id(i+1,j),id(i,j+1),shearStiffness);}
+      if(i<nx-1)add(id(i,j),id(i+2,j),bendStiffness);if(j<ny-1)add(id(i,j),id(i,j+2),bendStiffness);}
+    this.constraints=new Float32Array(cons);
+    // Geometry and mesh (world space).
+    const g=new T.PlaneGeometry(width,height,nx,ny);g.setAttribute('position',new T.BufferAttribute(this.pos.slice(),3).setUsage(T.DynamicDrawUsage));g.computeVertexNormals();
+    this.tris=g.index.array;this.geometry=g;
+    this.ownMaterial=!material;this.material=material||new T.MeshStandardMaterial({color:0xd04830,roughness:.85,side:T.DoubleSide});
+    this.mesh=new T.Mesh(g,this.material);this.mesh.castShadow=castShadow;this.mesh.receiveShadow=receiveShadow;this.mesh.frustumCulled=false;this.mesh.name='ke-cloth';
+    this._a=new T.Vector3();this._b=new T.Vector3();this._c=new T.Vector3();this._n=new T.Vector3();this._w=new T.Vector3();this._p=new T.Vector3();
+    this._sync();
+  }
+  /* Wind velocity (m/s) at a point: options.wind (vector, [x,y,z] or fn(time,pos,out)), else the shared foliage wind, plus gusts. */
+  windAt(p,out){const w=this.wind,t=this.time;
+    if(typeof w==='function')w(t,p,out);else if(w)out.set(w.x!==undefined?w.x:w[0],w.y!==undefined?w.y:w[1],w.z!==undefined?w.z:w[2]);
+    else{const U=KE.foliageUniforms,s=U?U.keWindStrength.value:1,d=U?U.keWindDir.value:null;out.set(d?d.x:.8,0,d?d.y:.6).normalize().multiplyScalar(3.5*s);}
+    const gs=this.gustScale,g=vnoise(p.x*gs-t*1.3,p.z*gs+t*.7)*2-1,flutter=vnoise(p.y*1.7+t*4.1,p.x*1.3)*2-1;
+    out.multiplyScalar(this.windStrength*(1+this.gustStrength*g));out.y+=flutter*.4*this.gustStrength;return out;}
+  /* Advance by dt seconds (clamped to maxDt), in `substeps` fixed substeps. */
+  update(dt){if(!this.enabled)return this;dt=clamp(+dt||0,0,this.maxDt);if(!dt)return this;const h=dt/this.substeps;
+    if(this.anchor){this.anchor.updateWorldMatrix(true,false);this.frame.copy(this.anchor.matrixWorld);}
+    for(let s=0;s<this.substeps;s++){this.time+=h;this._forces(h);this._integrate(h);for(let it=0;it<this.iterations;it++)this._solve();this._pinsAndCollide();}
+    this._sync();return this;}
+  _forces(h){const P=this.pos,Q=this.prev,F=this.force,tr=this.tris,a=this._a,b=this._b,c=this._c,n=this._n,w=this._w,p=this._p,wind=this._windVec;F.fill(0);
+    const g=this.gravity,pm=this.particleMass;for(let k=0;k<this.count;k++){F[k*3]+=g.x*pm;F[k*3+1]+=g.y*pm;F[k*3+2]+=g.z*pm;}
+    if(!this.drag&&!this.skin)return;
+    for(let t=0;t<tr.length;t+=3){const i0=tr[t],i1=tr[t+1],i2=tr[t+2];a.fromArray(P,i0*3);b.fromArray(P,i1*3);c.fromArray(P,i2*3);
+      p.copy(a).add(b).add(c).multiplyScalar(1/3);this.windAt(p,wind);
+      // triangle velocity from Verlet positions
+      w.set((P[i0*3]-Q[i0*3]+P[i1*3]-Q[i1*3]+P[i2*3]-Q[i2*3])/(3*h),(P[i0*3+1]-Q[i0*3+1]+P[i1*3+1]-Q[i1*3+1]+P[i2*3+1]-Q[i2*3+1])/(3*h),(P[i0*3+2]-Q[i0*3+2]+P[i1*3+2]-Q[i1*3+2]+P[i2*3+2]-Q[i2*3+2])/(3*h));
+      wind.sub(w);b.sub(a);c.sub(a);n.crossVectors(b,c);const area2=n.length();if(area2<1e-9)continue;n.multiplyScalar(1/area2);
+      // Pressure drag on the normal component (½ρ·Cd·A·vn|vn|) plus skin friction along the fabric (½ρ·Cf·A·|vt|·vt),
+      // which is what makes a flag stream out downwind; each triangle's force is shared by its three vertices.
+      const vn=wind.dot(n),tx=wind.x-n.x*vn,ty=wind.y-n.y*vn,tz=wind.z-n.z*vn,vt=Math.sqrt(tx*tx+ty*ty+tz*tz),q=.5*1.2*area2*.5/3,kn=q*this.drag*vn*Math.abs(vn),kt=q*this.skin*vt;
+      for(const i of [i0,i1,i2]){F[i*3]+=n.x*kn+tx*kt;F[i*3+1]+=n.y*kn+ty*kt;F[i*3+2]+=n.z*kn+tz*kt;}}}
+  _integrate(h){const P=this.pos,Q=this.prev,F=this.force,im=this.invMass,damp=1-this.damping,h2=h*h;
+    for(let k=0;k<this.count;k++){if(!im[k])continue;const o=k*3;for(let d=0;d<3;d++){const x=P[o+d],v=(x-Q[o+d])*damp;Q[o+d]=x;P[o+d]=x+v+F[o+d]*im[k]*h2;}}}
+  _solve(){const P=this.pos,im=this.invMass,C=this.constraints;
+    for(let c=0;c<C.length;c+=4){const a=C[c]*3,b=C[c+1]*3,L=C[c+2],s=C[c+3],wa=im[C[c]],wb=im[C[c+1]],ws=wa+wb;if(!ws)continue;
+      const dx=P[b]-P[a],dy=P[b+1]-P[a+1],dz=P[b+2]-P[a+2],d=Math.sqrt(dx*dx+dy*dy+dz*dz);if(d<1e-9)continue;
+      const k=(d-L)/(d*ws)*s;P[a]+=dx*k*wa;P[a+1]+=dy*k*wa;P[a+2]+=dz*k*wa;P[b]-=dx*k*wb;P[b+1]-=dy*k*wb;P[b+2]-=dz*k*wb;}}
+  _pinsAndCollide(){const P=this.pos,Q=this.prev,v=this._a,T=this.THREE;
+    for(const k of this.pins){v.fromArray(this.rest,k*3).applyMatrix4(this.local).applyMatrix4(this.frame);v.toArray(P,k*3);v.toArray(Q,k*3);}
+    const th=this.thickness,fr=this.friction,cs=this.colliders,gr=this.ground;if(!cs.length&&gr==null)return;
+    const c=this._b,a=this._c,b=this._n;
+    for(let k=0;k<this.count;k++){if(!this.invMass[k])continue;const o=k*3;let x=P[o],y=P[o+1],z=P[o+2];
+      for(const col of cs){let cx,cy,cz,r=(col.radius||.5)+th;
+        if(col.a&&col.b){const A=vec(col.a,a),B=vec(col.b,b);const abx=B.x-A.x,aby=B.y-A.y,abz=B.z-A.z,ll=abx*abx+aby*aby+abz*abz||1;
+          const t=clamp(((x-A.x)*abx+(y-A.y)*aby+(z-A.z)*abz)/ll,0,1);cx=A.x+abx*t;cy=A.y+aby*t;cz=A.z+abz*t;}
+        else if(col.object){col.object.updateWorldMatrix(true,false);c.set(...(col.offset||[0,0,0])).applyMatrix4(col.object.matrixWorld);cx=c.x;cy=c.y;cz=c.z;}
+        else{const C=vec(col.center,c);cx=C.x;cy=C.y;cz=C.z;}
+        const dx=x-cx,dy=y-cy,dz=z-cz,d=Math.sqrt(dx*dx+dy*dy+dz*dz);
+        if(d<r&&d>1e-9){const s=r/d;x=cx+dx*s;y=cy+dy*s;z=cz+dz*s;// friction: pull the previous position toward the contact so tangential motion slows
+          Q[o]+= (x-Q[o])*fr;Q[o+1]+=(y-Q[o+1])*fr;Q[o+2]+=(z-Q[o+2])*fr;}}
+      if(gr!=null){const gy=(typeof gr==='function'?gr(x,z):gr)+th;if(y<gy){y=gy;Q[o]+=(x-Q[o])*fr;Q[o+2]+=(z-Q[o+2])*fr;Q[o+1]=gy;}}
+      P[o]=x;P[o+1]=y;P[o+2]=z;}}
+  _sync(){const attr=this.geometry.attributes.position;attr.array.set(this.pos);attr.needsUpdate=true;this.geometry.computeVertexNormals();this.geometry.computeBoundingSphere();}
+  /* Put every particle back at its rest pose under the current anchor transform (after a teleport). */
+  reset(){if(this.anchor){this.anchor.updateWorldMatrix(true,false);this.frame.copy(this.anchor.matrixWorld);}const v=this._a;
+    for(let k=0;k<this.count;k++){v.fromArray(this.rest,k*3).applyMatrix4(this.local).applyMatrix4(this.frame);v.toArray(this.pos,k*3);v.toArray(this.prev,k*3);}this._sync();return this;}
+  /* Largest particle speed of the last step (m/s per substep length estimate). */
+  get energy(){let m=0;for(let o=0;o<this.pos.length;o+=3){const dx=this.pos[o]-this.prev[o],dy=this.pos[o+1]-this.prev[o+1],dz=this.pos[o+2]-this.prev[o+2];m=Math.max(m,dx*dx+dy*dy+dz*dz);}return Math.sqrt(m);}
+  dispose(){if(this.mesh.parent)this.mesh.parent.remove(this.mesh);this.geometry.dispose();if(this.ownMaterial)this.material.dispose();this.enabled=false;}
+};
+KE.registerModule('cloth',{provides:['Cloth']});
 })();
 
 /* ===== module: 50-vfx.js ===== */
