@@ -43,6 +43,12 @@ const {openPage}=require('./harness.cjs');const path=require('path');const shots
  await test('snow whitens upward faces only',async()=>{const r=await page.evaluate(()=>{t.wx.set({wetness:0,puddles:0,rain:0,snow:1});return null;});const s=await measure();await shot('snow');console.log('  ',JSON.stringify(s));
   if(!(lum(s.boxTop)>lum(dry.boxTop)*1.15))throw Error('box top not snowy');if(!(Math.abs(lum(s.boxSide)-lum(dry.boxSide))<Math.max(8,lum(dry.boxSide)*.2)))throw Error('vertical side changed too much');
   const sat=c=>Math.max(...c)-Math.min(...c);if(!(sat(s.ground)<sat(dry.ground)))throw Error('ground not whiter');});
+ await test('snow line: lying snow above an altitude with no snowfall, none below it',async()=>{
+   await page.evaluate(()=>{t.wx.set({wetness:0,puddles:0,rain:0,snow:0});t.wx.setSnowLine(-50,2);});const above=await measure();
+   await page.evaluate(()=>{t.wx.setSnowLine(500,2);});const below=await measure();await page.evaluate(()=>{t.wx.setSnowLine(null);});const off=await measure();
+   console.log('  ',JSON.stringify({above:above.boxTop,below:below.boxTop,dry:dry.boxTop}));
+   if(!(lum(above.boxTop)>lum(dry.boxTop)*1.15))throw Error('no snow above the snow line');if(!(Math.abs(lum(below.boxTop)-lum(dry.boxTop))<Math.max(6,lum(dry.boxTop)*.08)))throw Error('snow below the snow line');
+   if(!(Math.abs(lum(off.boxTop)-lum(dry.boxTop))<Math.max(6,lum(dry.boxTop)*.08)))throw Error('setSnowLine(null) did not clear');});
  await test('update() wets in rain, fills puddles later, dries and melts',async()=>{const r=await page.evaluate(()=>{const w=t.wx;w.set({wetness:0,puddles:0,snow:.5,rain:0});const log=[];
    for(let i=0;i<40;i++){w.update(.5,{raining:true});if(i===9)log.push({w:w.wetness,p:w.puddles});}const wet={w:w.wetness,p:w.puddles,rain:w.rain};w.update(.5,{raining:false,snowing:false});const after1={w:w.wetness,p:w.puddles};
    for(let i=0;i<400;i++)w.update(.5,{raining:false,snowing:false});return {early:log[0],wet,after1,dry:{w:w.wetness,p:w.puddles,s:w.snow}};});

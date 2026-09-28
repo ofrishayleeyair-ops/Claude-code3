@@ -5,7 +5,8 @@
    flattening normal detail and raising roughness. All of it is one block injected after the material's
    normal is final, so it composes with other onBeforeCompile hooks (terrain splatting, GI, shadows).
    update(dt, {raining, snowing}) ramps the wetness, puddle and snow levels over time like a real surface
-   that wets, drains and melts. */
+   that wets, drains and melts. setSnowLine(height, band) adds a snow biome: lying snow above an altitude whatever the
+   weather. */
 (function(){'use strict';
 const KE=window.KitsuneEngine;if(!KE)throw new Error('Load kitsune core before its modules');
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
@@ -18,7 +19,7 @@ keWp=instanceMatrix*keWp;keWn=mat3(instanceMatrix)*keWn;
 vKeWxPos=(modelMatrix*keWp).xyz;vKeWxN=normalize(mat3(modelMatrix)*keWn);}`;
 
 const FRAG_PARS=`varying vec3 vKeWxPos;varying vec3 vKeWxN;
-uniform float keWxWet;uniform float keWxPuddles;uniform float keWxSnow;uniform float keWxRain;uniform float keWxTime;uniform float keWxPuddleScale;uniform float keWxRipples;uniform float keWxPorosity;uniform float keWxCoverage;uniform vec3 keWxSnowColor;
+uniform float keWxWet;uniform float keWxPuddles;uniform float keWxSnow;uniform vec2 keWxSnowLine;uniform float keWxRain;uniform float keWxTime;uniform float keWxPuddleScale;uniform float keWxRipples;uniform float keWxPorosity;uniform float keWxCoverage;uniform vec3 keWxSnowColor;
 float keWxHash(vec2 p){vec3 p3=fract(vec3(p.xyx)*.1031);p3+=dot(p3,p3.yzx+33.33);return fract((p3.x+p3.y)*p3.z);}
 float keWxNoise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(keWxHash(i),keWxHash(i+vec2(1,0)),f.x),mix(keWxHash(i+vec2(0,1)),keWxHash(i+vec2(1,1)),f.x),f.y);}
 float keWxFbm(vec2 p){return keWxNoise(p)*.5+keWxNoise(p*2.03+17.1)*.3+keWxNoise(p*4.11+3.7)*.2;}
@@ -38,7 +39,9 @@ const FRAG_MAIN=`float keWxPudOut=0.;{float keUp=vKeWxN.y;vec3 keNv=normalize((v
  float kePl=keWxPuddles*keWxCoverage*.45;float kePud=keFlat*smoothstep(1.-kePl,1.06-kePl,kePn)*step(.001,keWxPuddles);
  /* snow: upward faces with a noisy slope threshold; snow sits on top of puddles and wet ground */
  float keSn=keWxNoise(vKeWxPos.xz*1.7)*.6+keWxNoise(vKeWxPos.xz*7.3)*.4;
- float keTh=mix(1.25,.36,keWxSnow);float keSnow=smoothstep(keTh,keTh+.18,keUp*.85+keSn*.3)*step(.001,keWxSnow);
+ /* lying snow: the weather's level, or the snow biome above the snow line (x = height, y = band), whichever is more */
+ float keSnowLvl=max(keWxSnow,smoothstep(keWxSnowLine.x-keWxSnowLine.y,keWxSnowLine.x+keWxSnowLine.y,vKeWxPos.y+(keSn-.5)*keWxSnowLine.y*1.5));
+ float keTh=mix(1.25,.36,keSnowLvl);float keSnow=smoothstep(keTh,keTh+.18,keUp*.85+keSn*.3)*step(.001,keSnowLvl);
  kePud*=1.-keSnow;keWet*=1.-keSnow;keWxPudOut=kePud;
  float keFm=metalnessFactor;
  diffuseColor.rgb*=mix(1.,mix(.42,1.,1.-keWxPorosity),keWet*(1.-keFm));
@@ -64,7 +67,7 @@ KE.SurfaceWeather=class{
   constructor(THREE,{wetness=0,puddles=0,snow=0,rain=0,puddleScale=.18,puddleCoverage=1,porosity=.6,reflections=true,snowColor=0xf2f5fa,wetRate=.08,dryRate=.012,puddleRate=.025,drainRate=.008,snowRate=.02,meltRate=.01,ripples=null}={}){
     this.THREE=THREE;this.reflections=reflections;Object.assign(this,{wetRate,dryRate,puddleRate,drainRate,snowRate,meltRate});
     this.uniforms={keWxWet:{value:clamp(wetness,0,1)},keWxPuddles:{value:clamp(puddles,0,1)},keWxSnow:{value:clamp(snow,0,1)},keWxRain:{value:clamp(rain,0,1)},keWxTime:{value:0},
-      keWxPuddleScale:{value:puddleScale},keWxRipples:{value:1},keWxPorosity:{value:clamp(porosity,0,1)},keWxCoverage:{value:clamp(puddleCoverage,0,2)},keWxSnowColor:{value:new THREE.Color(snowColor).convertSRGBToLinear()}};
+      keWxPuddleScale:{value:puddleScale},keWxSnowLine:{value:new THREE.Vector2(1e9,10)},keWxRipples:{value:1},keWxPorosity:{value:clamp(porosity,0,1)},keWxCoverage:{value:clamp(puddleCoverage,0,2)},keWxSnowColor:{value:new THREE.Color(snowColor).convertSRGBToLinear()}};
     this._ripplesOverride=ripples;this.materials=new Set();this.restore=new Map();
     const apply=s=>{this.uniforms.keWxRipples.value=this._ripplesOverride!==null?(this._ripplesOverride?1:0):((s&&s.vfx!==undefined?s.vfx:1)>=.5?1:0);};
     this.offSettings=KE.events&&KE.events.on?KE.events.on('settings',apply):null;apply(KE.settings);
@@ -84,6 +87,9 @@ KE.SurfaceWeather=class{
         sh.fragmentShader=decl+'\n'+(/keTraceSSRPrev/.test(sh.fragmentShader)?'':KE.GLSL.ssrPrev+'\n')+sh.fragmentShader.replace('#include <lights_fragment_end>','#include <lights_fragment_end>\n'+FRAG_LATE);}};
     m.customProgramCacheKey=()=>prevKey()+':ke-wx'+porosity.toFixed(3)+(ssr?':ssr':'');m.needsUpdate=true;this.materials.add(m);return m;}
   setupScene(root){root.traverse(o=>{if(o.material&&!o.userData.keNoWeather)for(const m of [o.material].flat())this.setupMaterial(m);});return this;}
+  /* Snow biome: surfaces above `height` (metres, blended over ±band) carry lying snow on their upward faces whatever
+     the weather (null turns it off). */
+  setSnowLine(height,band=12){const v=this.uniforms.keWxSnowLine.value;if(height===null||height===undefined||!Number.isFinite(height))v.set(1e9,10);else v.set(height,Math.max(.5,band));return this;}
   /* Direct control, all 0..1. */
   set({wetness,puddles,snow,rain}={}){const U=this.uniforms;if(wetness!==undefined)U.keWxWet.value=clamp(+wetness||0,0,1);if(puddles!==undefined)U.keWxPuddles.value=clamp(+puddles||0,0,1);
     if(snow!==undefined)U.keWxSnow.value=clamp(+snow||0,0,1);if(rain!==undefined)U.keWxRain.value=clamp(+rain||0,0,1);return this;}

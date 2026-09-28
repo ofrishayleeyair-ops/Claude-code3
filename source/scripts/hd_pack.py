@@ -22,15 +22,16 @@ PART = 30 * 1024 * 1024  # raw bytes per script part (about 40 MB of base64)
 
 # terrain layers (texture arrays in KE.GPUTerrain): albedo, normal and ARM at 4K, height at 2K
 TERRAIN = [
-    ('forrest_ground_01', 'grass'), ('brown_mud_leaves_01', 'grass-leaves'), ('coast_sand_01', 'sand'),
+    ('forrest_ground_01', 'grass'), ('brown_mud_leaves_01', 'grass-leaves'), ('sand_03', 'sand'),
     ('forest_ground_04', 'dirt'), ('river_small_rocks', 'gravel'), ('mossy_rock', 'rock'),
-    ('rock_face_03', 'rock-high'), ('snow_02', 'snow'),
+    ('rock_face_03', 'rock-high'), ('snow_02', 'snow'), ('gravel_stones', 'ash'), ('lichen_rock', 'rock-volcanic'),
+    ('rocky_trail', 'trail'), ('coast_sand_05', 'sand-wet'),
 ]
 # surfaces for meshes (MeshStandardMaterial map / normalMap / ARM)
 SURFACES = [
-    ('japanese_cedar_bark', '4k', 'bark cedar'), ('sakura_bark', '2k', 'bark sakura'), ('trident_maple_bark', '2k', 'bark maple'),
+    ('japanese_cedar_bark', '4k', 'bark cedar hero'), ('sakura_bark', '2k', 'bark sakura'), ('trident_maple_bark', '2k', 'bark maple'),
     ('japanese_zelkova_bark', '2k', 'bark broadleaf'), ('metasequoia_bark', '2k', 'bark daisugi'), ('pine_bark', '2k', 'bark pine'),
-    ('hinoki_planks', '4k', 'wood planks'), ('dark_wooden_planks', '2k', 'wood dark'), ('raw_plank_wall', '2k', 'wood weathered'),
+    ('hinoki_planks', '4k', 'wood planks hero'), ('dark_wooden_planks', '2k', 'wood dark'), ('raw_plank_wall', '2k', 'wood weathered'),
     ('grey_roof_tiles_02', '2k', 'roof tiles'), ('rock_wall_02', '2k', 'stone wall'), ('grassy_cobblestone', '2k', 'stone path'),
 ]
 # scanned models (glTF with 2K textures)
@@ -42,7 +43,13 @@ MODELS = [
     ('tree_stump_01', 'debris'), ('tree_stump_02', 'debris'), ('dead_tree_trunk', 'debris'), ('dead_tree_trunk_02', 'debris'),
     ('pine_roots', 'debris'), ('root_cluster_01', 'debris'), ('bark_debris_01', 'debris'), ('dry_branches_medium_01', 'debris'),
     ('wooden_lantern_01', 'prop'), ('stone_fire_pit', 'prop'), ('modular_wooden_pier', 'prop'),
+    ('coastal_cliff_04', 'rock cliff coast'), ('coastal_cliff_02', 'rock cliff coast'), ('sand_rocks_small_01', 'rock coast'),
 ]
+# hero scans that also get a 4K glTF with --ultra
+HERO_MODELS = {'boulder_01', 'rock_moss_set_01', 'rock_moss_set_02', 'rock_face_01', 'rock_face_02', 'mountainside', 'coast_rocks_01', 'coast_rocks_05',
+               'coastal_cliff_04', 'coastal_cliff_02', 'tree_stump_01', 'dead_tree_trunk_02', 'stone_fire_pit'}
+# skies that also get a 16K file with --ultra (every sky gets 8K)
+HDRI_16K = {'kloofendal_48d_partly_cloudy_puresky', 'venice_sunset'}
 # the wider library (--library, on by default): sky HDRIs, general 4K material sets and more scanned models, for any game
 LIB_HDRI = ['kloofendal_48d_partly_cloudy_puresky', 'lilienstein', 'the_sky_is_on_fire', 'kloppenheim_06_puresky', 'spruit_sunrise', 'belfast_sunset_puresky',
             'venice_sunset', 'autumn_field_puresky', 'noon_grass', 'meadow_2', 'rogland_clear_night', 'dikhololo_night', 'overcast_soil_puresky',
@@ -56,7 +63,7 @@ LIB_TEXTURES = [
     ('clay_roof_tiles_02', 'roof tiles'), ('roof_slates_03', 'roof slate'), ('thatch_roof_angled', 'roof thatch'),
     ('stone_embedded_tiles', 'tiles'), ('terrazzo_tiles', 'tiles'), ('checkered_pavement_tiles', 'tiles'),
     ('cobblestone_floor_04', 'cobblestone'), ('mossy_cobblestone', 'cobblestone'), ('cobblestone_large_01', 'cobblestone'), ('asphalt_02', 'road'),
-    ('aerial_rocks_02', 'ground rock'), ('aerial_grass_rock', 'ground grass'), ('rocks_ground_02', 'ground rock'), ('lichen_rock', 'rock'), ('cliff_side', 'rock cliff'),
+    ('aerial_rocks_02', 'ground rock'), ('aerial_grass_rock', 'ground grass'), ('rocks_ground_02', 'ground rock'), ('coast_sand_01', 'ground sand'), ('cliff_side', 'rock cliff'),
     ('dry_riverbed_rock', 'ground rock'), ('snow_field_aerial', 'ground snow'), ('forest_leaves_02', 'ground leaves'), ('coast_sand_rocks_02', 'ground sand'),
     ('sparse_grass', 'ground grass'), ('grass_path_2', 'ground path'),
 ]
@@ -158,14 +165,44 @@ def model_size(aid, res, cache):
     return g.get('size', 0) + sum(i.get('size', 0) for i in g['include'].values())
 
 
-def fetch_files(kind, aid, res, cache):
+ULTRA = False  # set by --ultra: 8K texture tiers, 4K hero scans, 8K/16K skies (for a local build; too big for git hosting)
+
+
+def fetch_files(kind, aid, res, cache, role=''):
+    """Every texture set comes in resolution tiers (the engine loads the smallest that meets the quality setting)."""
+    pbr = [('Diffuse', 'diff'), ('nor_gl', 'nor'), ('arm', 'arm')]
     if kind == 'hdri':
-        return hdri_files(aid, res, cache)
+        out = hdri_files(aid, res, cache)
+        if ULTRA:
+            for r in ['8k'] + (['16k'] if aid in HDRI_16K else []):
+                try:
+                    out.update(hdri_files(aid, r, cache))
+                except Exception as e:
+                    print(f'  (no {r} sky for {aid}: {e})', flush=True)
+        return out
+    if kind == 'model':
+        out = model_files(aid, res, cache)
+        if ULTRA and aid in HERO_MODELS:
+            try:
+                out.update(model_files(aid, '4k', cache))
+            except Exception as e:
+                print(f'  (no 4k scan for {aid}: {e})', flush=True)
+        return out
+    tiers = {'terrain': ['1k', '2k', '4k'], 'surface': ['1k', '2k', res], 'library': [res]}[kind]
+    if ULTRA:
+        tiers = sorted(set(tiers + ['1k', '2k', '4k'] + (['8k'] if kind == 'terrain' or 'hero' in role or kind == 'library' else [])), key=lambda r: int(r[:-1]))
+    maps = [(k, n, r) for r in tiers for k, n in pbr]
     if kind in ('terrain', 'library'):
-        return texture_files(aid, res, [('Diffuse', 'diff', None), ('nor_gl', 'nor', None), ('arm', 'arm', None), ('Displacement', 'disp', '2k')], cache)
-    if kind == 'surface':
-        return texture_files(aid, res, [('Diffuse', 'diff', None), ('nor_gl', 'nor', None), ('arm', 'arm', None)], cache)
-    return model_files(aid, res, cache)
+        maps += [('Displacement', 'disp', r) for r in (['1k', '2k'] if kind == 'terrain' else ['2k'])]
+    out = {}
+    for k, n, r in maps:
+        try:
+            out.update(texture_files(aid, r, [(k, n, None)], cache))
+        except Exception:
+            if r in ('8k',) or (r in ('1k', '2k') and kind != 'terrain'):
+                continue  # optional tiers
+            raise
+    return out
 
 
 def write_js(out, aid, rel, src):
@@ -185,8 +222,11 @@ def main():
     ap.add_argument('--cache', default=str(ROOT.parent / '.hd-cache'))
     ap.add_argument('--only', default='')
     ap.add_argument('--list', action='store_true')
-    ap.add_argument('--no-library', action='store_true', help='only the assets the Open World uses (about 1.1 GB)')
+    ap.add_argument('--no-library', action='store_true', help='only the assets the games use (about 1.5 GB)')
+    ap.add_argument('--ultra', action='store_true', help='add 8K texture tiers, 4K hero scans and 8K/16K skies (a local build of 20+ GB)')
     a = ap.parse_args()
+    global ULTRA
+    ULTRA = a.ultra
     out, cache = pathlib.Path(a.out), pathlib.Path(a.cache)
     only = set(filter(None, a.only.split(',')))
     jobs = [('terrain', aid, '4k', role) for aid, role in TERRAIN] + [('surface', aid, res, role) for aid, res, role in SURFACES] + [('model', aid, '2k', role) for aid, role in MODELS]
@@ -205,7 +245,7 @@ def main():
         try:
             if kind == 'model' and 'library' in role and model_size(aid, res, cache) > MODEL_MAX:
                 print(f'skip     {aid:26} (over {MODEL_MAX >> 20} MB)', flush=True); continue
-            files = fetch_files(kind, aid, res, cache)
+            files = fetch_files(kind, aid, res, cache, role)
         except Exception as e:
             if kind in ('hdri', 'library') or 'library' in role:
                 print(f'skip     {aid:26} ({e})', flush=True); continue

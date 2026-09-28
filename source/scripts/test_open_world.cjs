@@ -28,6 +28,18 @@ if(!fs.existsSync(file)){console.error('Build it first: python3 scripts/build.py
       return {top:+top.toFixed(0),summitSnow:bi[k+3],banks:above+'/'+samples,bedBelow:+(bed.y-bedH).toFixed(2),boats:demo.boats.length,seaErr:+Math.max(0,...sea).toFixed(3),onRiver:onRiver.every(Boolean),
         bamboo:demo.bambooPartition?demo.bambooPartition.stats().loaded:0,daisugi:!!(demo.daisugi&&demo.daisugi.parent),torii:!!demo.torii.parent};});
     if(!(r.top>300&&r.summitSnow>100&&r.bedBelow>.5&&r.boats>=6&&r.seaErr<.05&&r.onRiver&&r.daisugi&&r.torii))throw Error(JSON.stringify(r));const [a,n]=r.banks.split('/').map(Number);if(a<n*.9)throw Error('river above its banks '+JSON.stringify(r));return r;});
+  await test('hiking trails climb to the crater rim and the highest peak and run down to the beach; snow lies above the snow line',async()=>{const r=await page.evaluate(()=>{const H=(x,z)=>demo.terrain.heightAt(x,z),hf=demo.heightfield,bi=demo.terrain.biomeTexture.image.data;
+      const snowAt=(x,z)=>bi[(Math.round((z-hf.originZ)/hf.spacing)*hf.size+Math.round((x-hf.originX)/hf.spacing))*4+3];
+      const trails=demo.trails.map(t=>{const P=t.points,e=P[P.length-1],m=P[P.length>>1],gr=[];for(let i=0;i+10<P.length;i+=5)gr.push(Math.abs(H(P[i+10].x,P[i+10].z)-H(P[i].x,P[i].z))/10);gr.sort((a,b)=>a-b);
+        return {name:t.name,m:P.length,endGap:+Math.hypot(e.x-t.to.x,e.z-t.to.z).toFixed(1),top:+H(e.x,e.z).toFixed(0),mask:+demo.trailAt(m.x,m.z).toFixed(2),p90:+gr[Math.floor(gr.length*.9)].toFixed(2),grade:+gr[gr.length-1].toFixed(2)};});
+      /* summit snow on ground flat enough to hold it (steeper faces are bare rock) and off the trodden path, which ends on the summit */
+      let ps=0,pn=0;for(let dz=-40;dz<=40;dz+=2)for(let dx=-40;dx<=40;dx+=2){const x=demo.peak.x+dx,z=demo.peak.z+dz;if(dx*dx+dz*dz>1600||demo.trailAt(x,z)>.05||hf.slopeAt(x,z)>1.1||hf.heightAt(x,z)<demo.snowLine+10)continue;ps+=snowAt(x,z);pn++;}
+      return {trails,snowLine:+demo.snowLine.toFixed(0),peak:+demo.peak.h.toFixed(0),peakSnow:Math.round(ps/Math.max(1,pn)),peakSamples:pn,spawnSnow:snowAt(demo.spawn.x,demo.spawn.z)};});
+    const by=Object.fromEntries(r.trails.map(t=>[t.name,t]));
+    if(!(by.volcano&&by.peak&&by.beach))throw Error('missing trails '+JSON.stringify(r));
+    /* grade over 10 m of trail: switchbacks keep most of it moderate; hairpin corners on the upper cone are steeper */
+    for(const t of r.trails)if(!(t.endGap<8&&t.mask>.9&&t.p90<.5&&t.grade<.85))throw Error(JSON.stringify(t));
+    if(!(by.volcano.top>r.snowLine&&by.beach.top<3&&r.peakSamples>3&&r.peakSnow>100&&r.spawnSnow<20))throw Error(JSON.stringify(r));return r;});
   await test('CPU threads take load off the GPU: terrain occlusion on the workers, near-cascade shadow culling, cached far cascades',async()=>{
     const r=await page.evaluate(async()=>{for(let i=0;i<50&&!demo.culler.stats.valid;i++)await new Promise(r=>setTimeout(r,200));const c=demo.culler.stats,s=demo.csm.stats;
       return {workers:c.workers,valid:c.valid,hidden:c.hidden,instances:c.instances,nearShadowSkipped:c.shadowSkipped,cascades:demo.csm.count,shadowMapsDrawn:s.drawn,reused:s.reused};});

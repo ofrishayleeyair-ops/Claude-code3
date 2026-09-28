@@ -339,7 +339,8 @@ function computeBiomes(hf,ctx,out,i0,j0,i1,j1){
     const fl=ctx.flow?smooth(ctx.flow0,ctx.flow1,Math.log(1+ctx.flow[k])):0,dep=ctx.delta?smooth(ctx.range*.006,ctx.range*.03,ctx.delta[k]):0;
     let rock=smooth(ctx.rock0,ctx.rock1,slope+Math.max(0,-curv)*1.4+n2*.12)*ctx.rock;
     rock=Math.max(rock,smooth(ctx.snowLine,ctx.snowLine+ctx.range*.2,h)*smooth(.35,.7,slope)*ctx.rock);
-    const snowH=h+(mn*.6+n2*.4)*ctx.range*.07;
+    /* snow lies lower on north-facing slopes (-z is north; they face it when height rises with z) and holds in hollows */
+    const north=clamp(gz/(slope+.05),-1,1)*Math.min(slope,1),snowH=h+(mn*.6+n2*.4)*ctx.range*.07+north*ctx.range*.035+Math.max(0,curv)*ctx.range*.6;
     const snow=smooth(ctx.snowLine-ctx.range*.03,ctx.snowLine+ctx.range*.05,snowH)*(1-smooth(ctx.snowSlope[0],ctx.snowSlope[1],slope))*ctx.snow;
     const beach=ctx.water+ctx.beach*(1+n2*.8);
     const sand=(1-smooth(beach-ctx.beach*.4,beach+ctx.beach*.6,h))*(1-smooth(.35,.7,slope))*ctx.sand;
@@ -606,7 +607,7 @@ vec3 keTNormalAt(vec2 uv){vec2 e=texture2D(keNormalMap,uv).xy*2.-1.;return norma
 #ifdef KE_TERRAIN_HD
 precision highp sampler2DArray;
 uniform sampler2DArray keLA;uniform sampler2DArray keLN;uniform sampler2DArray keLR;uniform sampler2DArray keLH;uniform sampler2D keFlow;
-uniform float keLScale[8];uniform vec2 keRockHigh;uniform float keHDNormal;uniform float keDirtMoss;
+uniform float keLScale[12];uniform vec2 keRockHigh;uniform float keHDNormal;uniform float keDirtMoss;uniform float keSparkle;
 #endif
 `;
 const TERRAIN_MAP=`
@@ -645,10 +646,13 @@ vec3 kGrad=vec3(dot(kBA,vec4(kHAx.r,kHAx.g,kHAx.b,kRockH))+kBS*texture2D(keHB,ku
 `;
 const TERRAIN_ROUGH=`roughnessFactor=mix(dot(kBA,vec4(.95,.9,.96,.82))+kBS*.55,.28,kWet*.85);`;
 const TERRAIN_NORMAL=`normal=normalize((viewMatrix*vec4(kN,0.)).xyz);{vec3 kg=(viewMatrix*vec4(kGrad,0.)).xyz;normal=normalize(normal-keRelief*30.*(1.-kFar*.8)*(kg-normal*dot(kg,normal)));}`;
-/* HD layers (setLayers): eight photoscanned texture sets in texture arrays (albedo, normal, ARM, height), each at its
+/* HD layers (setLayers): twelve photoscanned texture sets in texture arrays (albedo, normal, ARM, height), each at its
    real-world size. Biome weights split further: grass into moss and leaf litter by broad noise, dirt into gravel where
-   water flows (the flow mask), rock into mossy and bare by altitude. Height blending as above; normals from the
-   layers' normal maps (whiteout blend onto the terrain normal; rock triplanar); roughness and AO from their ARM maps. */
+   water flows, rock into mossy and bare by altitude, sand into dry and wet at the waterline; the masks texture (r flow,
+   g volcanic, b trail) turns grass/dirt into ash and rock into volcanic rock on the volcano, and lays trails over all
+   but deep snow. Height blending as above; normals from the layers' normal maps (whiteout blend onto the terrain
+   normal; rock triplanar); roughness and AO from their ARM maps; sparse near-mirror snow texels with random facets
+   give sun glints; dry sand gets wind ripples in its normal and bleaches lighter away from the waterline. */
 const TERRAIN_MAP_HD=`
 vec3 kN=keTNormalAt(keTUV);
 float kDist=length(vViewPosition);
@@ -658,16 +662,23 @@ float kSteep=smoothstep(.74,.6,kN.y);kWA=kWA*(1.-kSteep)+vec4(0.,0.,0.,kSteep);k
 float kFar=smoothstep(12.,70.,kDist);
 float kM1=keFbm2(keTWorld.xz*.0042+3.7),kM2=keNoise2(keTWorld.xz*.027-1.3),kM3=keNoise2(keTWorld.xz*.11+7.1);
 float kLeaf=smoothstep(.45,.62,keFbm2(keTWorld.xz*.019+11.3));
-float kFl=smoothstep(.12,.5,texture2D(keFlow,keTUV).r);
+vec4 kMask=texture2D(keFlow,keTUV);/* r: water flow, g: volcanic ground, b: trail */
+float kFl=smoothstep(.12,.5,kMask.r),kVol=smoothstep(.15,.85,kMask.g+(kM2-.5)*.25),kTrail=smoothstep(.2,.8,kMask.b);
 float kAlt=smoothstep(keRockHigh.x,keRockHigh.y,keTWorld.y+(kM2-.5)*(keRockHigh.y-keRockHigh.x));
-float kw[8];kw[0]=kWA.x*(1.-kLeaf);kw[1]=kWA.x*kLeaf;kw[2]=kWA.y;kw[3]=kWA.z*(1.-kFl);kw[4]=kWA.z*kFl;{float mv=kw[3]*keDirtMoss*smoothstep(.25,.6,kM3+kM1*.5);kw[0]+=mv;kw[3]-=mv;}kw[5]=kWA.w*(1.-kAlt);kw[6]=kWA.w*kAlt;kw[7]=kWS;
+float kWet=1.-smoothstep(keWaterLevel+.05,keWaterLevel+1.1,keTWorld.y);
+float kw[12];kw[0]=kWA.x*(1.-kLeaf);kw[1]=kWA.x*kLeaf;kw[2]=kWA.y*(1.-kWet);kw[3]=kWA.z*(1.-kFl);kw[4]=kWA.z*kFl;{float mv=kw[3]*keDirtMoss*smoothstep(.25,.6,kM3+kM1*.5);kw[0]+=mv;kw[3]-=mv;}
+kw[5]=kWA.w*(1.-kAlt);kw[6]=kWA.w*kAlt;kw[7]=kWS;kw[11]=kWA.y*kWet;
+/* volcanic slopes: ash replaces grass, dirt and gravel, dark volcanic rock replaces rock; snow stays */
+kw[8]=(kw[0]+kw[1]+kw[3]+kw[4])*kVol;kw[9]=(kw[5]+kw[6])*kVol;for(int i=0;i<7;i++)if(i!=2)kw[i]*=1.-kVol;
+/* trails: packed earth and stones over everything but deep snow */
+kw[10]=kTrail*(1.-kWS*.6);for(int i=0;i<12;i++)if(i!=10&&i!=7)kw[i]*=1.-kTrail;
 vec3 kBl=pow(abs(kN),vec3(4.));kBl/=dot(kBl,vec3(1.));
-float kh[8];float kTop=-1.;
-for(int i=0;i<8;i++){kh[i]=0.;if(kw[i]>.003){kh[i]=texture(keLH,vec3(keTWorld.xz*keLScale[i],float(i))).r;kTop=max(kTop,kw[i]+kh[i]*.55);}}
+float kh[12];float kTop=-1.;
+for(int i=0;i<12;i++){kh[i]=0.;if(kw[i]>.003){kh[i]=texture(keLH,vec3(keTWorld.xz*keLScale[i],float(i))).r;kTop=max(kTop,kw[i]+kh[i]*.55);}}
 kTop-=.2;float kSum=1e-5;
-for(int i=0;i<8;i++){float t=kw[i]>.003?max(kw[i]+kh[i]*.55-kTop,0.):0.;kw[i]=t;kSum+=t;}
+for(int i=0;i<12;i++){float t=kw[i]>.003?max(kw[i]+kh[i]*.55-kTop,0.):0.;kw[i]=t;kSum+=t;}
 vec3 kCol=vec3(0.),kNP=vec3(0.);float kRgh=0.,kAO=0.;
-for(int i=0;i<8;i++){float w=kw[i]/kSum;if(w<.002)continue;float fi=float(i),s=keLScale[i];vec3 a,np,r;bool tri=i==5||i==6;
+for(int i=0;i<12;i++){float w=kw[i]/kSum;if(w<.002)continue;float fi=float(i),s=keLScale[i];vec3 a,np,r;bool tri=i==5||i==6||i==9;
   if(tri){
     a=texture(keLA,vec3(keTWorld.zy*s,fi)).rgb*kBl.x+texture(keLA,vec3(keTWorld.xz*s,fi)).rgb*kBl.y+texture(keLA,vec3(keTWorld.xy*s,fi)).rgb*kBl.z;
     vec2 nx=texture(keLN,vec3(keTWorld.zy*s,fi)).rg*2.-1.,ny=texture(keLN,vec3(keTWorld.xz*s,fi)).rg*2.-1.,nz=texture(keLN,vec3(keTWorld.xy*s,fi)).rg*2.-1.;
@@ -678,11 +689,18 @@ for(int i=0;i<8;i++){float w=kw[i]/kSum;if(w<.002)continue;float fi=float(i),s=k
   if(i<2)a*=mix(vec3(1.),mix(vec3(.9,1.,.84),vec3(1.1,1.04,.88),smoothstep(.3,.7,kM1)*keMacro+.5*(1.-keMacro))*keGrassTint,.55);
   kCol+=a*w;kNP+=np*w;kRgh+=r.g*w;kAO+=r.r*w;}
 kCol*=1.+keMacro*((kM2-.5)*.16+(kM3-.5)*.07);
-float kWet=1.-smoothstep(keWaterLevel+.05,keWaterLevel+1.1,keTWorld.y);float kBS=kw[7]/kSum;
-diffuseColor.rgb*=pow(max(kCol,vec3(0.)),vec3(2.2))*mix(1.,.62,kWet*(1.-kBS))*mix(1.,kAO,.65);
-vec3 kHDN=normalize(kN+kNP*keHDNormal*(1.-kFar*.6));
+/* dry sand: wind ripples about 1.1 m apart (crests bent by noise, steep lee side) and sun-bleached sand up the beach */
+{float ws=kw[2]/kSum;if(ws>.02){vec2 rd=vec2(.83,.55);float ph=dot(keTWorld.xz,rd)*5.6+keFbm2(keTWorld.xz*.09)*9.;
+  float rp=(cos(ph)+.7*cos(2.*ph+.8))*.16*ws*(1.-kFar)*smoothstep(keWaterLevel+.6,keWaterLevel+1.6,keTWorld.y);kNP-=vec3(rd.x,0.,rd.y)*rp;
+  kCol*=mix(vec3(1.),vec3(1.12,1.08,1.02),ws*smoothstep(keWaterLevel+1.,keWaterLevel+4.,keTWorld.y));}}
+float kBS=kw[7]/kSum;
+diffuseColor.rgb*=pow(max(kCol,vec3(0.)),vec3(2.2))*mix(1.,.7,kWet*(1.-kBS)*(1.-kw[11]/kSum))*mix(1.,kAO,.65);
+/* snow crystals: sparse texels with random facets and near-mirror roughness, so the sun leaves glints that move with the eye */
+float kGlint=0.;vec3 kGN=vec3(0.);if(kBS>.02&&keSparkle>0.){vec2 gc=floor(keTWorld.xz*38.);float gh=fract(sin(dot(gc,vec2(12.9898,78.233)))*43758.5453);
+  kGlint=step(.965,gh)*kBS*keSparkle*(1.-kFar);kGN=vec3(fract(gh*13.1)-.5,0.,fract(gh*7.7)-.5)*1.6;}
+vec3 kHDN=normalize(kN+(kNP*keHDNormal+kGN*kGlint)*(1.-kFar*.6));
 `;
-const TERRAIN_ROUGH_HD=`roughnessFactor=mix(clamp(kRgh,.05,1.),.28,kWet*.85);`;
+const TERRAIN_ROUGH_HD=`roughnessFactor=mix(mix(clamp(kRgh,.05,1.),.28,kWet*.85),.06,kGlint);`;
 const TERRAIN_NORMAL_HD=`normal=normalize((viewMatrix*vec4(kHDN,0.)).xyz);`;
 
 function replaceOrThrow(src,target,repl,what){if(src.indexOf(target)<0)throw new Error('KE.GPUTerrain: shader chunk '+target+' not found in '+what+' (Three.js r128 expected)');return src.replace(target,repl);}
@@ -938,20 +956,25 @@ class GPUTerrain{
     m.customProgramCacheKey=()=>'ke-terrain-default-1'+(m.defines&&m.defines.KE_TERRAIN_HD!==undefined?'-hd':'');
     return this.patchMaterial(m);
   }
-  /* HD layers from texture arrays (KE.HD.layers): {albedo, normal, arm, height} with 8 layers in the order
-     grass, grass-leaves, sand, dirt, gravel, rock, rock-high, snow; scales = 8 tiles-per-metre factors; rockHigh =
+  /* HD layers from texture arrays (KE.HD.layers): {albedo, normal, arm, height} with 12 layers in the order
+     grass, grass-leaves, sand, dirt, gravel, rock, rock-high, snow, ash, rock-volcanic, trail, sand-wet; scales = 12
+     tiles-per-metre factors; masks(x, z) → [volcanic, trail, spare] (0..1, sampled once per heightfield sample);
+     sparkle (0..1, snow glints); rockHigh =
      [y0, y1] where bare rock takes over; normalStrength; dirtToMoss (0..1: share of dry dirt turned to moss in noise
      patches). Pass null to go back to the painted layers. */
   setLayers(layers){const m=this.material,F=this.materialUniforms;if(!m||!F)throw new Error('KE.GPUTerrain.setLayers needs the default material');
     m.defines=m.defines||{};
     if(!layers){if(m.defines.KE_TERRAIN_HD!==undefined){delete m.defines.KE_TERRAIN_HD;m.needsUpdate=true;}this.layers=null;return this;}
-    const T=this.THREE;if(!this._flowTexture){const hf=this.heightfield,n=hf.size,fl=hf.masks&&hf.masks.flow,d=new Uint8Array(n*n);
+    const T=this.THREE;if(!this._flowTexture||layers.masks){const hf=this.heightfield,n=hf.size,fl=hf.masks&&hf.masks.flow,d=new Uint8Array(n*n*4),mk=layers.masks||null;
       if(fl){let s=0,c=0;for(let i=0;i<fl.length;i+=7){s+=fl[i];c++;}const mean=Math.max(1e-3,c?s/c:1),a=Math.log(1+mean*2.5),b=Math.log(1+mean*14);
-        for(let i=0;i<n*n;i++)d[i]=Math.round(clamp((Math.log(1+fl[i])-a)/(b-a),0,1)*255);}
-      const t=new T.DataTexture(d,n,n,T.RedFormat,T.UnsignedByteType);t.minFilter=T.LinearMipmapLinearFilter;t.magFilter=T.LinearFilter;t.generateMipmaps=true;t.flipY=false;t.wrapS=t.wrapT=T.ClampToEdgeWrapping;t.needsUpdate=true;t.name='ke-terrain-flow';this._flowTexture=t;}
+        for(let i=0;i<n*n;i++)d[i*4]=Math.round(clamp((Math.log(1+fl[i])-a)/(b-a),0,1)*255);}
+      /* masks(x, z) → [volcanic 0..1, trail 0..1, spare 0..1] at every heightfield sample */
+      if(typeof mk==='function')for(let j=0;j<n;j++)for(let i=0;i<n;i++){const m=mk(hf.originX+i*hf.spacing,hf.originZ+j*hf.spacing),k=(j*n+i)*4;if(!m)continue;d[k+1]=Math.round(clamp(m[0]||0,0,1)*255);d[k+2]=Math.round(clamp(m[1]||0,0,1)*255);d[k+3]=Math.round(clamp(m[2]||0,0,1)*255);}
+      if(this._flowTexture)this._flowTexture.dispose();
+      const t=new T.DataTexture(d,n,n,T.RGBAFormat,T.UnsignedByteType);t.minFilter=T.LinearMipmapLinearFilter;t.magFilter=T.LinearFilter;t.generateMipmaps=true;t.flipY=false;t.wrapS=t.wrapT=T.ClampToEdgeWrapping;t.needsUpdate=true;t.name='ke-terrain-masks';this._flowTexture=t;}
     const put=(k,v)=>{if(F[k])F[k].value=v;else F[k]={value:v};};
     put('keLA',layers.albedo);put('keLN',layers.normal);put('keLR',layers.arm);put('keLH',layers.height);put('keFlow',this._flowTexture);
-    put('keLScale',(layers.scales||[]).concat(Array(8).fill(.3)).slice(0,8));put('keRockHigh',new T.Vector2(...(layers.rockHigh||[1e5,1e5+1])));put('keHDNormal',layers.normalStrength===undefined?1:layers.normalStrength);put('keDirtMoss',layers.dirtToMoss===undefined?0:layers.dirtToMoss);
+    put('keLScale',(layers.scales||[]).concat(Array(12).fill(.3)).slice(0,12));put('keSparkle',layers.sparkle===undefined?1:layers.sparkle);put('keRockHigh',new T.Vector2(...(layers.rockHigh||[1e5,1e5+1])));put('keHDNormal',layers.normalStrength===undefined?1:layers.normalStrength);put('keDirtMoss',layers.dirtToMoss===undefined?0:layers.dirtToMoss);
     if(m.defines.KE_TERRAIN_HD===undefined){m.defines.KE_TERRAIN_HD='';m.needsUpdate=true;}this.layers=layers;return this;}
   /* Debug views: 'lod' (colour per LOD level, morph shown as a blend), 'wireframe' (the same plus triangle
      edges), 'height' (unlit world height in the red channel, for float render targets), or null. */

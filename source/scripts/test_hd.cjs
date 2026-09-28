@@ -21,6 +21,8 @@ const cols=[[200,40,40],[40,200,40],[40,40,200],[200,200,40]];
 cols.forEach((c,i)=>{const id='set'+i,files={};files['diff_1k.png']=put(id,'diff_1k.png',png(8,8,()=>[...c,255]),'image/png',i===0?2:1);
   files['nor_1k.png']=put(id,'nor_1k.png',png(8,8,()=>[128,128,255,255]),'image/png');files['arm_1k.png']=put(id,'arm_1k.png',png(8,8,()=>[255,128,0,255]),'image/png');files['disp_1k.png']=put(id,'disp_1k.png',png(8,8,()=>[128,128,128,255]),'image/png');
   manifest.assets[id]={kind:'texture',role:['grass','sand','rock','snow'][i],res:'1k',name:'Set '+i,authors:['test'],size_m:[2,2],files};});
+/* resolution tiers: the loader takes the smallest tier that meets the requested size */
+manifest.assets.tiers={kind:'texture',role:'tiers',res:'2k',name:'Tiers',authors:['test'],files:{'diff_1k.png':put('tiers','diff_1k.png',png(4,4,()=>[10,10,10,255]),'image/png'),'diff_2k.png':put('tiers','diff_2k.png',png(8,8,()=>[20,20,20,255]),'image/png')}};
 {/* one textured triangle: base 1 m wide, 0.5 m up, placed off-centre so prepare() has something to recentre */
   const pos=new Float32Array([2,.5,3, 3,.5,3, 2.5,1,3]),uv=new Float32Array([0,0,1,0,.5,1]),idx=new Uint16Array([0,1,2,0]),bin=Buffer.concat([Buffer.from(pos.buffer),Buffer.from(uv.buffer),Buffer.from(idx.buffer)]);
   const gltf={asset:{version:'2.0'},scene:0,scenes:[{nodes:[0]}],nodes:[{mesh:0}],meshes:[{primitives:[{attributes:{POSITION:0,TEXCOORD_0:1},indices:2,material:0}]}],
@@ -38,19 +40,22 @@ fs.writeFileSync(path.join(OUT,'manifest.js'),'KitsuneHD.manifest('+JSON.stringi
   const r=await page.evaluate(async()=>{const KE=window.KitsuneEngine,T=window.THREE,out={};
     out.missing=await KE.HD.ready('no-such-folder/');
     const m=await KE.HD.ready('hdtest/');out.assets=Object.keys(m.assets).length;out.find=KE.HD.find('texture','rock');
+    out.tiers=[KE.HD.mapFile('tiers','diff',1000),KE.HD.mapFile('tiers','diff',1500),KE.HD.mapFile('tiers','diff',9000),KE.HD.mapFile('tiers','diff')].join();
     const b=await KE.HD.blob('set0','diff_1k.png');out.multipartPng=new Uint8Array(await b.slice(0,4).arrayBuffer()).join(',');
     const tex=await KE.HD.texture(T,'set1','diff',{srgb:true});out.tex={w:tex.image.width,srgb:tex.encoding===T.sRGBEncoding};
     const renderer=new T.WebGLRenderer();renderer.setSize(64,64);document.body.append(renderer.domElement);
     const mat=await KE.HD.material(T,'set2');out.material={map:!!mat.map,normal:!!mat.normalMap,rough:mat.roughnessMap===mat.metalnessMap};
     {const sc=new T.Scene(),cam=new T.PerspectiveCamera(50,1,.1,10);cam.position.z=3;sc.add(new T.Mesh(new T.SphereGeometry(1,16,12),mat),new T.AmbientLight(0xffffff,1));renderer.render(sc,cam);}
     /* texture arrays feeding the HD terrain: look straight down on flat ground with only grass (layer 0 = set0, red) */
-    const ids=['set0','set0','set2','set3','set1','set2','set3','set1'];/* both grass layers (moss, leaf litter) red */
+    const ids=['set0','set0','set2','set3','set1','set2','set3','set1','set3','set2','set1','set2'];/* both grass layers (moss, leaf litter) red; ash (8) yellow */
     const arr=await KE.HD.layers(renderer,T,ids,'diff',8);out.array={version:arr.version,depth:arr.image.depth,bound:!!renderer.properties.get(arr).__webglTexture};
     const [nor,arm,hgt]=await Promise.all([KE.HD.layers(renderer,T,ids,'nor',8),KE.HD.layers(renderer,T,ids,'arm',8),KE.HD.layers(renderer,T,ids,'disp',8)]);
     const hf=new KE.Heightfield({size:65,worldSize:64});hf.recomputeRange();const biomes=new T.DataTexture(new Uint8Array(65*65*4).map((v,i)=>i%4===0?255:0),65,65,T.RGBAFormat);biomes.needsUpdate=true;
     const terrain=new KE.GPUTerrain(T,{heightfield:hf,biomes,macro:0});terrain.setLayers({albedo:arr,normal:nor,arm,height:hgt,scales:Array(8).fill(.5),rockHigh:[1e4,1e4+1]});
     const sc=new T.Scene();sc.add(terrain.object,new T.AmbientLight(0xffffff,1.5));const cam=new T.OrthographicCamera(-20,20,20,-20,.1,100);cam.position.set(0,50,0);cam.lookAt(0,0,0);cam.updateMatrixWorld();
     terrain.update(cam,renderer);renderer.render(sc,cam);const gl=renderer.getContext(),px=new Uint8Array(4);gl.readPixels(32,32,1,1,gl.RGBA,gl.UNSIGNED_BYTE,px);out.terrainPixel=Array.from(px);
+    /* the volcanic mask turns grass into ash (layer 8) */
+    terrain.setLayers({...terrain.layers,masks:()=>[1,0,0]});renderer.render(sc,cam);gl.readPixels(32,32,1,1,gl.RGBA,gl.UNSIGNED_BYTE,px);out.ashPixel=Array.from(px);
     const tri=await KE.HD.gltf(T,'tri');out.gltf={parts:tri.parts.length,verts:tri.parts[0].geometry.attributes.position.count,map:!!tri.parts[0].material.map};
     const prep=await KE.HD.prepare(T,'tri');const bb=prep[0].geometry.boundingBox;out.prepare={minY:+bb.min.y.toFixed(3),cx:+((bb.min.x+bb.max.x)/2).toFixed(3),size:prep[0].size.map(v=>+v.toFixed(2))};
     const sky=await KE.HD.hdri(renderer,T,'sky',{pmrem:false});out.hdri={w:sky.width,h:sky.height};
@@ -65,12 +70,14 @@ fs.writeFileSync(path.join(OUT,'manifest.js'),'KitsuneHD.manifest('+JSON.stringi
     let sunk=0,total=0;for(const m of a.children){const e=m.instanceMatrix.array;for(let i=0;i<m.count;i++){total++;if(e[i*16+13]<H.heightAt(e[i*16+12],e[i*16+14])-1e-4)sunk++;}}out.rocks.sunk=sunk+'/'+total;
     a.userData.dispose();b2.userData.dispose();c2.userData.dispose();out.disposed=a.parent===null&&a.children.length===0;
     KE.HD.dispose();return out;});
-  check('missing pack resolves to null; manifest loads; find by kind and role',r.missing===null&&r.assets===6&&r.find.join()==='set2',{assets:r.assets,find:r.find});
+  check('resolution tiers: smallest tier that meets the size, else the largest',r.tiers==='diff_1k.png,diff_2k.png,diff_2k.png,diff_2k.png',r.tiers);
+  check('missing pack resolves to null; manifest loads; find by kind and role',r.missing===null&&r.assets===7&&r.find.join()==='set2',{assets:r.assets,find:r.find});
   check('a file split into two script parts reassembles (PNG signature)',r.multipartPng==='137,80,78,71',r.multipartPng);
   check('texture(): decoded image, sRGB when asked',r.tex.w===8&&r.tex.srgb,r.tex);
   check('material(): map, normal map, ARM as roughness+metalness; renders',r.material.map&&r.material.normal&&r.material.rough,r.material);
-  check('layers(): texture array uploaded once and bound as-is (version 0)',r.array.version===0&&r.array.depth===8&&r.array.bound,r.array);
+  check('layers(): texture array uploaded once and bound as-is (version 0)',r.array.version===0&&r.array.depth===12&&r.array.bound,r.array);
   const [pr,pg,pb]=r.terrainPixel;check('GPUTerrain.setLayers: HD ground shows the grass layers\' colour (red set), not black or sky',pr>60&&pr>pg*2&&pr>pb*2,r.terrainPixel);
+  {const [ar,ag,ab]=r.ashPixel;check('volcanic mask lays the ash layer (yellow set) over grass',ar>60&&ag>60&&ab<ar*.5,r.ashPixel);}
   check('gltf(): textured triangle from blob URLs',r.gltf.parts===1&&r.gltf.verts===3&&r.gltf.map,r.gltf);
   check('prepare(): recentred on its footprint with the base at y = 0',r.prepare.minY===0&&Math.abs(r.prepare.cx)<1e-3&&Math.abs(r.prepare.size[0]-1)<.01,r.prepare);
   check('hdri(): Radiance file decoded',r.hdri.w===4&&r.hdri.h===2,r.hdri);

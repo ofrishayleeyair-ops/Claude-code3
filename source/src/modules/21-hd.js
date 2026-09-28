@@ -30,6 +30,8 @@ const queue=[];let active=0;const LIMIT=4;
 const pump=()=>{while(active<LIMIT&&queue.length){const j=queue.shift();active++;j().finally(()=>{active--;pump();});}};
 const limited=fn=>new Promise((resolve,reject)=>{queue.push(()=>fn().then(resolve,reject));pump();});
 
+const tierOf=f=>{const m=/_(\d+)k\.\w+$/.exec(f);return m?+m[1]*1024:0;};
+const pickTier=(files,size)=>{if(!files.length)return null;const s=files.slice().sort((a,b)=>tierOf(a)-tierOf(b));if(!size)return s[s.length-1];return s.find(f=>tierOf(f)>=size)||s[s.length-1];};
 const HD={base:'hd/',manifest:null,enabled:true,stats:{files:0,bytes:0,textures:0,gpuBytes:0,ms:0},_ready:null,_owned:new Set(),_gl:new Set(),
   /* Load hd/manifest.js once; null when the folder is missing (or KE.HD.enabled is false). */
   ready(base){if(base&&base!==this.base){this.base=base.endsWith('/')?base:base+'/';this._ready=null;}
@@ -41,8 +43,12 @@ const HD={base:'hd/',manifest:null,enabled:true,stats:{files:0,bytes:0,textures:
   info(id){return this.manifest?this.manifest.assets[id]||null:null;},
   /* all ids of a kind ('texture'/'model') whose role contains `role` */
   find(kind,role){if(!this.manifest)return [];return Object.entries(this.manifest.assets).filter(([,e])=>(!kind||e.kind===kind)&&(!role||String(e.role).split(' ').includes(role))).map(([id])=>id);},
-  /* the file of a texture map ('diff', 'nor', 'arm', 'disp') at the best resolution available */
-  mapFile(id,map){const e=this.info(id);if(!e)return null;const f=Object.keys(e.files).filter(k=>k.startsWith(map+'_')).sort((a,b)=>parseInt(b.split('_').pop())-parseInt(a.split('_').pop()));return f[0]||null;},
+  /* The file of a texture map ('diff', 'nor', 'arm', 'disp') at a resolution tier: the smallest tier at least `size`
+     pixels wide (1k = 1024 … 8k = 8192), or the largest there is; no size = the largest. The pack ships 1k/2k/4k tiers
+     (8k with hd_pack.py --ultra), so a quality setting never decodes more than it shows. */
+  mapFile(id,map,size=0){const e=this.info(id);if(!e)return null;return pickTier(Object.keys(e.files).filter(k=>k.startsWith(map+'_')&&/_\d+k\.\w+$/.test(k)),size);},
+  /* largest tier present for a map (pixels) */
+  maxTier(id,map){const f=this.mapFile(id,map);return f?tierOf(f):0;},
   blob(id,file){const e=this.info(id);if(!e||!e.files[file])return Promise.reject(new Error('KE.HD: no '+id+'/'+file));const key=id+'/'+file;
     if(scripts.has(key))return scripts.get(key);
     const f=e.files[file],t0=performance.now();
@@ -56,7 +62,7 @@ const HD={base:'hd/',manifest:null,enabled:true,stats:{files:0,bytes:0,textures:
   async bitmap(id,file,{size=0,flipY=false}={}){const b=await this.blob(id,file),o={imageOrientation:flipY?'flipY':'none',premultiplyAlpha:'none',colorSpaceConversion:'none'};
     if(size)Object.assign(o,{resizeWidth:size,resizeHeight:size,resizeQuality:'high'});
     try{return await createImageBitmap(b,o);}catch(e){return await createImageBitmap(b);}},
-  async texture(THREE,id,map,{size=0,srgb=false,repeat=1,anisotropy=null}={}){const file=this.mapFile(id,map);if(!file)return null;
+  async texture(THREE,id,map,{size=0,srgb=false,repeat=1,anisotropy=null}={}){const file=this.mapFile(id,map,size);if(!file)return null;
     const bmp=await this.bitmap(id,file,{size,flipY:true}),t=new THREE.Texture(bmp);t.flipY=false;t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(repeat,repeat);
     t.anisotropy=anisotropy||KE.settings.aniso||4;if(srgb)t.encoding=THREE.sRGBEncoding;t.minFilter=THREE.LinearMipmapLinearFilter;t.generateMipmaps=true;t.needsUpdate=true;t.name='hd:'+id+':'+map;
     const onDispose=()=>{if(bmp.close)bmp.close();t.removeEventListener('dispose',onDispose);};t.addEventListener('dispose',onDispose);
@@ -71,7 +77,7 @@ const HD={base:'hd/',manifest:null,enabled:true,stats:{files:0,bytes:0,textures:
   /* Use the ARM map's red channel as ambient occlusion on geometries that get a uv2 copy of their uv. */
   aoMaterial(m,geometries=[]){if(!m||!m.roughnessMap)return m;for(const g of geometries)if(g.attributes.uv&&!g.attributes.uv2)g.setAttribute('uv2',g.attributes.uv);m.aoMap=m.roughnessMap;m.needsUpdate=true;return m;},
   /* One TEXTURE_2D_ARRAY from a map of several texture sets, uploaded from the decoded images (no CPU pixel copies). */
-  async layers(renderer,THREE,ids,map,size){const bmps=await Promise.all(ids.map(id=>{const f=this.mapFile(id,map);if(!f)throw new Error('KE.HD: '+id+' has no '+map);return this.bitmap(id,f,{size});}));
+  async layers(renderer,THREE,ids,map,size){const bmps=await Promise.all(ids.map(id=>{const f=this.mapFile(id,map,size);if(!f)throw new Error('KE.HD: '+id+' has no '+map);return this.bitmap(id,f,{size});}));
     const gl=renderer.getContext();if(!gl.texStorage3D)throw new Error('KE.HD.layers needs WebGL2');
     const prevUnit=gl.getParameter(gl.ACTIVE_TEXTURE),prev=gl.getParameter(gl.TEXTURE_BINDING_2D_ARRAY),tex=gl.createTexture(),levels=Math.floor(Math.log2(size))+1;
     gl.bindTexture(gl.TEXTURE_2D_ARRAY,tex);gl.texStorage3D(gl.TEXTURE_2D_ARRAY,levels,gl.RGBA8,size,size,bmps.length);
@@ -87,9 +93,11 @@ const HD={base:'hd/',manifest:null,enabled:true,stats:{files:0,bytes:0,textures:
     const free=()=>{if(!this._gl.has(tex))return;this._gl.delete(tex);gl.deleteTexture(tex);this.stats.gpuBytes-=bytes;t.removeEventListener('dispose',free);};t.addEventListener('dispose',free);
     this._gl.add(tex);this._owned.add(t);return t;},
   /* A glTF model from the pack: every mesh's world-transformed geometry and material, ready for instancing. */
-  async gltf(THREE,id){const e=this.info(id);if(!e)return null;if(!THREE.GLTFLoader)throw new Error('KE.HD.gltf needs THREE.GLTFLoader');
-    const main=Object.keys(e.files).find(f=>f.endsWith('.gltf'));const urls={};
-    await Promise.all(Object.keys(e.files).filter(f=>f!==main).map(async f=>{urls[f]=URL.createObjectURL(await this.blob(id,f));}));
+  async gltf(THREE,id,{tier=0}={}){const e=this.info(id);if(!e)return null;if(!THREE.GLTFLoader)throw new Error('KE.HD.gltf needs THREE.GLTFLoader');
+    /* scans may come at several texture tiers (x_2k.gltf, x_4k.gltf with their own textures): take one and its files */
+    const main=pickTier(Object.keys(e.files).filter(f=>f.endsWith('.gltf')),tier),t=main.match(/_(\d+k)\.gltf$/),res=t?t[1]:null;
+    const own=f=>f!==main&&(!res||!/_\d+k\.\w+$/.test(f)||f.includes('_'+res+'.')||f.endsWith('.bin'));const urls={};
+    await Promise.all(Object.keys(e.files).filter(own).map(async f=>{urls[f]=URL.createObjectURL(await this.blob(id,f));}));
     const json=await (await this.blob(id,main)).text();
     const manager=new THREE.LoadingManager();manager.setURLModifier(u=>{const k=Object.keys(urls).find(f=>u.endsWith(f));return k?urls[k]:u;});
     const loader=new THREE.GLTFLoader(manager);
@@ -102,8 +110,8 @@ const HD={base:'hd/',manifest:null,enabled:true,stats:{files:0,bytes:0,textures:
     const dispose=()=>{for(const p of parts){p.geometry.dispose();for(const m of [p.material].flat()){for(const k in m)if(m[k]&&m[k].isTexture)m[k].dispose();m.dispose();}}};
     return {scene,parts,info:e,dispose};},
   /* A sky HDRI from the pack: {texture (equirectangular, half float), envMap (PMREM, for scene.environment)}. */
-  async hdri(renderer,THREE,id,{pmrem=true}={}){const e=this.info(id);if(!e||e.kind!=='hdri')return null;if(!THREE.RGBELoader)throw new Error('KE.HD.hdri needs THREE.RGBELoader');
-    const file=Object.keys(e.files).find(f=>f.endsWith('.hdr')),buf=await (await this.blob(id,file)).arrayBuffer();
+  async hdri(renderer,THREE,id,{pmrem=true,tier=4096}={}){const e=this.info(id);if(!e||e.kind!=='hdri')return null;if(!THREE.RGBELoader)throw new Error('KE.HD.hdri needs THREE.RGBELoader');
+    const file=pickTier(Object.keys(e.files).filter(f=>f.endsWith('.hdr')),tier),buf=await (await this.blob(id,file)).arrayBuffer();
     const L=new THREE.RGBELoader();L.setDataType(THREE.HalfFloatType);const d=L.parse(buf);
     const t=new THREE.DataTexture(d.data,d.width,d.height,d.format||THREE.RGBAFormat,d.type||THREE.HalfFloatType);t.encoding=THREE.LinearEncoding;t.minFilter=THREE.LinearFilter;t.magFilter=THREE.LinearFilter;
     t.generateMipmaps=false;t.flipY=true;t.mapping=THREE.EquirectangularReflectionMapping;t.needsUpdate=true;t.name='hd-sky:'+id;this._owned.add(t);this.stats.textures++;this.stats.gpuBytes+=d.width*d.height*8;
@@ -116,7 +124,7 @@ const HD={base:'hd/',manifest:null,enabled:true,stats:{files:0,bytes:0,textures:
      Blended (BLEND) foliage becomes alpha-tested and double-sided, so instances need no sorting; wind adds
      height-based sway (KE.foliage). Returns [{geometry, material, triangles, sourceTriangles, size:[x,y,z], name}]
      sorted largest first. */
-  async prepare(THREE,id,{maxTriangles=5000,split=true,wind=null,textureSize=0,keep=0}={}){const m=await this.gltf(THREE,id);if(!m)return [];
+  async prepare(THREE,id,{maxTriangles=5000,split=true,wind=null,textureSize=0,keep=0}={}){const m=await this.gltf(THREE,id,{tier:textureSize});if(!m)return [];
     const mats=new Set();for(const p of m.parts)for(const x of [p.material].flat())mats.add(x);
     if(textureSize)await Promise.all([...mats].flatMap(mt=>['map','normalMap','roughnessMap','metalnessMap','aoMap','alphaMap'].map(async k=>{const t=mt[k],im=t&&t.image;
       if(!im||!(im.width>textureSize))return;if(t._keResized)return;t._keResized=true;const b=await createImageBitmap(im,{resizeWidth:textureSize,resizeHeight:Math.max(1,Math.round(im.height*textureSize/im.width)),resizeQuality:'high'});if(im.close)im.close();t.image=b;t.needsUpdate=true;})));
