@@ -8,13 +8,24 @@
 @media(max-width:600px){header{left:18px;top:max(20px,env(safe-area-inset-top))}header h1{font-size:23px}header .brand{font-size:8px;letter-spacing:1.6px}.top-actions{right:14px;gap:6px}.pill{padding:10px 12px;font-size:10px}.quest{left:18px;top:97px;width:177px;padding:13px 15px}.quest p{font-size:10px}.quest strong{font-size:12px}.footer{bottom:22px;max-width:46vw;font-size:8px}.footer .line{display:none}.welcome-card{padding:32px 24px}.welcome-card h2{font-size:44px}#stats{font-size:8px}.ke-stick{width:100px;height:100px;left:18px;bottom:45px}.ke-jump{right:18px;bottom:58px;width:64px;height:64px}}
 @media(max-height:500px){.quest{top:88px;padding:10px;width:175px}.quest p{display:none}header h1{font-size:22px}.welcome-card{padding:20px}.welcome-card h2{font-size:32px;margin:10px}.welcome-card p{margin:6px}.welcome-card .start{margin:12px auto}.footer{bottom:12px}}
 #stats{white-space:pre;text-align:right}.hint{position:fixed;left:50%;top:max(18px,env(safe-area-inset-top));transform:translateX(-50%);font-size:10px;letter-spacing:1.5px;color:#fffc;pointer-events:none;text-shadow:0 2px 8px #000}
+body.photo header,body.photo .quest,body.photo .footer,body.photo #stats,body.photo .top-actions,body.photo .ke-controls,body.intro header,body.intro .quest,body.intro .footer,body.intro #stats,body.intro .top-actions,body.intro .ke-controls{display:none!important}
+body.intro::before,body.intro::after{content:'';position:fixed;left:0;right:0;height:9vh;background:#000;z-index:20;pointer-events:none}body.intro::before{top:0}body.intro::after{bottom:0}
+#photo{position:fixed;right:18px;bottom:max(18px,env(safe-area-inset-bottom));width:min(270px,calc(100vw - 36px));padding:16px 18px;border-radius:18px;z-index:30;font-size:12px}
+#photo h2{font:19px Georgia,serif;margin:0 0 2px}#photo p{margin:0 0 8px;opacity:.75;font-size:11px}
+#photo label{display:grid;grid-template-columns:78px 1fr;align-items:center;gap:8px;margin:7px 0}#photo input[type=range]{width:100%;accent-color:var(--gold)}
+#photo select{background:#132e37;color:var(--cream);border:1px solid #ffffff40;border-radius:8px;padding:5px}#photo .row{display:flex;gap:8px;margin-top:12px}#photo .row button{flex:1}
+#skip{position:fixed;right:22px;bottom:calc(9vh + 14px);z-index:30}
 </style>
 </head>
 <body>
 <header><div class="brand">kitsune enginev3 / 3.0.0 · Tenko</div><h1>Spirit Isle</h1></header>
-<div class="top-actions"><button class="pill" id="weather" aria-label="Toggle rain">☀ Clear</button><button class="pill" id="gfx" aria-expanded="false" aria-controls="panel">Settings</button></div>
+<div class="top-actions"><button class="pill" id="weather" aria-label="Toggle rain">☀ Clear</button><button class="pill" id="photo-btn" aria-label="Photo mode (P)">📷 Photo</button><button class="pill" id="gfx" aria-expanded="false" aria-controls="panel">Settings</button></div>
+<button class="pill" id="skip" hidden>Skip intro ›</button>
+<section id="photo" class="glass" hidden aria-label="Photo mode"><h2>Photo mode</h2><p id="ph-hint">Drag to orbit · wheel or pinch to zoom · P or Done to leave</p>
+<label>Focus <input type="range" id="ph-focus" min="-4" max="14" step=".1" value="0"></label><label>Aperture <input type="range" id="ph-aperture" min="0" max=".12" step=".005" value=".045"></label><label>Exposure <input type="range" id="ph-exposure" min="-2" max="2" step=".1" value="0"></label><label>Time of day <input type="range" id="ph-time" min="0" max="1" step=".005" value=".3"></label><label>Vignette <input type="range" id="ph-vignette" min="0" max=".8" step=".02" value=".25"></label><label>Filter <select id="ph-filter"><option value="natural">Natural</option><option value="warm">Golden</option><option value="cool">Cool</option><option value="dream">Dream</option><option value="mono">Mono</option><option value="noir">Noir</option></select></label>
+<div class="row"><button class="pill" id="ph-save">Save photo</button><button class="pill" id="ph-exit">Done</button></div></section>
 <section class="quest glass" aria-label="Quest progress"><span class="eyebrow">A small adventure</span><strong id="quest-title">Find the five spirit stones</strong><p id="quest-copy">Follow the golden trail through the island shrine.</p><div class="track" id="track"><i></i><i></i><i></i><i></i><i></i></div></section>
-<div class="footer">EXPLORE AT YOUR OWN PACE<div class="line">WASD / arrows · Space to jump · Drag to look · Q / E to turn · T time of day · ` console</div></div>
+<div class="footer">EXPLORE AT YOUR OWN PACE<div class="line">WASD / arrows · Space to jump · Drag to look · Q / E to turn · T time of day · P photo · ` console</div></div>
 <div id="stats"></div><div class="glass" id="toast" role="status" aria-live="polite"></div>
 <section id="panel" hidden aria-label="Settings"><div class="panel-head"><h2>Make it yours</h2><button id="close-panel" aria-label="Close settings">×</button></div><div id="settings"></div><div class="save-actions"><button id="save">Save</button><button id="load">Load</button><button id="reset">New run</button></div></section>
 <div id="welcome"><div class="welcome-card glass"><div class="fox-mark">◇ / 狐 / ◇</div><span class="eyebrow">Kitsune Engine 3 · Tenko</span><h2>A world with<br>more to discover.</h2><p>Explore a living island under a real sky: drifting volumetric clouds,<br>a full day and night, rain, reflective water and lantern light.</p><button class="start" id="start">Enter Spirit Isle →</button><small>Phone: left joystick + right-side drag + jump<br>Desktop: WASD + drag + Space · wheel to zoom · T to change the hour</small></div></div>
@@ -29570,16 +29581,48 @@ document.getElementById('settings').append(KE.settingsPanel());
 const offSettings=KE.events.on('settings',(s,key)=>{applyQuality();if(['tex','terrain','aa'].includes(key))toast('This option fully applies when you reopen the game.');});
 const setRain=v=>{raining=!!v;document.getElementById('weather').textContent=raining?'☂ Rain':'☀ Clear';sky.setWeather({coverage:raining?.82:.42,density:raining?1.4:1});};
 document.getElementById('weather').onclick=()=>setRain(!raining);
-document.getElementById('start').onclick=()=>{started=true;input.setEnabled(true);document.getElementById('welcome').hidden=true;audio.unlock();startSound();toast('Your adventure begins. Find the glowing stones.');};
+document.getElementById('start').onclick=()=>{document.getElementById('welcome').hidden=true;audio.unlock();startSound();playIntro(()=>{started=true;input.setEnabled(true);toast('Your adventure begins. Find the glowing stones.');});};
 const resize=()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();};window.addEventListener('resize',resize);
-const keys=e=>{if(e.code==='Escape'&&started)togglePanel(panel.hidden);if(e.code==='KeyT'&&started&&!paused){day=(day+1/12)%1;sky.setTime(day);sky.refresh();toast('The hour turns.');}};window.addEventListener('keydown',keys);
+const keys=e=>{if(intro&&['Escape','Space','Enter'].includes(e.code)){e.preventDefault();endIntro();return;}if(photo&&(e.code==='Escape'||e.code==='KeyP')){setPhoto(false);return;}if(e.code==='KeyP'&&started&&panel.hidden){setPhoto(true);return;}if(e.code==='Escape'&&started)togglePanel(panel.hidden);if(e.code==='KeyT'&&started&&!paused){day=(day+1/12)%1;sky.setTime(day);sky.refresh();toast('The hour turns.');}};window.addEventListener('keydown',keys);
 renderer.domElement.addEventListener('webglcontextlost',e=>{e.preventDefault();loop.pause();toast('Graphics paused. Waiting for the browser to recover…');});renderer.domElement.addEventListener('webglcontextrestored',()=>{applyQuality();sky.refresh();loop.pause(false);toast('Graphics restored.');});
 const litMaterials=new Set();scene.traverse(o=>{for(const m of [o.material].flat())if(m&&m.isMeshStandardMaterial)litMaterials.add(m);});
+
+/* ---------- intro flyover (animation module) ----------
+   A Sequencer animates a camera-rail parameter and a look target over the island, then hands over to the follow camera.
+   Skippable (button, Space, Enter, Escape); automated browsers skip it unless the page URL has ?intro=1. */
+let intro=null;
+const endIntro=()=>{if(!intro)return;const done=intro.done;intro.seq.stop();intro=null;document.body.classList.remove('intro');document.getElementById('skip').hidden=true;follow.initialized=false;done();};
+function playIntro(done,force=false){if(!has('animation')||(!force&&navigator.webdriver&&!/[?&]intro=1/.test(location.search))){done();return;}
+ follow.initialized=false;follow.update(player,1/60,ground);const end=camera.position.clone(),look=new T.Object3D(),state={u:0};
+ const rail=new KE.CameraRail(T,[[48,30,118],[72,24,86],[68,21,50],[48,20,16],[26,19,44],[40,11,86],[end.x,end.y+2,end.z+4],[end.x,end.y,end.z]],{lookAt:look});
+ const seq=new KE.Sequencer(T,{loop:false});
+ seq.addTrack({target:state,path:'u',keys:[{t:0,value:0,ease:'inOutSine'},{t:11,value:1}]});
+ seq.addTrack({target:look,path:'position',interp:'cubic',keys:[{t:0,value:[48,3,52]},{t:3.8,value:[48,5,29]},{t:6.5,value:[48,4,49]},{t:11,value:[player.x,player.y+.3,player.z]}]});
+ seq.addEvent({t:.6,fn:()=>toast('Spirit Isle')});seq.addEvent({t:5.5,fn:()=>toast('Five spirit stones wait somewhere on the island.')});
+ seq.onFinish=endIntro;intro={seq,rail,look,state,done};document.body.classList.add('intro');document.getElementById('skip').hidden=false;rail.apply(camera,0);seq.play();}
+document.getElementById('skip').onclick=endIntro;
+/* ---------- photo mode ----------
+   Hides the interface, freezes the fox and the clock, and exposes depth of field focused on the fox, exposure, time of day,
+   vignette and colour filters over the HDR pipeline. Save photo downloads the next rendered frame as a PNG. */
+let photo=null,wantShot=false;
+const FILTERS={natural:{},warm:{temperature:.35,saturation:1.12},cool:{temperature:-.35,tint:.04,saturation:.95},dream:{saturation:1.25,contrast:.94},mono:{saturation:0,contrast:1.12},noir:{saturation:0,contrast:1.4}};
+const phEl=id=>document.getElementById(id);
+function photoApply(){if(!photo)return;const o=pipeline.options,g=o.grading;Object.assign(g,photo.grading,FILTERS[phEl('ph-filter').value]||{});g.vignette=+phEl('ph-vignette').value;
+ o.exposureCompensation=+phEl('ph-exposure').value;o.dof.enabled=pipeline.depthOK&&+phEl('ph-aperture').value>0;o.dof.aperture=+phEl('ph-aperture').value;o.dof.autoFocus=false;}
+function setPhoto(on){on=!!on;if(!started||intro||on===!!photo)return;const o=pipeline.options;
+ if(on){photo={grading:{...o.grading},dof:{...o.dof},comp:o.exposureCompensation};phEl('ph-time').value=day;phEl('ph-vignette').value=o.grading.vignette;
+  const off=!pipeline.enabled;for(const id of ['ph-focus','ph-aperture','ph-exposure','ph-filter','ph-vignette'])phEl(id).disabled=off;phEl('ph-hint').textContent=off?'Depth of field, exposure and filters need Medium quality or higher.':'Drag to orbit · wheel or pinch to zoom · P or Done to leave';
+  document.body.classList.add('photo');phEl('photo').hidden=false;player.vx=player.vz=0;photoApply();phEl('ph-save').focus();}
+ else{Object.assign(o.grading,photo.grading);Object.assign(o.dof,photo.dof);o.exposureCompensation=photo.comp;photo=null;pipeline.applySettings(S);document.body.classList.remove('photo');phEl('photo').hidden=true;phEl('photo-btn').focus();}}
+for(const id of ['ph-focus','ph-aperture','ph-exposure','ph-vignette','ph-filter'])phEl(id).oninput=photoApply;
+phEl('ph-time').oninput=()=>{day=+phEl('ph-time').value;sky.setTime(day);sky.refresh();};
+phEl('photo-btn').onclick=()=>setPhoto(true);phEl('ph-exit').onclick=()=>setPhoto(false);phEl('ph-save').onclick=()=>{wantShot=true;};
+function savePhoto(){renderer.domElement.toBlob(blob=>{if(!blob){toast('This browser could not capture the frame.');return;}const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='spirit-isle-'+new Date().toISOString().replace(/[:.]/g,'-')+'.png';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000);},'image/png');}
 
 /* ---------- frame loop ---------- */
 let frame=0;const target=new T.Vector3();
 const loop=new KE.Loop({onError:fail,update(dt,t){
- if(!paused){day=(day+dt/480)%1;sky.setTime(day);if(started){const motion=input.movement(),move=follow.movement(motion.x,motion.z);player.vx=KE.damp(player.vx,move.x*5.5,12,dt);player.vz=KE.damp(player.vz,move.z*5.5,12,dt);coyote=player.grounded?.12:Math.max(0,coyote-dt);jumpBuffer=input.consume('Space')?.12:Math.max(0,jumpBuffer-dt);if(coyote&&jumpBuffer){player.vy=8.3;player.grounded=false;coyote=jumpBuffer=0;if(beds)sound.play('jump',{bus:'sfx',volume:.35,position:[player.x,player.y,player.z]});else audio.tone(300,.07);}KE.Physics.step([player],dt,collision,ground);if(Math.hypot(move.x,move.z)>.05){hero.rotation.y=Math.atan2(-move.x,-move.z);walkTime+=dt*11;}
+ if(!paused){if(!photo){day=(day+dt/480)%1;sky.setTime(day);}if(started&&!photo){const motion=input.movement(),move=follow.movement(motion.x,motion.z);player.vx=KE.damp(player.vx,move.x*5.5,12,dt);player.vz=KE.damp(player.vz,move.z*5.5,12,dt);coyote=player.grounded?.12:Math.max(0,coyote-dt);jumpBuffer=input.consume('Space')?.12:Math.max(0,jumpBuffer-dt);if(coyote&&jumpBuffer){player.vy=8.3;player.grounded=false;coyote=jumpBuffer=0;if(beds)sound.play('jump',{bus:'sfx',volume:.35,position:[player.x,player.y,player.z]});else audio.tone(300,.07);}KE.Physics.step([player],dt,collision,ground);if(Math.hypot(move.x,move.z)>.05){hero.rotation.y=Math.atan2(-move.x,-move.z);walkTime+=dt*11;}
  for(const stone of stones)if(!stone.collected&&Math.hypot(player.x-stone.x,player.z-stone.z)<1.15){stone.collected=true;stone.m.visible=stone.ring.visible=false;lights.set(stone.light,{enabled:false});particle.burst(stone.x,ground(stone.x,stone.z)+1,stone.z,30);if(collectFx)collectFx.burst(90,[stone.x,ground(stone.x,stone.z)+1,stone.z]);if(beds)sound.play(KE.Synth.chime({freq:580+stone.id*120,bell:.6}),{bus:'sfx',volume:.6,position:[stone.x,ground(stone.x,stone.z)+1,stone.z]});else audio.tone(580+stone.id*120,.22);progress();toast(stones.every(s=>s.collected)?'All five spirits found. The island is yours.':'A spirit stone found.');}
  }}particle.update(dt);for(const stone of stones){stone.m.rotation.y=t*.9;stone.m.position.y=ground(stone.x,stone.z)+1+Math.sin(t*2+stone.id)*.15;}
  },render(alpha,dt,t){
@@ -29587,7 +29630,9 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
  if(foxGait){const air=player.y-player.r-ground(player.x,player.z)>.12;if(air){foxLegs.forEach((leg,i)=>leg.rotation.x=KE.damp(leg.rotation.x,i<2?-.7:.6,14,dt));}else{if(wasAirborne)foxGait.reset();foxGait.update(dt,{x:player.vx,y:0,z:player.vz});}wasAirborne=air;tailSpring.update(dt);}
  else{hero.position.y+=Math.sin(walkTime)*.025;const gait=Math.min(1,Math.hypot(player.vx,player.vz)/4);foxLegs.forEach((leg,i)=>leg.rotation.x=Math.sin(walkTime+(i===0||i===3?0:Math.PI))*.55*gait);foxTail.rotation.y=Math.sin(t*1.8)*.1;}
  if(fur)fur.update(dt,{x:player.vx,y:player.vy,z:player.vz});if(guide&&!paused)guide.update(dt,t);
- if(!paused){const look=input.consumeLook();follow.rotate(look.x,look.y);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.zoom(look.zoom);}follow.update(player,dt,ground);
+ if(intro){intro.seq.update(dt);if(intro)intro.rail.apply(camera,intro.state.u);}
+ else{if(!paused){const look=input.consumeLook();follow.rotate(look.x,look.y);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.zoom(look.zoom);}follow.update(player,dt,ground);}
+ if(photo){pipeline.options.dof.focusDistance=Math.max(.5,camera.position.distanceTo(hero.position)+ +phEl('ph-focus').value);}
  wet=KE.damp(wet,raining?1:0,.6,dt);surfaceWeather.update(dt,{raining});
  sky.update(dt,camera);sun.intensity*=1-wet*.6;const night=sky.night;
  csm.update(camera);gi.update(camera);lights.intensity=Math.min(1,night*1.4+wet*.3);lights.update(dt,camera);
@@ -29601,7 +29646,7 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
   const mood=stones.every(s=>s.collected)?'triumphant':night>.5?'night':'calm';if(mood!==musicMood){musicMood=mood;music.setMood(mood,5);}music.intensity=mood==='triumphant'?.7:.3+wet*.1;sound.update(dt,camera);}
  if(physics){heroBody.moveKinematic([player.x,player.y-player.r+.67,player.z]);physics.step(dt);}
  rain.visible=raining&&S.fx&&!vfx;if(rain.visible){for(let i=0;i<rainCount;i++){const d=rainData[i],y=player.y+((d.y-t*d.s)%16+16)%16;rainPos.set([player.x+d.x,y,player.z+d.z,player.x+d.x+.12,y-.6,player.z+d.z],i*6);}rainGeometry.attributes.position.needsUpdate=true;}
- pipeline.render(scene,camera,dt);
+ pipeline.render(scene,camera,dt);if(wantShot){wantShot=false;savePhoto();}
  const fps=KE.FPS.tick(performance.now(),()=>{applyQuality();toast('Quality adjusted for smoother play.');});
  if(++frame%20===0){const st=KE.rendererStats(renderer);document.getElementById('stats').textContent=S.showFps?`${fps} FPS · ${S.preset}${pipeline.enabled?' · Tenko '+pipeline.stats.passes+' passes':''}\n${st.calls} draws · ${(st.triangles/1000).toFixed(0)}k tris`:'';}
  }});/* Compile every scene program now, during loading: Android browsers lack non-blocking shader compilation, so programs
@@ -29609,7 +29654,7 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
 try{renderer.compile(scene,camera);}catch(e){}
 loop.start();
 /* Expose a small debug handle for automated checks and your own development tools. */
-window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,sound,world,editor,guide,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
+window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,sound,world,editor,guide,setPhoto,playIntro:()=>playIntro(()=>{},true),skipIntro:endIntro,isIntro:()=>!!intro,introSeek:t=>{if(intro)intro.seq.seek(t);},getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
  dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();if(guide)guide.dispose();if(editor)editor.dispose();if(world)world.dispose();if(sound)sound.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();

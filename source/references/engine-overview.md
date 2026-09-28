@@ -73,6 +73,8 @@ Spirit Isle (`assets/starter.html`) is the reference integration; each system is
 7. `water.update(dt, camera, {pipeline})`, `vfx.update(dt, camera)`, `physics.step(dt)`, `audio.update(dt, camera)`.
 8. `pipeline.render(scene, camera, dt)`.
 
+Spirit Isle also shows two presentation features built from engine parts: an intro flyover (a `KE.Sequencer` animates a `KE.CameraRail` parameter and a look target, then hands over to the follow camera; automated browsers skip it unless the URL has `?intro=1`) and a photo mode (hidden interface, the pipeline's depth of field focused on the fox each frame, exposure compensation, grading presets, vignette, time of day, and `canvas.toBlob` right after a rendered frame to save a PNG).
+
 While the editor is open (F8) the game loop is paused and the editor runs its own frame with the same scene, camera and renderer.
 
 ## 4. Quality presets
