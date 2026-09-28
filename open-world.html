@@ -16819,7 +16819,7 @@ const V3={
 };
 for(const [name,extra] of Object.entries(V3))Object.assign(KE.PRESETS[name],extra);
 KE.PRESETS.cinematic={...KE.PRESETS.ultra,preset:'cinematic',scale:1.6,shadowRes:2048,tex:512,grass:20000,view:220,aniso:16,dof:false,motionBlur:false,lod:1.5,lights:12};/* no gameplay depth of field or motion blur: they blurred the whole landscape behind the player; photo modes enable DOF themselves */
-/* Epic (PC): everything at its maximum at native resolution, for desktop GPUs of the RTX 3060/4060 Ti/RX 6700 class and
+/* Epic (PC): everything at its maximum at native resolution, for desktop GPUs of the RTX 3060/4060 Ti/5060 Ti/RX 6700 class and
    above: 4096² shadows in four cascades, full-detail trees (lod 2 gives full leaf density), 32k grass blades with longer
    streaming radii, 1024² textures, SSGI, probe GI, volumetrics and high-quality clouds; no gameplay DOF or motion blur.
    Cinematic supersamples instead (render scale 1.6) and is heavier per pixel. */
