@@ -3,7 +3,7 @@
   "codename": "Tenko",
   "runtime_version": "3.0.0",
   "three_revision": "128",
-  "date": "2026-09-27T22:55:07.053Z",
+  "date": "2026-09-28T00:55:28.154Z",
   "environment": "Headless Chromium (Playwright) with SwiftShader software WebGL2 on a 4-CPU Linux container; Node v22.22.2",
   "modules": [
     "00-core-v3.js",
@@ -19,8 +19,10 @@
     "30-geometry.js",
     "32-world.js",
     "40-physics.js",
+    "42-cloth.js",
     "50-vfx.js",
     "60-animation.js",
+    "62-characters.js",
     "70-ai.js",
     "80-audio.js",
     "85-gameplay.js",
@@ -29,128 +31,140 @@
   "suites": {
     "core": {
       "status": "pass",
-      "checks": 22,
+      "checks": 23,
       "seconds": 0.3,
       "kind": "node"
     },
     "build": {
       "status": "pass",
       "checks": 5,
-      "seconds": 0.3,
+      "seconds": 0.2,
       "kind": "node"
     },
     "pipeline": {
       "status": "pass",
-      "checks": 17,
-      "seconds": 91.2,
+      "checks": 19,
+      "seconds": 110.5,
       "kind": "browser"
     },
     "sky": {
       "status": "pass",
       "checks": 8,
-      "seconds": 37.5,
+      "seconds": 37.6,
       "kind": "browser"
     },
     "shadows": {
       "status": "pass",
       "checks": 6,
-      "seconds": 11.6,
+      "seconds": 12.1,
       "kind": "browser"
     },
     "gi": {
       "status": "pass",
       "checks": 5,
-      "seconds": 15.8,
+      "seconds": 17.8,
       "kind": "browser"
     },
     "water": {
       "status": "pass",
       "checks": 6,
-      "seconds": 27.6,
+      "seconds": 33.3,
       "kind": "browser"
     },
     "weather": {
       "status": "pass",
-      "checks": 7,
-      "seconds": 7,
+      "checks": 8,
+      "seconds": 11.4,
       "kind": "browser"
     },
     "foliage": {
       "status": "pass",
       "checks": 13,
-      "seconds": 24.4,
+      "seconds": 26.5,
       "kind": "browser"
     },
     "materials": {
       "status": "pass",
       "checks": 12,
-      "seconds": 21,
+      "seconds": 21.6,
       "kind": "browser"
     },
     "geometry": {
       "status": "pass",
       "checks": 14,
-      "seconds": 7.2,
+      "seconds": 7.8,
       "kind": "browser"
     },
     "world": {
       "status": "pass",
       "checks": 40,
-      "seconds": 20.8,
+      "seconds": 22.8,
       "kind": "browser"
     },
     "physics": {
       "status": "pass",
       "checks": 52,
-      "seconds": 1.9,
+      "seconds": 1.8,
+      "kind": "browser"
+    },
+    "cloth": {
+      "status": "pass",
+      "checks": 7,
+      "seconds": 1.1,
       "kind": "browser"
     },
     "vfx": {
       "status": "pass",
       "checks": 29,
-      "seconds": 10.6,
+      "seconds": 11.1,
       "kind": "browser"
     },
     "animation": {
       "status": "pass",
       "checks": 40,
-      "seconds": 3.1,
+      "seconds": 3,
       "kind": "browser"
     },
     "ai": {
       "status": "pass",
       "checks": 22,
-      "seconds": 3.6,
+      "seconds": 3.4,
       "kind": "browser"
     },
     "audio": {
       "status": "pass",
       "checks": 92,
-      "seconds": 9.2,
+      "seconds": 9.4,
       "kind": "browser"
     },
     "editor": {
       "status": "pass",
       "checks": 24,
-      "seconds": 10.1,
+      "seconds": 9.8,
       "kind": "browser"
     },
     "game": {
       "status": "pass",
       "checks": 0,
-      "seconds": 202.9,
+      "seconds": 199.8,
+      "kind": "browser"
+    },
+    "open-world": {
+      "status": "pass",
+      "checks": 8,
+      "seconds": 53.6,
       "kind": "browser"
     },
     "visuals": {
       "status": "pass",
       "checks": 17,
-      "seconds": 3,
+      "seconds": 5.1,
       "kind": "node"
     },
     "resources": {
       "status": "pass",
       "checks": 4,
-      "seconds": 1.7,
+      "seconds": 1.8,
       "kind": "node"
     }
   },
@@ -161,16 +175,16 @@
     "Visual parity with Unreal Engine 5 (no side-by-side comparison exists)"
   ],
   "sha256": {
-    "SKILL.md": "78e8ac4a30bff4e832e3fb33689109e360053b7eb19f4d53a662a22da3af4094",
-    "assets/starter.html": "2c0e5b61c80b6c17c67cce924871a68880eca4b8783164d26e8e3a87b11531d5",
-    "assets/kitsune-engine.js": "c2f9a015bde9fca1ce01fa5def386aebbb412a3a26507ab1dedffa38d5f6b65f",
+    "SKILL.md": "e20e64cdf2641a779a92f0862f5a42d1ccd886986ad2d5240ec404d151b87378",
+    "assets/starter.html": "53ad5a19e687247f13a52ba3c58d84614000c294b8d9099e0cdad5b4d467f72d",
+    "assets/kitsune-engine.js": "3ea132b4df7588be678c1eaba1703a26a0d41628f09312ac063ead83181f4f9a",
     "assets/three.min.js": "9274bbcec8d96168626c732b5d31c775aa8cfb7eaa0599bec0c175908a2c1ce2",
     "assets/three-addons.js": "f542cb89c3fc2ce32d78e8083f3e1ebd852165e0d832893976a7244d98be30ba",
     "assets/kitsune-libs.js": "029b7ad8cf3abc50663a3a2c54b82177a0c308435b6db4dd7edafdcd3e093262",
     "scripts/build.py": "b1052f342bcd42766c8c1d9e8ba85a411e61e44eb41e0d84f84e88d3a09ea2bf",
     "scripts/build_engine.py": "38d96e4d516e58037923a4e2b6020590c0b9578f6518bbba688834ff581bc48e",
-    "src/modules/00-core-v3.js": "6525e060d9905c09e206c3b245690b63825f54e27608937af5fc07851fc9a6b6",
-    "src/modules/10-pipeline.js": "c8c7ad14dc9126bc43f2b495c8d1a876a2b3404b8a32334ed884d3cdb39b6331",
+    "src/modules/00-core-v3.js": "7ac432c8228279da262dc6a0e8ecce4b7f79332510592a8c5ae6d637d85c6e2e",
+    "src/modules/10-pipeline.js": "8bfd596d73bad12939b331a2596055519ec2d13c50d1cfc243a31ee48195376f",
     "src/modules/12-sky.js": "cf4aa624ea912b4d74f8f2cfc83c890c38afbe11cd7559f9f734ffb5dfbbfbe7",
     "src/modules/14-shadows.js": "4ac4d87fbcff7cc2acd03426d452366b1770d478694eee21f7c8eaa8d2feb2a0",
     "src/modules/16-lights.js": "01ef712c2ced7e694f2f7d3996e6e0a153e9a2c13679dfcd4b6e59a54a6c8a73",
@@ -178,16 +192,18 @@
     "src/modules/20-materials.js": "c0321ebfbb607e857276bba3b261c491b2df30b49c1a2552a91728e6cb193f0d",
     "src/modules/22-water.js": "54d6a6472d4f8e986c7bbdd04eb19945e000248cbbab70edf9f41abcb12b530f",
     "src/modules/24-foliage.js": "36cd57c9c576b480a93dc3ad74d62f7354c7004930495c067f2f257fa7da41ea",
-    "src/modules/26-weather.js": "e20817f1b28301951ace2240e1de98ea86e7de9a6c6bbfac2c04a4520244eec1",
+    "src/modules/26-weather.js": "d5603d248e8c9357f8406a67cca6c68b1d3224e81f7c611f54b04cb1aa71a340",
     "src/modules/30-geometry.js": "f7d2d27fcb25d918d17c0794483a43cd930b08be62fd2a3035b2ca05025dff64",
     "src/modules/32-world.js": "42ce1eab9a1ad049a710dd56ac01fa5e347fadc8e5359a69c52af3717f40b9cb",
     "src/modules/40-physics.js": "8af044d0baf3b3604b32580782a86987f35634a987c6361bdd7bebeccdb7ac8d",
+    "src/modules/42-cloth.js": "3689f462ea0dce5b4d02fc483479c99cb6843096d8e3ead658c3d4c598ea6da9",
     "src/modules/50-vfx.js": "ec3f35339ea9737fe0b2b1fea7a0abfc9bf7c4c0d9f956517b1db953cbef6f7d",
     "src/modules/60-animation.js": "a7a19bd1003c9d3cc0b0220c0325a234d056dac489c0c1df076b91927a56b67b",
+    "src/modules/62-characters.js": "1544a50b5afe46a1bd969cb42dc900a2ca8e3dbab90a85eee2220853927a843a",
     "src/modules/70-ai.js": "6887f8e3827669856666db5267e61ada10fbcbd8f4f5e40803a07d4ac33dd643",
     "src/modules/80-audio.js": "5d68fcf60cf2d37419202685aef81e09b136a368d5e2fa4a070317c0e806e6f6",
     "src/modules/85-gameplay.js": "65ebe012500e268100386b1830572355490d693f6b371047d2f774b885b08f24",
-    "src/modules/90-editor.js": "26d4cb51d0448f6b17c274779f8ea4cd6f596aa048f1e01d8f1f0995760dc47d",
-    "../spirit-isle.html": "bfa482c3514a3d788954b3c2ddc39f7a53cce8904174a99370b5eaec238ac0dd"
+    "src/modules/90-editor.js": "1cc67bf34c1d535f5c7ddadd9801dd455725ce03faed8c45c7c7c10225838511",
+    "../spirit-isle.html": "c4f263c7827e7708432560753d70ba2827abe2ed0b3a23ffa01d759af7503d77"
   }
 }
