@@ -92,7 +92,9 @@ Clouds do not shadow the ground, and the sun is not dimmed by clouds automatical
 
 ## 4. KE.CascadedShadows
 
-`new KE.CascadedShadows(THREE, scene, {sun, cascades, mapSize, maxFar, lambda:.72, overlap:.12, margin:60, bias:-.0004, normalBias:1.2 (texels), fadeStart:.85, soft, lightAngle:1.2 (degrees), maxPenumbra:.9 (world units), searchDistance:6})`.
+`new KE.CascadedShadows(THREE, scene, {sun, cascades, mapSize, maxFar, lambda:.72, overlap:.12, margin:60, bias:-.0004, normalBias:1.2 (texels), fadeStart:.85, soft, lightAngle:1.2 (degrees), maxPenumbra:.9 (world units), searchDistance:6, cache, cacheSlack:.1, cacheAngle:.35 (degrees)})`.
+
+**Cached far cascades** (`cache`, default `KE.settings.shadowCache`, on unless set false; cvar `r.Shadow.Cache`). Cascade 0 is redrawn every frame. The other cascades take turns, at most one per frame (with 4 cascades each is redrawn every third frame). Each is drawn over a sphere `cacheSlack` (10%) larger than it needs, and reused on the other frames while the sphere the current view needs still fits inside the drawn one and the sun has turned less than `cacheAngle`. A reused cascade keeps the light matrix it was drawn with (Three.js only updates that matrix when it draws the map), so the lookup stays consistent. The result is 2 shadow passes per frame instead of 4, and the cost is that far shadows lag moving objects by up to two frames and lose 10% of their resolution. `stats` is `{drawn, reused}` for the last update; `invalidate()` redraws everything on the next update. For the near cascade, `KE.HorizonCuller.setShadows` (world.md) limits it to the instances inside its box.
 
 With `soft` (default on High and above) cascades use percentage-closer soft shadows: a 12-tap blocker search, then a 16-tap filter whose radius is the receiver–blocker distance (linear in the orthographic cascade) times `tan(lightAngle)`, clamped to `maxPenumbra`, with per-pixel rotated spiral taps that TAA resolves. Contact points stay sharp and long shadows soften. Otherwise Three's PCF soft shadows are used.
 
@@ -152,6 +154,7 @@ mesh.layers.set(KE.LAYERS.TRANSLUCENT);
 | pipeline (HDR post) | off | on | on | on | on | on |
 | gi (probe volume) | – | – | ✓ | ✓ | ✓ | ✓ |
 | upscale (internal resolution) | 1 | .67 | .8 | 1 | 1 | 1 |
+| dynamic resolution (60 fps target) | – | ✓ (≥ .6) | ✓ (≥ .6) | – | ✓ (≥ .75) | – |
 | taa / gtao / ssr | – / – / – | ✓ / – / – | ✓ / ✓ / ✓ | ✓ / ✓ / ✓ | ✓ / ✓ (4×10) / ✓ | ✓ / ✓ / ✓ |
 | ssgi | – | – | – | ✓ | ✓ | ✓ |
 | volumetrics (shafts, fog inscatter) | – | – | ✓ | ✓ | ✓ (32 steps) | ✓ |

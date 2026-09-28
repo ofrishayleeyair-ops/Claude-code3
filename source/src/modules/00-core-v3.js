@@ -38,9 +38,11 @@ KE.PRESETS.cinematic={...KE.PRESETS.ultra,preset:'cinematic',scale:1.6,shadowRes
 /* Epic (PC): everything at its maximum at native resolution, for desktop GPUs of the RTX 3060/4060 Ti/5060 Ti/RX 6700 class and
    above: 4096² shadows in four cascades, full-detail trees (lod 2 gives full leaf density), 32k grass blades with longer
    streaming radii, 1024² textures, SSGI, probe GI, volumetrics and high-quality clouds; no gameplay DOF or motion blur.
-   Cinematic supersamples instead (render scale 1.6) and is heavier per pixel. */
+   Dynamic resolution is on: when a frame takes longer than 60 fps allows, the internal resolution steps down (to 75%,
+   TAA reconstructs to native) and climbs back when there is headroom. Cinematic supersamples instead (render scale
+   1.6) and is heavier per pixel. */
 KE.PRESETS.epic={...KE.PRESETS.ultra,preset:'epic',scale:1.43,upscale:1,shadowRes:4096,cascades:4,tex:1024,grass:32000,view:300,aniso:16,lod:2,lights:16,clouds:2,
-  pipeline:true,gi:true,taa:true,gtao:true,ssr:true,ssgi:true,volumetrics:true,autoExposure:true,fur:true,vfx:1,dynamicRes:false,dof:false,motionBlur:false};
+  pipeline:true,gi:true,taa:true,gtao:true,ssr:true,ssgi:true,volumetrics:true,autoExposure:true,fur:true,vfx:1,dynamicRes:true,dof:false,motionBlur:false};
 KE.PRESET_ORDER=['cinematic','epic','ultra','high','medium','low'];
 /* Desktop GPU detection for the first launch: an RTX 20/30/40/50-series 60-class or better, a Radeon RX 6700/7700/9000 or
    better, or an Arc A750/A770 on a machine with 8+ threads starts on Epic. Reads WEBGL_debug_renderer_info from a throwaway
@@ -57,6 +59,7 @@ KE.sanitizeSettings=(raw={})=>{
   if(!raw||typeof raw!=='object'||Array.isArray(raw))raw={};
   const s=baseSanitize(raw),preset=KE.PRESETS[s.preset];
   for(const key of BOOL_V3)s[key]=typeof raw[key]==='boolean'?raw[key]:preset[key];
+  s.shadowCache=typeof raw.shadowCache==='boolean'?raw.shadowCache:true;
   for(const [key,min,max,integer] of NUM_V3){const v=Number.isFinite(raw[key])?clamp(raw[key],min,max):preset[key];s[key]=integer?Math.round(v):v;}
   if((raw.preset==='cinematic'||raw.preset==='epic')&&!Number.isFinite(raw.view))s.view=preset.view;
   return s;
@@ -106,7 +109,7 @@ KE.cvars={
 for(const [name,key,help,type,min,max,scale=1] of [
   ['r.TAA','taa','Temporal anti-aliasing','boolean'],['r.GTAO','gtao','Ground-truth ambient occlusion','boolean'],['r.SSR','ssr','Screen-space reflections','boolean'],
   ['r.SSGI','ssgi','Screen-space global illumination','boolean'],['r.GI','gi','Probe-volume dynamic diffuse GI','boolean'],['r.Bloom','bloom','Bloom','boolean'],['r.Shadows','shadows','Sun shadows','boolean'],
-  ['r.Shadow.Cascades','cascades','Cascaded shadow map count','number',1,4],['r.Shadow.Resolution','shadowRes','Shadow map resolution','number',512,2048],
+  ['r.Shadow.Cascades','cascades','Cascaded shadow map count','number',1,4],['r.Shadow.Resolution','shadowRes','Shadow map resolution','number',512,4096],['r.Shadow.Cache','shadowCache','Reuse far shadow cascades across frames (one redrawn per frame)','boolean'],
   ['r.Volumetrics','volumetrics','Light shafts and height fog','boolean'],['r.Clouds','clouds','Cloud quality 0-2','number',0,2],['r.DOF','dof','Depth of field','boolean'],
   ['r.MotionBlur','motionBlur','Camera motion blur','boolean'],['r.AutoExposure','autoExposure','Eye adaptation','boolean'],['r.Pipeline','pipeline','HDR post pipeline','boolean'],
   ['r.ScreenPercentage','scale','Render scale percent','number',50,200,100],['r.Upscale','upscale','Internal resolution fraction reconstructed by TAA (0.5-1)','number',.5,1],['r.DynamicResolution','dynamicRes','Lower/raise the internal resolution to hold the frame rate (needs TAA)','boolean'],['r.ViewDistance','view','Fog/view distance','number',30,300],['r.LODBias','lod','Geometry detail multiplier','number',.25,2],
@@ -193,9 +196,15 @@ KE.WorkerPool=class{
     this.size=this.workers.length;}
   /* run(task, args, transfer) → Promise of the task's result. */
   run(task,args,transfer=[]){if(!this.size)return Promise.reject(new Error('KE.WorkerPool: no workers'));return new Promise((resolve,reject)=>{this.queue.push({task,args,transfer,resolve,reject});this._pump();});}
+  /* runOn(i, ...) queues a task on worker i itself (behind whatever it is doing), for per-worker state such as a
+     cached heightfield; broadcast(task, args) runs it on every worker. Neither changes which workers run() may use. */
+  runOn(i,task,args,transfer=[]){const w=this.workers[i];if(!w)return Promise.reject(new Error('KE.WorkerPool: no worker '+i));
+    return new Promise((resolve,reject)=>{const id=++this._id;this.pending.set(id,{task,args,resolve,reject,pinned:w});try{w.postMessage({id,task,args},transfer);}catch(e){this.pending.delete(id);reject(e);}});}
+  broadcast(task,args){return Promise.all(this.workers.map((w,i)=>this.runOn(i,task,args)));}
   _pump(){while(this.idle.length&&this.queue.length){const w=this.idle.pop(),j=this.queue.shift(),id=++this._id;this.pending.set(id,j);w._job=id;try{w.postMessage({id,task:j.task,args:j.args},j.transfer);}catch(e){this.pending.delete(id);w._job=null;this.idle.push(w);j.reject(e);}}}
-  _done(w,d){const j=this.pending.get(d.id);this.pending.delete(d.id);w._job=null;this.idle.push(w);this.tasksRun++;if(j){if(d.error)j.reject(new Error(d.error));else j.resolve(d.result);}this._pump();}
-  _crash(w,e){const j=this.pending.get(w._job);if(j){this.pending.delete(w._job);j.reject(new Error('KE.WorkerPool: worker error '+(e&&e.message||'')));}w._job=null;this.idle.push(w);this._pump();}
+  _done(w,d){const j=this.pending.get(d.id);this.pending.delete(d.id);if(!j||!j.pinned){w._job=null;this.idle.push(w);}this.tasksRun++;if(j){if(d.error)j.reject(new Error(d.error));else j.resolve(d.result);}this._pump();}
+  _crash(w,e){const err=()=>new Error('KE.WorkerPool: worker error '+(e&&e.message||''));const j=this.pending.get(w._job);if(j){this.pending.delete(w._job);j.reject(err());}
+    for(const [id,p] of this.pending)if(p.pinned===w){this.pending.delete(id);p.reject(err());}w._job=null;if(!this.idle.includes(w))this.idle.push(w);this._pump();}
   dispose(){for(const w of this.workers)w.terminate();for(const j of this.pending.values())j.reject(new Error('KE.WorkerPool disposed'));for(const j of this.queue)j.reject(new Error('KE.WorkerPool disposed'));this.pending.clear();this.queue=[];this.workers=[];this.idle=[];this.size=0;if(this.url)URL.revokeObjectURL(this.url);this.url=null;}
 };
 /* Worker boilerplate: TASKS is an object of name → (args) => ({out, transfer}) defined by the kernel source. */

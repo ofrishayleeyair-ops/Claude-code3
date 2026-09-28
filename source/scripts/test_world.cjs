@@ -171,6 +171,44 @@ async function browserTests(){
     let changed=0;for(let i=0;i<a.data.length;i++)if(Math.abs(a.data[i]-e.data[i])>1e-3)changed++;out.changed=changed;out.flow=!!(e.masks&&e.masks.flow);out.tasks=pool.tasksRun;pool.dispose();out.disposed=pool.size===0;return out;});
   check('worker pool: parallel generation equals the single-threaded bake; parallel erosion conserves volume and carves',par.workers>0&&par.maxDiff===0&&par.parallel&&par.parallel.workers===par.workers&&par.fnFallbackSync&&Math.abs(par.vol-1)<.002&&par.eroded&&par.changed>1000&&par.flow&&par.disposed,par);
 
+  const hz=await page.evaluate(async()=>{const {T,KE}=W,H=KE.Heightfield;
+    /* a plain with a 40 m ridge across z = -60, between the camera (z = 0, looking -z) and a row of trees at z = -120 */
+    const S=257,hf=new H({size:S,worldSize:512});for(let j=0;j<S;j++)for(let i=0;i<S;i++){const z=hf.originZ+j*hf.spacing;hf.data[j*S+i]=40*Math.exp(-(((z+60)/8)**2));}hf.recomputeRange();
+    const geo=new T.ConeGeometry(2,8,6).translate(0,4,0),mat=new T.MeshBasicMaterial();
+    const place=pts=>{const m=new T.InstancedMesh(geo,mat,pts.length),M=new T.Matrix4();pts.forEach((p,i)=>m.setMatrixAt(i,M.makeTranslation(p[0],p[1],p[2])));m.frustumCulled=false;return m;};
+    const row=(z,y=0)=>{const a=[];for(let x=-40;x<=40;x+=10)a.push([x,y,z]);return a;};
+    const run=async pool=>{const scene=new T.Scene(),cam=new T.PerspectiveCamera(60,1.6,.1,1000);cam.position.set(0,2,0);cam.lookAt(0,2,-100);cam.updateMatrixWorld();
+      const meshes={behind:place(row(-120)),front:place(row(-30)),high:place(row(-120,100)),side:place(row(60))};Object.values(meshes).forEach(m=>scene.add(m));
+      const rec=[];meshes.behind.onBeforeRender=function(r,s,c){rec.push([c===cam,this.count]);};
+      const hc=new KE.HorizonCuller(T,hf,{pool});await hc.ready;Object.values(meshes).forEach(m=>hc.add(m));
+      hc.update(cam);for(let i=0;i<200&&hc._busy;i++)await new Promise(r=>setTimeout(r,10));hc.update(cam);
+      W.renderer.render(scene,cam);const other=cam.clone();W.renderer.render(scene,other);
+      const vis=k=>{const e=hc.entries.get(meshes[k]);return e.applied?e.nMain:e.n;};
+      const out={behind:vis('behind'),front:vis('front'),high:vis('high'),side:vis('side'),n:meshes.behind.count,rec,restored:meshes.behind.count,stats:{...hc.stats}};
+      /* moving far away drops the stale results until fresh ones land */
+      cam.position.z-=20;cam.updateMatrixWorld();hc.update(cam);out.staleDropped=!hc.valid;
+      hc.dispose();out.afterDispose=meshes.behind.count;if(pool)pool.dispose();return out;};
+    return {sync:await run(null),pool:await run(H.workers({size:2}))};});
+  const hzOk=r=>r.behind===0&&r.front===r.n&&r.high===r.n&&r.side===0&&r.rec.some(([m,c])=>m&&c===0)&&r.rec.some(([m,c])=>!m&&c===r.n)&&r.restored===r.n&&r.afterDispose===r.n&&r.staleDropped;
+  check('horizon culler: trees behind a ridge and behind the camera are skipped for the view camera only (main thread and workers)',hzOk(hz.sync)&&hzOk(hz.pool)&&hz.pool.stats.workers===2,hz);
+
+  const hzs=await page.evaluate(async()=>{const {T,KE}=W,H=KE.Heightfield,R=W.renderer;
+    const S=129,hf=new H({size:S,worldSize:512});hf.recomputeRange();
+    const geo=new T.ConeGeometry(2,8,6).translate(0,4,0),mat=new T.MeshStandardMaterial();
+    const mesh=new T.InstancedMesh(geo,mat,9),M=new T.Matrix4();for(let i=0;i<9;i++)mesh.setMatrixAt(i,M.makeTranslation(-40+i*10,0,-30));mesh.castShadow=true;mesh.frustumCulled=false;
+    const scene=new T.Scene(),cam=new T.PerspectiveCamera(60,1.6,.1,1000);cam.position.set(0,2,0);cam.lookAt(0,2,-100);cam.updateMatrixWorld();scene.add(mesh);
+    /* the near cascade: a small light-space box (±6 m) over the middle tree; a second shadow light covers everything */
+    const mk=(half)=>{const l=new T.DirectionalLight(0xffffff,1);l.castShadow=true;l.position.set(0,60,-30);l.target.position.set(0,0,-30);Object.assign(l.shadow.camera,{left:-half,right:half,top:half,bottom:-half,near:1,far:200});l.shadow.camera.updateProjectionMatrix();l.shadow.mapSize.set(256,256);scene.add(l,l.target);l.updateMatrixWorld();l.target.updateMatrixWorld();return l;};
+    const near=mk(6),wide=mk(80);R.shadowMap.enabled=true;
+    const hc=new KE.HorizonCuller(T,hf,{renderer:R,shadows:{enabled:true,lights:[near,wide]}});await hc.ready;hc.add(mesh);hc.update(cam);
+    const seen=[];const orig=R.renderBufferDirect;R.renderBufferDirect=function(c,sc,g,m,o,gr){if(o===mesh)seen.push([c===near.shadow.camera?'near':c===wide.shadow.camera?'wide':c===cam?'view':'other',o.count]);return orig.call(this,c,sc,g,m,o,gr);};
+    R.render(scene,cam);R.renderBufferDirect=orig;const st={...hc.stats},after=mesh.count;
+    /* the instances drawn into the near cascade are the ones inside its box */
+    const inBox=[];for(let i=0;i<st.shadowDrawn;i++){const e=mesh.instanceMatrix.array;inBox.push(e[i*16+12]);}
+    hc.dispose();const restored=R.shadowMap.render===orig||!R.shadowMap.render.toString().includes('_shadowCounts');R.shadowMap.enabled=false;return {seen,st,after,inBox:inBox.sort((a,b)=>a-b),restored};});
+  check('horizon culler: the near shadow cascade draws only the instances inside its box, other shadow lights draw all',
+    hzs.seen.some(([k,c])=>k==='near'&&c===3)&&hzs.seen.some(([k,c])=>k==='wide'&&c===9)&&hzs.after===9&&hzs.st.shadowSkipped===6&&hzs.inBox.join()==='-10,0,10'&&hzs.restored,hzs);
+
   const sc=await page.evaluate(()=>{const {T,KE,renderer,scene,camera,terrain,hf}=W;
     const part=(g,hex)=>{const c=new T.Color(hex),n=g.attributes.position.count,a=new Float32Array(n*3);for(let i=0;i<n;i++){a[i*3]=c.r;a[i*3+1]=c.g;a[i*3+2]=c.b;}g.setAttribute('color',new T.BufferAttribute(a,3));return g;};
     const pine=T.BufferGeometryUtils.mergeBufferGeometries([part(new T.CylinderGeometry(.22,.34,2.6,6).translate(0,1.3,0),0x5a4030),part(new T.ConeGeometry(2.3,5.5,8).translate(0,4.6,0),0x2c5226),

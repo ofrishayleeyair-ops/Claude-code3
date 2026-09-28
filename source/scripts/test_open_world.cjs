@@ -28,6 +28,10 @@ if(!fs.existsSync(file)){console.error('Build it first: python3 scripts/build.py
       return {top:+top.toFixed(0),summitSnow:bi[k+3],banks:above+'/'+samples,bedBelow:+(bed.y-bedH).toFixed(2),boats:demo.boats.length,seaErr:+Math.max(0,...sea).toFixed(3),onRiver:onRiver.every(Boolean),
         bamboo:demo.bambooPartition?demo.bambooPartition.stats().loaded:0,daisugi:!!(demo.daisugi&&demo.daisugi.parent),torii:!!demo.torii.parent};});
     if(!(r.top>300&&r.summitSnow>100&&r.bedBelow>.5&&r.boats>=6&&r.seaErr<.05&&r.onRiver&&r.daisugi&&r.torii))throw Error(JSON.stringify(r));const [a,n]=r.banks.split('/').map(Number);if(a<n*.9)throw Error('river above its banks '+JSON.stringify(r));return r;});
+  await test('CPU threads take load off the GPU: terrain occlusion on the workers, near-cascade shadow culling, cached far cascades',async()=>{
+    const r=await page.evaluate(async()=>{for(let i=0;i<50&&!demo.culler.stats.valid;i++)await new Promise(r=>setTimeout(r,200));const c=demo.culler.stats,s=demo.csm.stats;
+      return {workers:c.workers,valid:c.valid,hidden:c.hidden,instances:c.instances,nearShadowSkipped:c.shadowSkipped,cascades:demo.csm.count,shadowMapsDrawn:s.drawn,reused:s.reused};});
+    if(!(r.workers>0&&r.valid&&r.hidden>0&&r.hidden<r.instances&&r.nearShadowSkipped>0&&(r.cascades<2||r.reused>0)))throw Error(JSON.stringify(r));return r;});
   /* movement checks run on Low: at High the forest makes software-rendered frames so slow that the fixed-step loop's catch-up cap limits how far anything moves */
   await page.evaluate(()=>KitsuneEngine.applyPreset('low'));await page.waitForTimeout(4000);
   await test('boats can be boarded, driven on the water only, and left at the shore',async()=>{

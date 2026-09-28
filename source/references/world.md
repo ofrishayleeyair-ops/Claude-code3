@@ -9,8 +9,9 @@ Core `KE.terrain` builds static chunk meshes for islands about 100 units across.
 3. KE.GPUTerrain
 4. KE.WorldPartition
 5. KE.scatterCell
-6. Quality settings and cost
-7. Limits
+6. KE.HorizonCuller (occlusion and shadow culling)
+7. Quality settings and cost
+8. Limits
 
 ## 1. Quick start
 
@@ -176,7 +177,34 @@ Options: `cell` (`{ix, iz}` or a WorldPartition cell record), `cellSize` 128, `o
 
 Each mesh draws through a per-cell view of the shared geometry (same attribute objects, no copies) carrying the cell's bounding sphere, so Three's frustum culling works per cell. `group.userData.dispose()` frees the cell's instance buffers and vertex-array state without touching the shared geometry, and removes the group. `group.userData.count` is the instance total.
 
-## 6. Quality settings and cost
+## 6. KE.HorizonCuller
+
+Per-instance culling for `InstancedMesh`es (scatter cells, impostor proxies). CPU threads do the work so the GPU draws less.
+
+```js
+const culler = new KE.HorizonCuller(THREE, heightfield, {pool: KE.Heightfield.workers()});
+culler.setShadows(renderer, csm);          // optional: near-cascade shadow culling
+culler.add(KE.scatterCell(THREE, {...}));  // a group (its InstancedMesh children) or one InstancedMesh
+// every frame, after csm.update(camera) and before rendering:
+culler.update(camera);
+```
+
+- **Terrain occlusion and view culling.** Around the eye, `2 × bins` rays (default 512 bins) march over a min-filtered copy of the heightfield. Each ray keeps the running maximum elevation slope at `steps` (80) geometrically spaced distances, out to `range` (1.2 × world size). A bin's horizon is the minimum of its edge and centre rays. An instance's bounding sphere is hidden when the steepest sightline to it (its top, over its near distance) stays below the horizon of every bin it spans, measured only over terrain in front of it. Instances outside the view frustum, widened by `pad` (14°), are hidden too. Hidden instances are left out of the **culling camera's** draws only: shadow passes and other cameras (reflections, probes) still draw them.
+- **Conservative by construction.** The grid stores the lowest height within reach of each bilinear cell, so it never lies above the real surface. The terrain is also lowered by 0.5 m + 1% of the distance to cover the rendered far LODs, and the eye is raised by `eyeLift` (1.5 m). In the Open World at High, a check marched sightlines from the camera to five points on the upper half of every hidden instance's sphere inside the view (about 13,600 instances across three views). The real heightfield blocked every one of them.
+- **Threads and latency.** With a `KE.WorkerPool` from `KE.Heightfield.workers()`, each worker holds the grid (sent once with `pool.broadcast`). Meshes are split into chunks of about `chunk` (6000) instances, and each worker builds the horizon map for the eye and tests its chunk. Results land a frame or two later. A new job starts once the camera moves `minMove` (0.75 m) or turns `minTurn` (2°). Results are dropped, and everything drawn, while the camera is more than `maxMove` (6 m) or 0.8 × `pad` away from where they were computed. Without a pool it all runs on the main thread.
+- **Near shadow cascade** (`setShadows(renderer, csm)`). Cascade 0 is redrawn every frame, and whole 128 m scatter cells overlap its box whenever the player is near them. Each `update`, on the main thread, the instances of each shadow-casting mesh inside cascade 0's light-space box are found, and only those are drawn into it. The far cascades draw every instance, and are cached (rendering-v3.md §4).
+- **Mechanics.** Each mesh keeps its instances ordered [in cascade 0, other visible, rest]. `onBeforeRender` draws the first two groups for the culling camera, and `onAfterRender` restores the full count. Three.js r128 calls these hooks in camera passes only. For shadows, `setShadows` wraps `renderer.shadowMap.render` so the lights are drawn one at a time with cascade 0 limited to the first group. `add` wraps a scatter group's `userData.dispose`, so disposing the cell unregisters it. `remove` restores the original order and hooks.
+- **API.** `stats` = `{meshes, instances, hidden, drawn, jobs, ms, workers, valid, shadowMeshes, shadowDrawn, shadowSkipped, shadowMs}` (`shadowMs` is the main-thread time of the near-cascade pass). `enabled`, `invalidate()`, `dispose()`, `ready` (a promise, resolved once the workers hold the grid).
+
+Measured in the Open World at High (3 cascades), counting the triangles submitted per frame under software rendering (GPU time was not measured):
+
+| View | Before | After | Camera pass | Near cascade |
+|---|---|---|---|---|
+| Spawn | 55.3M | 19.7M | 15.3M → 5.6M | 13.3M → 0.8M |
+| River | 69.6M | 23.9M | 19.9M → 6.4M | 16.6M → 1.0M |
+| Aerial | 27.9M | 9.6M | 7.8M → 2.8M | 6.7M → 0.2M |
+
+## 7. Quality settings and cost
 
 - `KE.settings.lod` (`r.LODBias`: Low .6, Medium .8, High 1, Ultra 1.25, Cinematic 1.5) scales every LOD range. The triangle count grows roughly with its square. Ranges update on the next `update()` after the setting changes.
 - `gridResolution` sets triangles per patch (2N² + 8N with skirts): 32 gives 2304 triangles per patch.
@@ -187,7 +215,7 @@ Each mesh draws through a per-cell view of the shared geometry (same attribute o
 
 Numbers above were measured only in this repository's headless software-rendering test; no GPU frame-time figures are claimed.
 
-## 7. Limits
+## 8. Limits
 
 - A single heightfield per terrain (no tiled virtual heightmap). Streaming very large worlds means several terrains or regenerating a heightfield per region; `Heightfield.terrainFunction` keeps such tiles consistent.
 - Erosion is a droplet model. It carves and smooths valleys and builds sediment fans, but it does not simulate rivers, lakes or long-term flow networks, and the default coarse grid (385²) limits channel width to a few samples of the full field.

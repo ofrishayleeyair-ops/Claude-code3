@@ -19,6 +19,9 @@ const {openPage}=require('./harness.cjs');const path=require('path');const shots
  });
  const test=async(name,fn)=>{await fn();console.log('PASS '+name);};const shot=async n=>{if(shots)await page.screenshot({path:path.join(outDir,'shadows-'+n+'.png')});};
  await test('cascades compile and render',async()=>{const r=await page.evaluate(()=>{for(let i=0;i<3;i++)t.frame();return {lights:t.csm.lights.length,splits:t.csm.splits.map(v=>+v.toFixed(2)),programs:t.renderer.info.programs.length};});if(r.lights!==3||r.splits.length!==4)throw Error(JSON.stringify(r));console.log('  ',JSON.stringify(r));await shot('near');});
+ await test('far cascades are cached: one redrawn per frame, all redrawn after a jump or with the cache off',async()=>{const r=await page.evaluate(()=>{const c=t.csm;c.invalidate();t.frame();const first=c.stats.drawn,per=[],reused=[];for(let i=0;i<6;i++){t.frame();per.push(c.stats.drawn);reused.push(c.stats.reused);}
+   t.camera.position.x+=60;t.frame();const jump=c.stats.drawn;t.camera.position.x-=60;t.frame();c.cache=false;t.frame();const off=c.stats.drawn;c.cache=true;t.frame();return {cache:c.cache,first,per,reused,jump,off};});
+   if(!r.cache||r.first!==3||r.per.some(v=>v!==2)||r.reused.some(v=>v!==1)||r.jump!==3||r.off!==3)throw Error(JSON.stringify(r));console.log('  ',JSON.stringify(r));});
  const bands=async()=>page.evaluate(()=>{const gl=t.renderer.getContext(),W=gl.drawingBufferWidth,H=gl.drawingBufferHeight;const grab=()=>{t.frame();const b=new Uint8Array(W*H*4);gl.readPixels(0,0,W,H,gl.RGBA,gl.UNSIGNED_BYTE,b);return b;};
    const toggle=v=>{t.renderer.shadowMap.enabled=v;t.scene.traverse(o=>{if(o.material)[o.material].flat().forEach(m=>m.needsUpdate=true);});};
    const on=grab();toggle(false);const off=grab();toggle(true);t.frame();

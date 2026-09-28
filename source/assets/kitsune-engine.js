@@ -706,9 +706,11 @@ KE.PRESETS.cinematic={...KE.PRESETS.ultra,preset:'cinematic',scale:1.6,shadowRes
 /* Epic (PC): everything at its maximum at native resolution, for desktop GPUs of the RTX 3060/4060 Ti/5060 Ti/RX 6700 class and
    above: 4096² shadows in four cascades, full-detail trees (lod 2 gives full leaf density), 32k grass blades with longer
    streaming radii, 1024² textures, SSGI, probe GI, volumetrics and high-quality clouds; no gameplay DOF or motion blur.
-   Cinematic supersamples instead (render scale 1.6) and is heavier per pixel. */
+   Dynamic resolution is on: when a frame takes longer than 60 fps allows, the internal resolution steps down (to 75%,
+   TAA reconstructs to native) and climbs back when there is headroom. Cinematic supersamples instead (render scale
+   1.6) and is heavier per pixel. */
 KE.PRESETS.epic={...KE.PRESETS.ultra,preset:'epic',scale:1.43,upscale:1,shadowRes:4096,cascades:4,tex:1024,grass:32000,view:300,aniso:16,lod:2,lights:16,clouds:2,
-  pipeline:true,gi:true,taa:true,gtao:true,ssr:true,ssgi:true,volumetrics:true,autoExposure:true,fur:true,vfx:1,dynamicRes:false,dof:false,motionBlur:false};
+  pipeline:true,gi:true,taa:true,gtao:true,ssr:true,ssgi:true,volumetrics:true,autoExposure:true,fur:true,vfx:1,dynamicRes:true,dof:false,motionBlur:false};
 KE.PRESET_ORDER=['cinematic','epic','ultra','high','medium','low'];
 /* Desktop GPU detection for the first launch: an RTX 20/30/40/50-series 60-class or better, a Radeon RX 6700/7700/9000 or
    better, or an Arc A750/A770 on a machine with 8+ threads starts on Epic. Reads WEBGL_debug_renderer_info from a throwaway
@@ -725,6 +727,7 @@ KE.sanitizeSettings=(raw={})=>{
   if(!raw||typeof raw!=='object'||Array.isArray(raw))raw={};
   const s=baseSanitize(raw),preset=KE.PRESETS[s.preset];
   for(const key of BOOL_V3)s[key]=typeof raw[key]==='boolean'?raw[key]:preset[key];
+  s.shadowCache=typeof raw.shadowCache==='boolean'?raw.shadowCache:true;
   for(const [key,min,max,integer] of NUM_V3){const v=Number.isFinite(raw[key])?clamp(raw[key],min,max):preset[key];s[key]=integer?Math.round(v):v;}
   if((raw.preset==='cinematic'||raw.preset==='epic')&&!Number.isFinite(raw.view))s.view=preset.view;
   return s;
@@ -774,7 +777,7 @@ KE.cvars={
 for(const [name,key,help,type,min,max,scale=1] of [
   ['r.TAA','taa','Temporal anti-aliasing','boolean'],['r.GTAO','gtao','Ground-truth ambient occlusion','boolean'],['r.SSR','ssr','Screen-space reflections','boolean'],
   ['r.SSGI','ssgi','Screen-space global illumination','boolean'],['r.GI','gi','Probe-volume dynamic diffuse GI','boolean'],['r.Bloom','bloom','Bloom','boolean'],['r.Shadows','shadows','Sun shadows','boolean'],
-  ['r.Shadow.Cascades','cascades','Cascaded shadow map count','number',1,4],['r.Shadow.Resolution','shadowRes','Shadow map resolution','number',512,2048],
+  ['r.Shadow.Cascades','cascades','Cascaded shadow map count','number',1,4],['r.Shadow.Resolution','shadowRes','Shadow map resolution','number',512,4096],['r.Shadow.Cache','shadowCache','Reuse far shadow cascades across frames (one redrawn per frame)','boolean'],
   ['r.Volumetrics','volumetrics','Light shafts and height fog','boolean'],['r.Clouds','clouds','Cloud quality 0-2','number',0,2],['r.DOF','dof','Depth of field','boolean'],
   ['r.MotionBlur','motionBlur','Camera motion blur','boolean'],['r.AutoExposure','autoExposure','Eye adaptation','boolean'],['r.Pipeline','pipeline','HDR post pipeline','boolean'],
   ['r.ScreenPercentage','scale','Render scale percent','number',50,200,100],['r.Upscale','upscale','Internal resolution fraction reconstructed by TAA (0.5-1)','number',.5,1],['r.DynamicResolution','dynamicRes','Lower/raise the internal resolution to hold the frame rate (needs TAA)','boolean'],['r.ViewDistance','view','Fog/view distance','number',30,300],['r.LODBias','lod','Geometry detail multiplier','number',.25,2],
@@ -861,9 +864,15 @@ KE.WorkerPool=class{
     this.size=this.workers.length;}
   /* run(task, args, transfer) → Promise of the task's result. */
   run(task,args,transfer=[]){if(!this.size)return Promise.reject(new Error('KE.WorkerPool: no workers'));return new Promise((resolve,reject)=>{this.queue.push({task,args,transfer,resolve,reject});this._pump();});}
+  /* runOn(i, ...) queues a task on worker i itself (behind whatever it is doing), for per-worker state such as a
+     cached heightfield; broadcast(task, args) runs it on every worker. Neither changes which workers run() may use. */
+  runOn(i,task,args,transfer=[]){const w=this.workers[i];if(!w)return Promise.reject(new Error('KE.WorkerPool: no worker '+i));
+    return new Promise((resolve,reject)=>{const id=++this._id;this.pending.set(id,{task,args,resolve,reject,pinned:w});try{w.postMessage({id,task,args},transfer);}catch(e){this.pending.delete(id);reject(e);}});}
+  broadcast(task,args){return Promise.all(this.workers.map((w,i)=>this.runOn(i,task,args)));}
   _pump(){while(this.idle.length&&this.queue.length){const w=this.idle.pop(),j=this.queue.shift(),id=++this._id;this.pending.set(id,j);w._job=id;try{w.postMessage({id,task:j.task,args:j.args},j.transfer);}catch(e){this.pending.delete(id);w._job=null;this.idle.push(w);j.reject(e);}}}
-  _done(w,d){const j=this.pending.get(d.id);this.pending.delete(d.id);w._job=null;this.idle.push(w);this.tasksRun++;if(j){if(d.error)j.reject(new Error(d.error));else j.resolve(d.result);}this._pump();}
-  _crash(w,e){const j=this.pending.get(w._job);if(j){this.pending.delete(w._job);j.reject(new Error('KE.WorkerPool: worker error '+(e&&e.message||'')));}w._job=null;this.idle.push(w);this._pump();}
+  _done(w,d){const j=this.pending.get(d.id);this.pending.delete(d.id);if(!j||!j.pinned){w._job=null;this.idle.push(w);}this.tasksRun++;if(j){if(d.error)j.reject(new Error(d.error));else j.resolve(d.result);}this._pump();}
+  _crash(w,e){const err=()=>new Error('KE.WorkerPool: worker error '+(e&&e.message||''));const j=this.pending.get(w._job);if(j){this.pending.delete(w._job);j.reject(err());}
+    for(const [id,p] of this.pending)if(p.pinned===w){this.pending.delete(id);p.reject(err());}w._job=null;if(!this.idle.includes(w))this.idle.push(w);this._pump();}
   dispose(){for(const w of this.workers)w.terminate();for(const j of this.pending.values())j.reject(new Error('KE.WorkerPool disposed'));for(const j of this.queue)j.reject(new Error('KE.WorkerPool disposed'));this.pending.clear();this.queue=[];this.workers=[];this.idle=[];this.size=0;if(this.url)URL.revokeObjectURL(this.url);this.url=null;}
 };
 /* Worker boilerplate: TASKS is an object of name → (args) => ({out, transfer}) defined by the kernel source. */
@@ -1212,7 +1221,7 @@ KE.Pipeline=class{
   set(o={}){for(const [k,v] of Object.entries(o)){const cur=this.options[k];if(cur&&typeof cur==='object'&&!cur.isColor&&!Array.isArray(cur)&&v&&typeof v==='object'&&!v.isColor&&!Array.isArray(v)){for(const [kk,vv] of Object.entries(v)){if(cur[kk]&&cur[kk].isColor&&vv!==undefined&&!(vv&&vv.isColor))cur[kk].set(vv);else if(cur[kk]&&cur[kk].isColor&&vv&&vv.isColor)cur[kk].copy(vv);else cur[kk]=vv;}}else this.options[k]=v;}return this;}
   /* Map KE.settings quality keys onto pipeline passes. */
   applySettings(s=KE.settings){const o=this.options;o.taa=!!s.taa&&this.depthOK;o.gtao=!!s.gtao&&this.depthOK;o.ssgi=!!s.ssgi&&this.depthOK&&this.hdr;o.bloom=s.bloom!==false;o.volumetrics=!!s.volumetrics;o.autoExposure=!!s.autoExposure&&this.hdr;
-    o.fxaa=!!s.aa&&!o.taa;o.upscale=Number.isFinite(s.upscale)?s.upscale:1;this._baseUpscale=o.upscale;this._dr=null;o.dynamicResolution.enabled=!!s.dynamicRes;o.dof.enabled=!!s.dof&&this.depthOK;o.motionBlur.enabled=!!s.motionBlur&&this.depthOK;this.uniforms.keSSR.value=s.ssr?1:0;this.enabled=s.pipeline!==false;
+    o.fxaa=!!s.aa&&!o.taa;o.upscale=Number.isFinite(s.upscale)?s.upscale:1;this._baseUpscale=o.upscale;this._dr=null;o.dynamicResolution.enabled=!!s.dynamicRes;o.dynamicResolution.min=s.preset==='epic'?.75:.6;o.dof.enabled=!!s.dof&&this.depthOK;o.motionBlur.enabled=!!s.motionBlur&&this.depthOK;this.uniforms.keSSR.value=s.ssr?1:0;this.enabled=s.pipeline!==false;
     const q=s.preset==='ultra'||s.preset==='cinematic'||s.preset==='epic',e=s.preset==='epic';this.m.gtao.defines.SLICES=e?4:q?3:2;this.m.gtao.defines.STEPS=e?10:q?8:6;if(e){this.options.volumetricFog.steps=32;}this.m.gtao.needsUpdate=true;this.historyValid=false;return this;}
   /* Dynamic resolution: an exponential average of the frame time (the dt passed to render) steps the TAA internal
      resolution down by `step` after `downHold` seconds above `downThreshold` × the target frame time, and back up toward
@@ -1621,21 +1630,21 @@ float keShadowPCSS(sampler2D map,float bias,vec4 coord,vec4 P){coord.xyz/=coord.
 #endif
 `;
 KE.CascadedShadows=class{
-  constructor(THREE,scene,{sun,cascades=KE.settings.cascades||3,mapSize=KE.settings.shadowRes||2048,maxFar=null,lambda:splitLambda=.72,overlap=.12,margin=60,bias=-.0004,normalBias=1.2,fadeStart=.85,soft=KE.settings.preset!=='low'&&KE.settings.preset!=='medium',lightAngle=1.2,maxPenumbra=.9,searchDistance=6}={}){
+  constructor(THREE,scene,{sun,cascades=KE.settings.cascades||3,mapSize=KE.settings.shadowRes||2048,maxFar=null,lambda:splitLambda=.72,overlap=.12,margin=60,bias=-.0004,normalBias=1.2,fadeStart=.85,soft=KE.settings.preset!=='low'&&KE.settings.preset!=='medium',lightAngle=1.2,maxPenumbra=.9,searchDistance=6,cache=KE.settings.shadowCache!==false,cacheSlack=.1,cacheAngle=.35}={}){
     if(!sun||!sun.isDirectionalLight)throw new TypeError('KE.CascadedShadows requires {sun: DirectionalLight}');
-    Object.assign(this,{THREE,scene,sun,lambda:splitLambda,overlap,margin,bias,normalBias,fadeStart,maxFar,soft:!!soft,lightAngle,maxPenumbra,searchDistance});
+    Object.assign(this,{THREE,scene,sun,lambda:splitLambda,overlap,margin,bias,normalBias,fadeStart,maxFar,soft:!!soft,lightAngle,maxPenumbra,searchDistance,cache:!!cache,cacheSlack,cacheAngle});this._rec=[];this._frame=0;this.stats={drawn:0,reused:0};
     this.chunk=buildChunk(THREE);this.uniforms={keCascades:{value:Array.from({length:MAX},()=>new THREE.Vector4(-2,-1,1e9,1e9+1))},kePcss:{value:Array.from({length:MAX},()=>new THREE.Vector4(1,.01,.005,.001))}};
     this.materials=new Set();this.restore=new Map();this.lights=[];this.splits=[];this.direction=new THREE.Vector3(0,-1,0);this.enabled=true;
     this._m=new THREE.Matrix4();this._mi=new THREE.Matrix4();this._v=new THREE.Vector3();this._c=new THREE.Vector3();this._up=new THREE.Vector3(0,1,0);
     this.configure(cascades,mapSize);
-    this.onSettings=KE.events.on('settings',s=>{if(s.cascades!==this.count||s.shadowRes!==this.mapSize)this.configure(s.cascades,s.shadowRes);});
+    this.onSettings=KE.events.on('settings',s=>{if(typeof s.shadowCache==='boolean')this.cache=s.shadowCache;if(s.cascades!==this.count||s.shadowRes!==this.mapSize)this.configure(s.cascades,s.shadowRes);});
   }
   configure(count,mapSize){const T=this.THREE;count=Math.max(1,Math.min(MAX,Math.round(count||1)));mapSize=mapSize||2048;
     for(const l of this.lights.slice(1)){l.parent&&l.parent.remove(l);l.target.parent&&l.target.parent.remove(l.target);if(l.shadow.map){l.shadow.map.dispose();l.shadow.map=null;}}
     this.lights=[this.sun];this.sun.castShadow=true;
     for(let i=1;i<count;i++){const l=new T.DirectionalLight(0xffffff,0);l.castShadow=true;l.name='ke-csm-'+i;this.scene.add(l,l.target);this.lights.push(l);}
     for(const l of this.lights){if(l.shadow.mapSize.x!==mapSize){l.shadow.mapSize.set(mapSize,mapSize);if(l.shadow.map){l.shadow.map.dispose();l.shadow.map=null;}}l.shadow.bias=this.bias;l.shadow.camera.near=.5;}
-    this.count=count;this.mapSize=mapSize;for(const m of this.materials){m.defines.KE_CSM_CASCADES=count;m.needsUpdate=true;}return this;}
+    this.count=count;this.mapSize=mapSize;if(this._rec)this._rec.length=0;for(const m of this.materials){m.defines.KE_CSM_CASCADES=count;m.needsUpdate=true;}return this;}
   /* Patch a lit material (Standard, Physical, Phong, Toon). Composes with existing onBeforeCompile hooks. */
   setupMaterial(m){if(!m||this.materials.has(m)||m.userData.keNoCSM)return m;if(!(m.isMeshStandardMaterial||m.isMeshPhongMaterial||m.isMeshToonMaterial))return m;
     const prev=m.onBeforeCompile,ownKey=Object.prototype.hasOwnProperty.call(m,'customProgramCacheKey')?m.customProgramCacheKey:null,prevKey=m.customProgramCacheKey.bind(m),chunk=this.chunk,U=this.uniforms;this.restore.set(m,{prev,ownKey});m.defines=m.defines||{};m.defines.USE_KE_CSM='';m.defines.KE_CSM_CASCADES=this.count;if(this.soft)m.defines.USE_KE_PCSS='';
@@ -1643,7 +1652,12 @@ KE.CascadedShadows=class{
     m.customProgramCacheKey=()=>prevKey()+':ke-csm';
     m.needsUpdate=true;this.materials.add(m);return m;}
   setupScene(root=this.scene){root.traverse(o=>{if(!o.material)return;for(const m of [o.material].flat())this.setupMaterial(m);});return this;}
-  /* Practical split scheme (log/uniform blend), then stable sphere fits per cascade. */
+  /* Practical split scheme (log/uniform blend), then stable sphere fits per cascade.
+     Cached far cascades (cache: true): cascade 0 is drawn every frame; the others take turns, at most one per frame,
+     each drawn over a sphere cacheSlack larger than it needs and reused on the other frames while the sphere the
+     current view needs still fits inside the drawn one and the sun has turned less than cacheAngle degrees. A
+     reused cascade keeps the light matrix it was drawn with (Three.js only updates it when the map is drawn), so
+     the lookup stays consistent. With 4 cascades that is 2 shadow passes per frame instead of 4. */
   update(camera){if(!this.enabled)return;const T=this.THREE,n=camera.near,far=Math.min(camera.far,this.maxFar||KE.settings.view||camera.far),N=this.count;
     this.direction.copy(this.sun.target.position).sub(this.sun.position).normalize();if(!Number.isFinite(this.direction.x))this.direction.set(0,-1,0);
     const s=this.splits;s.length=0;s.push(n);for(let i=1;i<N;i++){const f=i/N;s.push(this.lambda*n*Math.pow(far/n,f)+(1-this.lambda)*(n+(far-n)*f));}s.push(far);
@@ -1651,17 +1665,25 @@ KE.CascadedShadows=class{
     camera.updateMatrixWorld();const fwd=this._v.set(0,0,-1).transformDirection(camera.matrixWorld);
     // Light view basis for texel snapping.
     const up=Math.abs(this.direction.y)>.99?this._up.set(1,0,0):this._up.set(0,1,0);this._m.lookAt(this._c.set(0,0,0),this.direction,up);this._mi.copy(this._m).invert();
+    const cache=!!this.cache&&N>1,slots=Math.max(2,N-1),due=cache?this._frame%slots+1:-1,rec=this._rec,cosA=Math.cos(this.cacheAngle*Math.PI/180),d=this.direction;this._frame++;
+    const st=this.stats;st.drawn=0;st.reused=0;
     for(let i=0;i<N;i++){const b=i>0?(s[i]-s[i-1])*this.overlap:0,near=Math.max(n,s[i]-b),farI=s[i+1];
-      const zc=Math.min(farI,(near+farI)*.5*k2),r=Math.sqrt((farI-zc)**2+(farI*k)**2)*1.02,center=this._c.copy(camera.position).addScaledVector(fwd,zc);
+      const zc=Math.min(farI,(near+farI)*.5*k2),need=Math.sqrt((farI-zc)**2+(farI*k)**2)*1.02,center=this._c.copy(camera.position).addScaledVector(fwd,zc);
+      const l=this.lights[i],cam=l.shadow.camera,cached=cache&&i>0,r=cached?need*(1+this.cacheSlack):need;l.shadow.autoUpdate=!cached;
+      const nb=i+1<N?(s[i+1]-s[i])*this.overlap:(far-s[i])*(1-this.fadeStart),v=this.uniforms.keCascades.value[i];
+      v.set(i===0?-2:s[i]-b,i===0?-1:s[i]+1e-4,s[i+1]-nb,s[i+1]+1e-4);
+      if(cached){const q=rec[i];if(q&&i!==due&&Math.hypot(center.x-q.x,center.y-q.y,center.z-q.z)+need<=q.r&&q.dx*d.x+q.dy*d.y+q.dz*d.z>=cosA&&q.map===this.mapSize){st.reused++;continue;}
+        rec[i]={x:center.x,y:center.y,z:center.z,r,dx:d.x,dy:d.y,dz:d.z,map:this.mapSize};l.shadow.needsUpdate=true;}
+      st.drawn++;
       const texel=2*r/this.mapSize;center.applyMatrix4(this._mi);center.x=Math.floor(center.x/texel)*texel;center.y=Math.floor(center.y/texel)*texel;center.applyMatrix4(this._m);
-      const l=this.lights[i],cam=l.shadow.camera;Object.assign(cam,{left:-r,right:r,top:r,bottom:-r,near:.5,far:2*r+2*this.margin});cam.updateProjectionMatrix();
+      Object.assign(cam,{left:-r,right:r,top:r,bottom:-r,near:.5,far:2*r+2*this.margin});cam.updateProjectionMatrix();
       l.position.copy(center).addScaledVector(this.direction,-(r+this.margin));l.target.position.copy(center);l.target.updateMatrixWorld();l.updateMatrixWorld();
       l.shadow.normalBias=texel*this.normalBias;l.shadow.bias=this.bias*(1+i*.5);
       {const uvPerWorld=1/(2*r),tanA=Math.tan(this.lightAngle*Math.PI/180),range=cam.far-cam.near;this.uniforms.kePcss.value[i].set(range*tanA*uvPerWorld,this.maxPenumbra*uvPerWorld,Math.max(this.searchDistance*tanA*uvPerWorld,2/this.mapSize),1/this.mapSize);}
-      if(i>0){l.color.copy(this.sun.color);l.intensity=0;}
-      const nb=i+1<N?(s[i+1]-s[i])*this.overlap:(far-s[i])*(1-this.fadeStart),v=this.uniforms.keCascades.value[i];
-      v.set(i===0?-2:s[i]-b,i===0?-1:s[i]+1e-4,s[i+1]-nb,s[i+1]+1e-4);}
+      if(i>0){l.color.copy(this.sun.color);l.intensity=0;}}
     for(let i=N;i<MAX;i++)this.uniforms.keCascades.value[i].set(-2,-1,1e9,1e9+1);}
+  /* Redraw every cascade on the next update (e.g. after moving many shadow casters at once). */
+  invalidate(){this._rec.length=0;return this;}
   dispose(){this.enabled=false;this.onSettings&&this.onSettings();for(const l of this.lights.slice(1)){l.parent&&l.parent.remove(l);l.target.parent&&l.target.parent.remove(l.target);if(l.shadow.map)l.shadow.map.dispose();}this.lights=[this.sun];
     for(const m of this.materials){const r=this.restore.get(m);delete m.defines.USE_KE_CSM;delete m.defines.KE_CSM_CASCADES;delete m.defines.USE_KE_PCSS;m.onBeforeCompile=r.prev;if(r.ownKey)m.customProgramCacheKey=r.ownKey;else delete m.customProgramCacheKey;m.needsUpdate=true;}this.materials.clear();this.restore.clear();}
 };
@@ -5468,6 +5490,41 @@ Heightfield.biomes=(a,b,c)=>{
   t.userData={kind:'ke-biomes',layers:['grass','sand','rock','snow','dirt'],size:s,update:(i0=0,j0=0,i1=s,j1=s)=>{computeBiomes(hf,ctx,data,Math.max(0,i0),Math.max(0,j0),Math.min(s,i1),Math.min(s,j1));}};
   return t;
 };
+/* ---------- terrain horizon occlusion ----------
+   From an eye point, 2B rays fan out over a heightfield grid (B azimuth bins; rays on each bin's edges and
+   centre) and march outward over `steps` geometrically spaced distances D_j (d0 .. range), keeping the running
+   maximum of the elevation slope (h(D) - margin(D) - eyeY) / D. A bin's horizon at step j is the minimum over
+   its three rays. h comes from a min-filtered grid (horizonGrid: every sample is the lowest height within reach
+   of its bilinear cell, so reads never exceed the true surface), and the margin (0.5 m + 1% of the distance)
+   covers the rendered terrain's coarser far LODs. Outside the grid nothing occludes. */
+function horizonMap(g,ex,ey,ez,B,steps,d0,range,out){const R=2*B,ratio=Math.pow(range/d0,1/(steps-1)),s=g.size,m=s-1,inv=1/g.spacing,d=g.data,ray=new Float32Array(R*steps);
+  for(let k=0;k<R;k++){const a=k*Math.PI/B,cx=Math.cos(a),cz=Math.sin(a);let best=-Infinity,D=d0;
+    for(let j=0;j<steps;j++,D*=ratio){const tx=(ex+cx*D-g.x0)*inv,tz=(ez+cz*D-g.z0)*inv;
+      if(tx>=0&&tz>=0&&tx<=m&&tz<=m){let i=Math.floor(tx),jj=Math.floor(tz);if(i>s-2)i=s-2;if(jj>s-2)jj=s-2;const fx=tx-i,fz=tz-jj,q=jj*s+i;
+        const h=(d[q]+(d[q+1]-d[q])*fx)*(1-fz)+(d[q+s]+(d[q+s+1]-d[q+s])*fx)*fz,sl=(h-.5-D*.01-ey)/D;if(sl>best)best=sl;}
+      ray[k*steps+j]=best;}}
+  for(let b=0;b<B;b++){const r0=2*b*steps,r1=r0+steps,r2=((2*b+2)%R)*steps,o=b*steps;
+    for(let j=0;j<steps;j++){const a=ray[r0+j],c=ray[r1+j],e=ray[r2+j];out[o+j]=a<c?(a<e?a:e):(c<e?c:e);}}
+  return out;}
+/* Spheres (x,y,z,r quadruples) against the horizon map and optional planes (6 x [nx,ny,nz,d]; inside when
+   n.p + d >= -r). vis[i] = 1 visible, 0 hidden; returns the hidden count. A sphere is behind the terrain when
+   the steepest sightline to it (its top, over its near distance) stays below the horizon of every bin it spans,
+   measured only over terrain in front of it. */
+function horizonCull(H,B,steps,d0,range,ex,ey,ez,P,sph,n,vis){const lr=Math.log(range/d0)/(steps-1),binW=2*Math.PI/B;let hidden=0;
+  for(let i=0;i<n;i++){const x=sph[i*4],y=sph[i*4+1],z=sph[i*4+2],r=sph[i*4+3];let v=1;
+    if(P){for(let p=0;p<24;p+=4)if(P[p]*x+P[p+1]*y+P[p+2]*z+P[p+3]<-r){v=0;break;}}
+    if(v&&H){const dx=x-ex,dz=z-ez,dd=Math.sqrt(dx*dx+dz*dz),dn=dd-r;
+      if(dn>d0){const j=Math.min(steps-1,Math.floor(Math.log(dn/d0)/lr-1e-6)),top=y+r-ey,smax=top>0?top/dn:top/(dd+r),a=Math.asin(Math.min(1,r/dd));
+        if(j>=0&&a<Math.PI/4){let t=Math.atan2(dz,dx);if(t<0)t+=2*Math.PI;const b0=Math.floor((t-a)/binW),b1=Math.floor((t+a)/binW);let hmin=Infinity;
+          for(let b=b0;b<=b1;b++){const h=H[(((b%B)+B)%B)*steps+j];if(h<hmin)hmin=h;if(smax>=hmin)break;}
+          if(smax<hmin)v=0;}}}
+    vis[i]=v;if(!v)hidden++;}
+  return hidden;}
+/* Min-filtered copy of a heightfield at up to `target` samples a side (see horizonMap). */
+function horizonGrid(hf,target=385){const S=hf.size,n=Math.min(S,Math.max(2,target|0)),f=(S-1)/(n-1),rad=n===S?0:Math.ceil(f)+1,src=hf.data,tmp=new Float32Array(S*n),out=new Float32Array(n*n);
+  for(let y=0;y<S;y++)for(let i=0;i<n;i++){const c=Math.round(i*f);let m=Infinity;for(let x=Math.max(0,c-rad),e=Math.min(S-1,c+rad);x<=e;x++){const v=src[y*S+x];if(v<m)m=v;}tmp[y*n+i]=m;}
+  for(let j=0;j<n;j++){const c=Math.round(j*f);for(let i=0;i<n;i++){let m=Infinity;for(let y=Math.max(0,c-rad),e=Math.min(S-1,c+rad);y<=e;y++){const v=tmp[y*n+i];if(v<m)m=v;}out[j*n+i]=m;}}
+  return {data:out,size:n,x0:hf.originX,z0:hf.originZ,spacing:hf.worldSize/(n-1)};}
 KE.Heightfield=Heightfield;
 /* A worker pool whose kernel is this module's own noise, landscape function and droplet simulation (their source
    text), sized to the CPU (up to 64 threads). Pass it as {workers} to generate() and erode(); dispose it when done. */
@@ -5481,12 +5538,122 @@ ${ridgedFbm}
 ${terrainFunction}
 ${dropletPass}
 ${depositAt}
+${horizonMap}
+${horizonCull}
 const TASKS={
   rows(a){const fn=terrainFunction(a.o),out=new Float32Array((a.j1-a.j0)*a.size);for(let j=a.j0;j<a.j1;j++){const z=a.originZ+j*a.sp,row=(j-a.j0)*a.size;for(let i=0;i<a.size;i++)out[row+i]=fn(a.originX+i*a.sp,z);}return {out,transfer:[out.buffer]};},
   erode(a){const map=a.map,before=map.slice(),flow=a.flow?new Float32Array(map.length):null,stats={eroded:0,lost:0,lifetime:0},it=dropletPass(map,a.S,a.o,KE.random(a.seed),flow,a.iterations,stats);while(!it.next().done);
-    for(let i=0;i<map.length;i++)map[i]-=before[i];return {out:{delta:map,flow,...stats},transfer:flow?[map.buffer,flow.buffer]:[map.buffer]};}
+    for(let i=0;i<map.length;i++)map[i]-=before[i];return {out:{delta:map,flow,...stats},transfer:flow?[map.buffer,flow.buffer]:[map.buffer]};},
+  hzInit(a){self.__hz={id:a.id,g:{data:a.data,size:a.size,x0:a.x0,z0:a.z0,spacing:a.spacing},key:'',H:null};return {out:true};},
+  hzCull(a){const z=self.__hz;if(!z||z.id!==a.grid)throw new Error('horizon grid '+a.grid+' not loaded');const key=a.eye.join(',')+'|'+a.B+'|'+a.steps+'|'+a.d0+'|'+a.range;
+    if(z.key!==key){z.H=horizonMap(z.g,a.eye[0],a.eye[1],a.eye[2],a.B,a.steps,a.d0,a.range,z.H&&z.H.length===a.B*a.steps?z.H:new Float32Array(a.B*a.steps));z.key=key;}
+    const n=a.sph.length/4,vis=new Uint8Array(n),hidden=horizonCull(z.H,a.B,a.steps,a.d0,a.range,a.eye[0],a.eye[1],a.eye[2],a.planes,a.sph,n,vis);return {out:{vis,hidden,sph:a.sph},transfer:[vis.buffer,a.sph.buffer]};}
 };
 ${KE.WorkerPool.dispatcher}`,o);
+/* KE.HorizonCuller — per-instance culling for InstancedMeshes (scatter cells, impostor proxies), so the GPU never
+   touches instances that cannot show:
+   - view pass: instances behind the terrain (horizon map above) or outside a padded view frustum are left out of the
+     culling camera's draws. Every other camera (reflections, probes) still draws all of them. With a KE.WorkerPool
+     (Heightfield.workers) the horizon maps and per-instance tests run on the worker threads and land a frame or two
+     later: the frustum is padded by `pad` degrees, the eye is raised by `eyeLift`, and results are dropped
+     (everything drawn) once the camera has moved maxMove or turned 0.8 x pad since they were computed. Without a
+     pool it runs on the main thread.
+   - near shadow cascade (with {renderer, shadows: KE.CascadedShadows}): cascade 0 is redrawn every frame and a whole
+     scatter cell overlaps it whenever the player is near, so each frame the instances inside its light-space box are
+     found (main thread, after shadows.update) and only those are drawn into it. Far cascades draw every instance.
+   Each mesh keeps its instances ordered [in cascade 0, other visible, rest]: cascade 0 draws the first group, the view
+   draws the first two, and the full count is restored after every draw. Counts are switched in onBeforeRender /
+   onAfterRender (Three.js r128 calls these in camera passes only) and, for shadows, by drawing the shadow lights one
+   at a time through a wrapper around renderer.shadowMap.render. */
+let horizonIds=0;
+/* bounding sphere of the vertices themselves (a scatter cell's geometry carries a sphere around all its instances) */
+const baseSpheres=new WeakMap();
+function baseSphere(T,g){const pos=g.attributes.position;let s=baseSpheres.get(pos);if(!s){s=new T.Box3().setFromBufferAttribute(pos).getBoundingSphere(new T.Sphere());baseSpheres.set(pos,s);}return s;}
+class HorizonCuller{
+  constructor(THREE,hf,{pool=null,renderer=null,shadows=null,bins=512,steps=80,near=6,range=null,eyeLift=1.5,pad=14,minMove=.75,minTurn=2,maxMove=6,gridSize=385,chunk=6000}={}){
+    Object.assign(this,{THREE,hf,shadows:null,bins,steps,near,range:range||hf.worldSize*1.2,eyeLift,pad,minMove,minTurn,maxMove,chunk});
+    this.pool=pool&&pool.size>0?pool:null;this.grid=horizonGrid(hf,gridSize);this.id=++horizonIds;this.entries=new Map();this.groups=new Map();this.camera=null;this.enabled=true;this.shadowCulling=false;this._c0=[];
+    this.valid=false;this._busy=false;this._job=0;this._applied=null;this._last=null;this._H=null;this._key='';this._c0=[];
+    this._m=new THREE.Matrix4();this._fr=new THREE.Frustum();this._fr2=new THREE.Frustum();this._v=new THREE.Vector3();this._f=new THREE.Vector3();this._s=new THREE.Sphere();
+    this.stats={meshes:0,instances:0,hidden:0,drawn:0,jobs:0,ms:0,workers:this.pool?this.pool.size:0,valid:false,shadowMeshes:0,shadowDrawn:0,shadowSkipped:0,shadowMs:0};
+    this._ready=!this.pool;const g=this.grid;
+    this.ready=this.pool?this.pool.broadcast('hzInit',{id:this.id,data:g.data,size:g.size,x0:g.x0,z0:g.z0,spacing:g.spacing}).then(()=>{this._ready=true;return true;},()=>{this.pool=null;this._ready=true;this.stats.workers=0;return false;}):Promise.resolve(true);
+    if(renderer&&shadows)this.setShadows(renderer,shadows);}
+  /* Near-cascade shadow culling for a KE.CascadedShadows drawn by this renderer (null turns it off). */
+  setShadows(renderer,shadows){if(this._sm){this._sm.sm.render=this._sm.orig;this._sm=null;}this._clearC0();this.shadows=shadows||null;this.shadowCulling=!!shadows;if(!renderer||!shadows)return this;
+    const sm=renderer.shadowMap,orig=sm.render,self=this;this._sm={sm,orig};
+    sm.render=function(lights,scene,cam){if(!self._c0.length)return orig.call(this,lights,scene,cam);const nu=this.needsUpdate,near=self.shadows.lights[0];
+      try{for(const l of lights){self._shadowCounts(l===near);this.needsUpdate=nu;orig.call(this,[l],scene,cam);}}finally{self._shadowCounts(false);}};return this;}
+  /* Register an InstancedMesh (its current instances), or every InstancedMesh child of a group; a group's
+     userData.dispose (KE.scatterCell) is wrapped so disposing the cell unregisters it first. */
+  add(obj){if(!obj)return this;if(!obj.isInstancedMesh){if(this.groups.has(obj))return this;const list=obj.children.filter(c=>c.isInstancedMesh);list.forEach(m=>this.add(m));
+      const ud=obj.userData,prev=ud&&ud.dispose;this.groups.set(obj,{list,prev});if(typeof prev==='function')ud.dispose=(...a)=>{this.remove(obj);return prev.apply(obj,a);};return this;}
+    const mesh=obj;if(this.entries.has(mesh))return this;const n=mesh.count;if(!n)return this;const T=this.THREE;mesh.updateMatrixWorld();
+    const g=mesh.geometry,bs=baseSphere(T,g),M=new T.Matrix4(),W=new T.Matrix4(),c=new T.Vector3(),all=mesh.instanceMatrix.array.slice(0,n*16),sph=new Float32Array(n*4);
+    for(let i=0;i<n;i++){M.fromArray(all,i*16);W.multiplyMatrices(mesh.matrixWorld,M);c.copy(bs.center).applyMatrix4(W);sph[i*4]=c.x;sph[i*4+1]=c.y;sph[i*4+2]=c.z;sph[i*4+3]=bs.radius*W.getMaxScaleOnAxis();}
+    const e={mesh,n,all,col:mesh.instanceColor?mesh.instanceColor.array.slice(0,n*3):null,sph,vis:new Uint8Array(n).fill(1),c0:null,c0on:false,nC0:0,nMain:n,applied:false,written:false,before:mesh.onBeforeRender,after:mesh.onAfterRender},self=this;
+    mesh.onBeforeRender=function(r,sc,cam,geo,mat,grp){this.count=cam===self.camera&&self.valid&&e.applied?e.nMain:e.n;e.before.call(this,r,sc,cam,geo,mat,grp);};
+    mesh.onAfterRender=function(r,sc,cam,geo,mat,grp){this.count=e.n;e.after.call(this,r,sc,cam,geo,mat,grp);};
+    this.entries.set(mesh,e);this.stats.meshes=this.entries.size;this._dirty=true;return this;}
+  /* Unregister (restores the original instance order and hooks). */
+  remove(obj){if(!obj)return this;const grp=this.groups.get(obj);if(grp){this.groups.delete(obj);grp.list.forEach(m=>this.remove(m));if(obj.userData&&typeof grp.prev==='function')obj.userData.dispose=grp.prev;return this;}
+    const e=this.entries.get(obj);if(!e)return this;this.entries.delete(obj);const m=e.mesh;m.onBeforeRender=e.before;m.onAfterRender=e.after;m.count=e.n;const k=this._c0.indexOf(e);if(k>=0)this._c0.splice(k,1);
+    if(e.written){m.instanceMatrix.array.set(e.all);m.instanceMatrix.needsUpdate=true;if(e.col&&m.instanceColor){m.instanceColor.array.set(e.col);m.instanceColor.needsUpdate=true;}}
+    this.stats.meshes=this.entries.size;return this;}
+  /* Call once per frame with the camera that renders the view, after shadows.update() and before rendering. */
+  update(camera){this.camera=camera;if(!this.enabled){this.valid=false;this.stats.valid=false;this._clearC0();return;}
+    camera.updateMatrixWorld();const p=camera.getWorldPosition(this._v),f=camera.getWorldDirection(this._f),a=this._applied;
+    this.valid=!!a&&Math.hypot(p.x-a.x,p.y-a.y,p.z-a.z)<this.maxMove&&f.x*a.fx+f.y*a.fy+f.z*a.fz>Math.cos(this.pad*.8*Math.PI/180);this.stats.valid=this.valid;
+    if(this.shadowCulling&&this.shadows)this._cascade0();else this._clearC0();
+    if(this._busy||!this._ready||!this.entries.size)return;const l=this._last;
+    if(l&&!this._dirty&&Math.hypot(p.x-l.x,p.y-l.y,p.z-l.z)<this.minMove&&f.x*l.fx+f.y*l.fy+f.z*l.fz>Math.cos(this.minTurn*Math.PI/180))return;
+    this._launch(camera,{x:p.x,y:p.y,z:p.z,fx:f.x,fy:f.y,fz:f.z});}
+  _planes(camera){if(!camera.isPerspectiveCamera)return null;const T=this.THREE,near=camera.near,far=camera.far*1.2,pad=this.pad*Math.PI/180,ty=Math.tan(Math.min(1.5,camera.fov*Math.PI/360+pad)),
+      tx=Math.tan(Math.min(1.5,Math.atan(Math.tan(camera.fov*Math.PI/360)*camera.aspect)+pad)),P=new T.Matrix4().makePerspective(-near*tx,near*tx,near*ty,-near*ty,near,far);
+    this._fr.setFromProjectionMatrix(this._m.multiplyMatrices(P,camera.matrixWorldInverse));const out=new Float32Array(24);this._fr.planes.forEach((pl,i)=>{out[i*4]=pl.normal.x;out[i*4+1]=pl.normal.y;out[i*4+2]=pl.normal.z;out[i*4+3]=pl.constant;});return out;}
+  _launch(camera,snap){const t0=performance.now(),planes=this._planes(camera),eye=[snap.x,snap.y+this.eyeLift,snap.z],list=[];this._dirty=false;
+    for(const e of this.entries.values()){const m=e.mesh;if(!m.parent)continue;const g=m.geometry;
+      if(planes&&m.frustumCulled&&g.boundingSphere&&!this._fr.intersectsSphere(this._s.copy(g.boundingSphere).applyMatrix4(m.matrixWorld)))continue;list.push(e);}
+    const job=++this._job;this.stats.jobs++;
+    const opts={B:this.bins,steps:this.steps,d0:this.near,range:this.range};
+    if(!this.pool){const key=eye.join(',');if(this._key!==key){this._H=horizonMap(this.grid,eye[0],eye[1],eye[2],opts.B,opts.steps,opts.d0,opts.range,this._H||new Float32Array(opts.B*opts.steps));this._key=key;}
+      for(const e of list){const vis=new Uint8Array(e.n);horizonCull(this._H,opts.B,opts.steps,opts.d0,opts.range,eye[0],eye[1],eye[2],planes,e.sph,e.n,vis);this._apply(e,vis);}
+      this._finish(snap,t0);return;}
+    /* chunks of whole meshes, about `chunk` instances each, at most one per worker */
+    let total=0;for(const e of list)total+=e.n;const k=Math.max(1,Math.min(this.pool.size,Math.ceil(total/this.chunk))),bins=Array.from({length:k},()=>({list:[],n:0}));
+    for(const e of list.slice().sort((a,b)=>b.n-a.n)){let best=bins[0];for(const b of bins)if(b.n<best.n)best=b;best.list.push(e);best.n+=e.n;}
+    this._busy=true;
+    Promise.all(bins.filter(b=>b.n).map(b=>{const sph=new Float32Array(b.n*4);let o=0;for(const e of b.list){sph.set(e.sph,o*4);o+=e.n;}
+      return this.pool.run('hzCull',{grid:this.id,eye,planes,sph,...opts},[sph.buffer]).then(r=>({b,vis:r.vis}));}))
+      .then(res=>{if(job!==this._job)return;for(const {b,vis} of res){let o=0;for(const e of b.list){if(this.entries.get(e.mesh)===e)this._apply(e,vis.subarray(o,o+e.n));o+=e.n;}}this._finish(snap,t0);},
+            err=>{this.pool=null;this.stats.workers=0;this.stats.error=String(err&&err.message||err);})
+      .then(()=>{this._busy=false;});}
+  _finish(snap,t0){this._applied=this._last=snap;let n=0,d=0;for(const e of this.entries.values()){n+=e.n;d+=e.applied?e.nMain:e.n;}
+    this.stats.instances=n;this.stats.drawn=d;this.stats.hidden=n-d;this.stats.ms=+(performance.now()-t0).toFixed(2);}
+  _apply(e,vis){let same=e.applied;if(same)for(let i=0;i<e.n;i++)if(vis[i]!==e.vis[i]){same=false;break;}if(same)return;e.vis.set(vis);e.applied=true;this._write(e);}
+  /* near cascade: which instances of each shadow-casting mesh fall inside its light-space box this frame */
+  _cascade0(){const csm=this.shadows,l=csm&&csm.enabled&&csm.lights[0],list=this._c0;
+    if(!l||!l.castShadow||!l.shadow){this._clearC0();return;}l.shadow.updateMatrices(l);const c=l.shadow.camera;this._fr2.setFromProjectionMatrix(this._m.multiplyMatrices(c.projectionMatrix,c.matrixWorldInverse));
+    const P=this._fr2.planes,t0=performance.now();let meshes=0,drawn=0,skipped=0;list.length=0;
+    for(const e of this.entries.values()){const m=e.mesh,inside=m.castShadow&&m.parent&&!(m.frustumCulled&&m.geometry.boundingSphere&&!this._fr2.intersectsSphere(this._s.copy(m.geometry.boundingSphere).applyMatrix4(m.matrixWorld)));
+      if(!inside){if(e.c0on){e.c0on=false;this._write(e);}continue;}
+      const n=e.n,sph=e.sph,c0=e.c0||(e.c0=new Uint8Array(n));let changed=!e.c0on,k=0;
+      for(let i=0;i<n;i++){const x=sph[i*4],y=sph[i*4+1],z=sph[i*4+2],r=sph[i*4+3];let v=1;for(let p=0;p<6;p++){const pl=P[p],nn=pl.normal;if(nn.x*x+nn.y*y+nn.z*z+pl.constant<-r){v=0;break;}}if(c0[i]!==v){c0[i]=v;changed=true;}k+=v;}
+      e.c0on=true;if(changed)this._write(e);list.push(e);meshes++;drawn+=e.nC0;skipped+=n-e.nC0;}
+    this.stats.shadowMeshes=meshes;this.stats.shadowDrawn=drawn;this.stats.shadowSkipped=skipped;this.stats.shadowMs=+(performance.now()-t0).toFixed(2);}
+  _clearC0(){for(const e of this._c0)if(e.c0on){e.c0on=false;this._write(e);}this._c0.length=0;this.stats.shadowMeshes=this.stats.shadowDrawn=this.stats.shadowSkipped=0;}
+  _shadowCounts(near){for(const e of this._c0)e.mesh.count=near?e.nC0:e.n;}
+  /* order the instances [in cascade 0, other visible, rest] */
+  _write(e){const n=e.n,c0=e.c0on?e.c0:null,vis=e.vis,m=e.mesh,dst=m.instanceMatrix.array,all=e.all,col=e.col,cd=col&&m.instanceColor?m.instanceColor.array:null;
+    let n0=0,nv=0;for(let i=0;i<n;i++){if(c0&&c0[i])n0++;else if(vis[i])nv++;}let p0=0,p1=n0,p2=n0+nv;
+    for(let i=0;i<n;i++){const o=c0&&c0[i]?p0++:vis[i]?p1++:p2++;const d=o*16,s=i*16;for(let k=0;k<16;k++)dst[d+k]=all[s+k];if(cd){cd[o*3]=col[i*3];cd[o*3+1]=col[i*3+1];cd[o*3+2]=col[i*3+2];}}
+    const im=m.instanceMatrix;im.updateRange.offset=0;im.updateRange.count=n*16;im.needsUpdate=true;if(cd){const ic=m.instanceColor;ic.updateRange.offset=0;ic.updateRange.count=n*3;ic.needsUpdate=true;}
+    e.nC0=n0;e.nMain=n0+nv;e.written=true;}
+  /* Recompute on the next update even if the camera has not moved. */
+  invalidate(){this._dirty=true;return this;}
+  dispose(){for(const g of [...this.groups.keys()])this.remove(g);for(const m of [...this.entries.keys()])this.remove(m);this._c0.length=0;if(this._sm){this._sm.sm.render=this._sm.orig;this._sm=null;}this.enabled=false;this._job++;}
+}
+KE.HorizonCuller=HorizonCuller;
 KE.noise2D=(seed=1)=>{const n=makeNoise(seed);return (x,y)=>noise2(n,x,y);};
 
 /* ---------- GPU CDLOD terrain ----------
@@ -6045,7 +6212,7 @@ function scatterCell(THREE,o={}){
 KE.scatterCell=scatterCell;
 
 
-KE.registerModule('world',{provides:['Heightfield','GPUTerrain','WorldPartition','scatterCell','noise2D']});
+KE.registerModule('world',{provides:['Heightfield','GPUTerrain','WorldPartition','scatterCell','noise2D','HorizonCuller']});
 })();
 
 /* ===== module: 40-physics.js ===== */

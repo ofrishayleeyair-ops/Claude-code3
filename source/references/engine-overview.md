@@ -12,7 +12,7 @@ Read this page first, then the reference for the system you are touching.
 | 00-core-v3 | `core-v3` | `KE.capabilities`, v3 settings and presets (incl. Epic PC and GPU detection), `KE.cvars`, `KE.jobs`, `KE.WorkerPool` (all CPU threads, up to 64), `KE.profiler`, `KE.sceneUniforms`, `KE.FullScreenQuad`, `KE.GLSL` | rendering-v3.md §1, §7–8 | test_core.cjs |
 | 10-pipeline | `pipeline` | `KE.Pipeline` | rendering-v3.md §2 | test_pipeline.cjs |
 | 12-sky | `sky` | `KE.SkyAtmosphere` | rendering-v3.md §3 | test_sky.cjs |
-| 14-shadows | `shadows` | `KE.CascadedShadows` | rendering-v3.md §4 | test_shadows.cjs |
+| 14-shadows | `shadows` | `KE.CascadedShadows` (cached far cascades) | rendering-v3.md §4 | test_shadows.cjs |
 | 16-lights | `lights` | `KE.LightPool` | rendering-v3.md §5 | (pipeline, game) |
 | 18-gi | `gi` | `KE.ProbeVolume` | rendering-v3.md §10 | test_gi.cjs |
 | 20-materials | `materials` | `KE.MaterialGraph`, `KE.shaderGraph`, `KE.materialLibrary` | materials.md | test_materials.cjs |
@@ -20,7 +20,7 @@ Read this page first, then the reference for the system you are touching.
 | 24-foliage | `foliage` | `KE.treeGeometry`, `KE.tree`, `KE.bambooGeometry`, `KE.daisugiGeometry`, `KE.FoliageSpawner`, `KE.grassField`, `KE.fur`, `KE.foliage` | foliage.md | test_foliage.cjs |
 | 26-weather | `weather` | `KE.SurfaceWeather` | rendering-v3.md §11 | test_weather.cjs |
 | 30-geometry | `geometry` | `KE.simplify`, `KE.buildLODs`, `KE.LODMesh`, `KE.InstancedLOD`, `KE.Impostor`, `KE.VirtualGeometry` | geometry.md | test_geometry.cjs |
-| 32-world | `world` | `KE.Heightfield`, `KE.GPUTerrain`, `KE.WorldPartition`, `KE.scatterCell` | world.md | test_world.cjs |
+| 32-world | `world` | `KE.Heightfield`, `KE.GPUTerrain`, `KE.WorldPartition`, `KE.scatterCell`, `KE.HorizonCuller` (terrain occlusion + near-shadow culling on worker threads) | world.md | test_world.cjs |
 | 40-physics | `physics3d` | `KE.Physics3D` (Rapier) | physics.md | test_physics.cjs |
 | 42-cloth | `cloth` | `KE.Cloth` | cloth.md | test_cloth.cjs |
 | 50-vfx | `vfx` | `KE.VFX` | vfx.md | test_vfx.cjs |
