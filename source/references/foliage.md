@@ -87,6 +87,10 @@ Growth: each branch is a polyline bent by gravity, phototropism and seeded wobbl
 
 `KE.barkTexture(THREE, {species, size:256, seed})` paints a tileable bark map (furrowed oak, plated pine, birch with lenticels and patches, banded cherry, ringed palm). `KE.barkMaterial(THREE, {species, color, map, textureSize, roughness:.93, bump:.035, wind, vertexColors})` is a single-sided foliage material without translucency, using the bark map as colour and bump.
 
+### Ground cover: ferns and flowers
+
+`KE.fernClump(THREE, {fronds:11, length:.85, leaflets:18, width:.15, rise:.95, droop:.75, seed:1, base, tip})` builds a fern as geometry: each frond is an arching rachis (rising, then drooping by `droop`) carrying `leaflets` pairs of lance-shaped leaflets, largest about a third of the way out and tapering to the tip, swept forward and dipping downward. Vertex colours run from `base` (dark heart, linear RGB) to `tip`, with per-frond tint and an occasional older, yellower frond; `windWeight` holds (position along the frond, branch weight, flutter, per-frond phase), so `KE.foliageMaterial({vertexColors:true})` animates it. Roughly `fronds × leaflets × 6` triangles (about 1,000 at 11 × 16). `KE.flowerHead(THREE, {petals:5, radius:.06, stem:.11, tilt:.45, seed, center})` builds a small flower on a crossed-quad stem: white petals (so instance or material colour tints them) around a warm centre, with a `windWeight` attribute for `KE.foliage.applyWind`. Both are deterministic per seed. Spirit Isle and the open world use them for ground cover.
+
 ## 4. Interactive grass
 
 `KE.grassField(THREE, scene, options)` → `{mesh, material, geometry, stats, cellSize, radius, lodRadius, update(camX, camZ), refresh(), setVisible(v), visible, setShadowSource(csm), dispose()}`.

@@ -416,7 +416,7 @@ const TERRAIN_RELIEF=`vec3 keTReliefNormal(vec3 pos,vec3 n,float h,float strengt
 const TERRAIN_FRAG_DECL=`
 uniform sampler2D keNormalMap;uniform sampler2D keBiome;uniform sampler2D keHA;uniform sampler2D keHB;
 uniform sampler2D keTGrass;uniform sampler2D keTSand;uniform sampler2D keTDirt;uniform sampler2D keTRock;uniform sampler2D keTSnow;
-uniform float keTexScale;uniform float keRelief;uniform float keWaterLevel;uniform float keMacro;uniform float keFarScale;
+uniform float keTexScale;uniform float keRelief;uniform float keWaterLevel;uniform float keMacro;uniform vec3 keGrassTint;uniform float keFarScale;
 varying vec3 keTWorld;varying vec2 keTUV;varying float keTLod;
 ${TERRAIN_RELIEF}
 vec3 keTNormalAt(vec2 uv){vec2 e=texture2D(keNormalMap,uv).xy*2.-1.;return normalize(vec3(e.x,sqrt(max(0.,1.-dot(e,e))),e.y));}
@@ -441,6 +441,7 @@ float kTop=max(max(max(kTA.x,kTA.y),max(kTA.z,kTA.w)),kTS)-.2;
 vec4 kBA=max(kTA-kTop,0.)*kLive;float kBS=max(kTS-kTop,0.)*kLiveS;float kSum=dot(kBA,vec4(1.))+kBS+1e-5;kBA/=kSum;kBS/=kSum;
 float kM1=keFbm2(keTWorld.xz*.0042+3.7),kM2=keNoise2(keTWorld.xz*.027-1.3),kM3=keNoise2(keTWorld.xz*.11+7.1);
 vec3 kGrass=mix(texture2D(keTGrass,kuv).rgb,texture2D(keTGrass,kuvF).rgb,kFar)*mix(vec3(.8,.97,.66),vec3(1.2,1.08,.76),smoothstep(.3,.7,kM1)*keMacro+.5*(1.-keMacro));
+kGrass*=keGrassTint;
 vec3 kSand=mix(texture2D(keTSand,kuv).rgb,texture2D(keTSand,kuvF).rgb,kFar);
 vec3 kDirt=mix(texture2D(keTDirt,kuv).rgb,texture2D(keTDirt,kuvF).rgb,kFar);
 vec3 kSnow=mix(texture2D(keTSnow,kuv).rgb,texture2D(keTSnow,kuvF).rgb,kFar);
@@ -694,7 +695,7 @@ class GPUTerrain{
     const m=new T.MeshStandardMaterial({roughness:.92,metalness:0});m.name='ke-terrain';m.extensions={derivatives:true};
     m.userData.keTextures=own?[...tex,...tex.heightMaps]:gray;this._materialTextures=own?[...tex,...tex.heightMaps,...gray]:gray;
     const F=this.materialUniforms={keBiome:{value:this.biomeTexture},keHA:{value:ha},keHB:{value:hb},keTGrass:{value:pick('grass')},keTSand:{value:pick('sand')},keTDirt:{value:pick('dirt')},keTRock:{value:pick('rock')},keTSnow:{value:pick('snow')},
-      keTexScale:{value:o.textureScale||.3},keFarScale:{value:o.farScale||.2},keRelief:{value:o.relief===undefined?.32:o.relief},keWaterLevel:{value:this.waterLevel},keMacro:{value:o.macro===undefined?1:o.macro}};
+      keTexScale:{value:o.textureScale||.3},keFarScale:{value:o.farScale||.2},keRelief:{value:o.relief===undefined?.32:o.relief},keWaterLevel:{value:this.waterLevel},keMacro:{value:o.macro===undefined?1:o.macro},keGrassTint:{value:new THREE.Vector3(...(Array.isArray(o.grassTint)?o.grassTint:[1,1,1]))}};
     for(const k of ['keTGrass','keTSand','keTDirt','keTRock','keTSnow'])if(!F[k].value)throw new Error('KE.GPUTerrain: textures missing '+k.slice(3).toLowerCase());
     m.onBeforeCompile=sh=>{for(const k in F)sh.uniforms[k]=F[k];
       let f=TERRAIN_FRAG_DECL+KE.GLSL.hash+'\n'+KE.GLSL.noise+'\n'+sh.fragmentShader;

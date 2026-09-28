@@ -64,7 +64,7 @@ status('Running rain over it for a few thousand years',.3);await nextFrame();
 await drain(KE.Heightfield.erode(hf,{iterations:90000,seed:3,spawnAbove:0,jobs:KE.jobs}));
 KE.Heightfield.thermalErode(hf,{iterations:3,talus:1.1});
 status('Painting biomes',.55);await nextFrame();
-const terrain=new KE.GPUTerrain(T,{heightfield:hf,castShadow:true,waterLevel:0,textureSize:Math.min(512,S.tex||512)});scene.add(terrain.object);
+const terrain=new KE.GPUTerrain(T,{heightfield:hf,castShadow:true,waterLevel:0,textureSize:Math.min(512,S.tex||512),grassTint:[.74,.96,.6]});scene.add(terrain.object);
 const ground=(x,z)=>terrain.heightAt(x,z);
 
 // Spawn on gentle ground a little inland, searching a spiral from the coast; the forest keeps a clearing there.
@@ -79,7 +79,7 @@ const pipeline=new KE.Pipeline(T,renderer,{sun,exposureKey:.2,minExposure:.3,max
 /* ---------- forests streamed in cells, impostors beyond ---------- */
 status('Growing forests',.74);await nextFrame();
 const merge=g=>{const m=T.BufferGeometryUtils.mergeBufferGeometries([g.trunk,g.leaves],true);g.trunk.dispose();g.leaves.dispose();return m;};
-const lod=Math.min(1,Math.max(.5,(S.lod||1)*.7)),texSize=S.preset==='low'?256:512,kit=[];
+const lod=Math.min(.8,Math.max(.35,(S.lod||1)*.5)),texSize=S.preset==='low'?256:512,kit=[];
 // A point picks a species first and is dropped outside that species' band, so bands overlap widely: oaks and bushes low, birch mid, pines high.
 const species=[{name:'pine',kind:'conifer',height:12,seed:5,h:[22,160],slope:[0,.9],weight:1.1},{name:'oak',kind:'broadleaf',height:9,seed:4,h:[1.5,95],slope:[0,.7],weight:1.2},{name:'birch',kind:'birch',height:10,seed:8,h:[6,120],slope:[0,.75],weight:.7},{name:'bush',kind:'bush',height:1.6,seed:6,h:[1.2,130],slope:[0,.95],weight:1}];
 const types=[],proxyTypes=[];
@@ -94,12 +94,12 @@ if(has('geometry')&&KE.proceduralRock){const rock=KE.proceduralRock(T,{detail:3,
 const forestNoise=KE.noise2D(SEED+11);
 const density=(x,z)=>{const n=forestNoise(x*.0035,z*.0035)*.6+forestNoise(x*.011,z*.011)*.4;return n>-.2?.95:n>-.32?.5:.15;};
 const scatterOpts={cellSize:128,terrain,spacing:7,density,seed:SEED,waterLevel:.6,castShadow:true,receiveShadow:true,filter:(x,y,z)=>(x-spawn.x)**2+(z-spawn.z)**2>196};
-const wp=new KE.WorldPartition({cellSize:128,loadRadius:({low:110,medium:150,high:200,ultra:240,cinematic:280})[S.preset]||200,budgetMs:3,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
+const wp=new KE.WorldPartition({cellSize:128,loadRadius:({low:70,medium:90,high:120,ultra:160,cinematic:200})[S.preset]||120,budgetMs:3,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
   load:cell=>{const g=KE.scatterCell(T,{...scatterOpts,cell,types});scene.add(g);return g;},
   unload:(cell,g)=>{if(g)g.userData.dispose();},
   hlod:proxyTypes.some(Boolean)?cell=>{const list=proxyTypes.map((p,i)=>p||{...types[i],weight:types[i].weight,geometry:types[i].geometry,material:types[i].material,density:0});const g=KE.scatterCell(T,{...scatterOpts,cell,types:list,castShadow:false});scene.add(g);return {dispose(){g.userData.dispose();}};}:null,
   hlodRadius:1100});
-const csm=new KE.CascadedShadows(T,scene,{sun,maxFar:360,margin:120});csm.setupScene();
+const csm=new KE.CascadedShadows(T,scene,{sun,maxFar:220,margin:80});csm.setupScene();
 for(const t of types)for(const m of [t.material].flat())csm.setupMaterial(m);
 pipeline.setShadowSource(csm);if(KE.foliage)KE.foliage.setShadowSource(csm);
 
@@ -113,7 +113,17 @@ if(has('animation')){const body=new T.Group();while(hero.children.length)body.ad
   gait=new KE.ProceduralGait(T,{body,heightAt:ground,legs:fox.legs.map((leg,i)=>({hip:leg,foot:leg.children[2],group:i===0||i===3?0:1})),stepLength:.42,stepHeight:.1,stepDuration:.17});
   tail=new KE.SpringChain(T,[fox.tail],{tip:fox.tailTip,stiffness:70,damping:9,gravity:[0,-.6,0],maxAngle:.7});}
 csm.setupScene(hero);
-let grass=null;const makeGrass=()=>{if(grass)grass.dispose();grass=S.grass>0?KE.grassField(T,scene,{count:Math.min(S.grass,14000),radius:34,heightAt:ground,density:(x,z)=>{const h=ground(x,z);return h>1.4&&h<70&&terrain.slopeAt(x,z)<.55?.85:0;}}):null;if(grass)grass.setShadowSource(csm);};makeGrass();
+let grass=null;const makeGrass=()=>{if(grass)grass.dispose();grass=S.grass>0?KE.grassField(T,scene,{count:Math.min(Math.round(S.grass*1.8),20000),radius:26,heightAt:ground,density:(x,z)=>{const h=ground(x,z);return h>1.4&&h<70&&terrain.slopeAt(x,z)<.55?.85:0;}}):null;if(grass)grass.setShadowSource(csm);};makeGrass();
+/* Ground cover near the player: fern clumps and wildflowers in small 32 m cells within ~50 m (smaller on Low). */
+const coverKit=[],coverTier=S.preset==='low'?0:S.preset==='medium'?1:2;
+const coverTypes=[];if(KE.fernClump){const fernMat=KE.foliageMaterial(T,{vertexColors:true,translucency:.45,translucencyColor:0x8fbf3a}),fernGeo=KE.fernClump(T,{...[{fronds:7,leaflets:8},{fronds:9,leaflets:12},{fronds:10,leaflets:14}][coverTier],seed:7});coverKit.push(fernMat,fernGeo);
+  coverTypes.push({name:'fern',geometry:fernGeo,material:fernMat,weight:1.4,scale:[.8,1.5],height:[1.4,85],slope:[0,.7],castShadow:false});
+  for(const [hex,w] of [[0xe86a9a,.35],[0xf2c14e,.35],[0xf4f0e0,.3]]){const fm=new T.MeshStandardMaterial({vertexColors:true,roughness:.7,side:T.DoubleSide,color:new T.Color(hex)});if(KE.foliage)KE.foliage.applyWind(T,fm,{windAttribute:true});const fg=KE.flowerHead(T,{seed:hex&255});coverKit.push(fm,fg);
+    coverTypes.push({name:'flower',geometry:fg,material:fm,weight:w*1.6,scale:[1.3,2.1],height:[1.4,70],slope:[0,.5],castShadow:false});}}
+const coverNoise=KE.noise2D(SEED+23);
+const cover=coverTypes.length?new KE.WorldPartition({cellSize:32,loadRadius:[28,40,52][coverTier],budgetMs:2,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
+  load:cell=>{const g=KE.scatterCell(T,{cell,cellSize:32,terrain,spacing:2.4,density:(x,z)=>coverNoise(x*.02,z*.02)>-.35?.6:.15,seed:SEED+5,waterLevel:1.2,castShadow:false,receiveShadow:true,types:coverTypes});scene.add(g);return g;},
+  unload:(cell,g)=>{if(g)g.userData.dispose();}}):null;
 
 /* ---------- weather, particles, sound ---------- */
 const weather=has('weather')?new KE.SurfaceWeather(T,{puddleScale:.05,puddleCoverage:.4}):null;
@@ -140,7 +150,7 @@ const resize=()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWi
 /* ---------- warm up: load the cells around the spawn, compile programs ---------- */
 status('Streaming the first cells',.93);await nextFrame();
 camera.position.set(spawn.x,ground(spawn.x,spawn.z)+4,spawn.z+8);camera.lookAt(spawn.x,ground(spawn.x,spawn.z),spawn.z);
-wp.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);terrain.update(camera,renderer);
+wp.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);if(cover)cover.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);terrain.update(camera,renderer);
 try{renderer.compile(scene,camera);}catch(e){}
 status('Ready',1);$('start').hidden=false;$('start').focus();
 $('start').onclick=()=>{started=true;input.setEnabled(true);$('overlay').hidden=true;startSound();};
@@ -164,7 +174,7 @@ const loop=new KE.Loop({onError:fail,update(dt){
   else if(started){const look=input.consumeLook();follow.rotate(look.x,look.y);follow.zoom(look.zoom);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.update(player,dt,ground);}
   else{const a=t*.05;camera.position.set(spawn.x+Math.cos(a)*14,ground(spawn.x,spawn.z)+5,spawn.z+Math.sin(a)*14);camera.lookAt(spawn.x,ground(spawn.x,spawn.z)+1,spawn.z);}
   wet=KE.damp(wet,raining?1:0,.5,dt);
-  terrain.update(camera,renderer);wp.update(flying?camera.position:hero.position,dt);
+  terrain.update(camera,renderer);wp.update(flying?camera.position:hero.position,dt);if(cover)cover.update(flying?camera.position:hero.position,dt);
   sky.update(dt,camera);sun.intensity*=1-wet*.6;const night=sky.night;
   csm.update(camera);scene.fog.color.copy(sky.fogColor);const f=pipeline.options.fog;f.color.copy(sky.fogColor);f.density=.0011*(1+wet*2.5);
   water.rain=wet;water.update(dt,camera,{pipeline});
@@ -182,7 +192,7 @@ window.demo={KE,renderer,scene,camera,terrain,heightfield:hf,partition:wp,player
  getState:()=>({x:player.x,z:player.z,y:player.y,day,flying,raining,cells:wp.stats().loaded}),setDay,setRain,setFly,
  flyTo(x,y,z,yaw=fly.yaw,pitch=fly.pitch){setFly(true);fly.pos.set(x,y,z);fly.yaw=yaw;fly.pitch=pitch;},
  teleport(x,z){player.x=x;player.z=z;player.y=ground(x,z)+.5;player.vx=player.vz=player.vy=0;follow.initialized=false;if(gait)gait.reset();},
- dispose(){loop.dispose();input.dispose();offSettings();window.removeEventListener('keydown',keys);window.removeEventListener('resize',resize);wp.dispose();if(grass)grass.dispose();if(fur)fur.dispose();if(vfx)vfx.dispose();if(sound)sound.dispose();if(weather)weather.dispose();
+ dispose(){loop.dispose();input.dispose();offSettings();window.removeEventListener('keydown',keys);window.removeEventListener('resize',resize);wp.dispose();if(cover)cover.dispose();for(const r of coverKit)r.dispose();if(grass)grass.dispose();if(fur)fur.dispose();if(vfx)vfx.dispose();if(sound)sound.dispose();if(weather)weather.dispose();
   pipeline.dispose();csm.dispose();water.dispose();sky.dispose();terrain.dispose();for(const r of kit)if(r&&r.dispose)r.dispose();fox.dispose();renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();

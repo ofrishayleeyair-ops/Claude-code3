@@ -34,6 +34,13 @@ const PRELUDE=()=>{
     const out={dt:U.keTime.value-t0,dw:KE.windUniforms.uTime.value-w0,s:U.keWindStrength.value,dir:U.keWindDir.value.toArray(),n:U.keInteractorCount.value,a:U.keInteractors.value[0].toArray(),b:U.keInteractors.value[1].toArray()};
     KE.foliage.update(0,{wind:1,windDir:[.8,.6],interactors:[]});return out;});
     assert(Math.abs(r.dt-.2)<1e-9&&Math.abs(r.dw-.2)<1e-9,'time '+JSON.stringify(r));assert(r.s===1.7&&r.dir[0]===0&&r.dir[1]===1,'wind '+JSON.stringify(r));assert(r.n===2&&r.a.join()==='1,2,3,0.5'&&r.b.join()==='4,5,6,1.5','interactors '+JSON.stringify(r));});
+  await test('fern clumps and flower heads are deterministic, finite and wind-weighted',async()=>{const r=await page.evaluate(()=>{const T=THREE,KE=KitsuneEngine;const out={};
+    for(const [name,make] of [['fern',o=>KE.fernClump(T,o)],['flower',o=>KE.flowerHead(T,o)]]){const a=make({seed:3}),b=make({seed:3}),c=make({seed:4}),pa=a.attributes.position.array;
+      let finite=true;for(const v of pa)if(!Number.isFinite(v))finite=false;for(const v of a.attributes.normal.array)if(!Number.isFinite(v))finite=false;
+      const idxOK=Array.from(a.index.array).every(i=>i<a.attributes.position.count);let same=pa.length===b.attributes.position.array.length&&pa.every((v,i)=>v===b.attributes.position.array[i]),differs=pa.length!==c.attributes.position.array.length||pa.some((v,i)=>v!==c.attributes.position.array[i]);
+      a.computeBoundingBox();out[name]={tris:a.index.count/3,finite,idxOK,same,differs,wind:!!a.attributes.windWeight&&a.attributes.windWeight.itemSize===4,color:!!a.attributes.color,minY:+a.boundingBox.min.y.toFixed(3),maxY:+a.boundingBox.max.y.toFixed(3)};[a,b,c].forEach(g=>g.dispose());}
+    return out;});console.log('    ',JSON.stringify(r));
+    for(const [k,v] of Object.entries(r))if(!(v.finite&&v.idxOK&&v.same&&v.differs&&v.wind&&v.color&&v.minY>-.2&&v.maxY>.05))throw Error(k+' '+JSON.stringify(v));});
   await test('tree generation is deterministic and geometry is valid for every species',async()=>{const r=await page.evaluate(()=>{const T=THREE,KE=KitsuneEngine,out={};
     const sig=g=>{const a=g.attributes.position.array;let h=0;for(let i=0;i<a.length;i++)h=(h*31+Math.round(a[i]*1e4))|0;return h;};
     for(const species of KE.TREE_SPECIES){const a=KE.treeGeometry(T,{species,seed:7,detail:1}),b=KE.treeGeometry(T,{species,seed:7,detail:1}),c=KE.treeGeometry(T,{species,seed:8,detail:1});

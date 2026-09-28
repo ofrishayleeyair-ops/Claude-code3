@@ -123,6 +123,7 @@ Fields: `data`, `size`, `worldSize`, `spacing`, `originX`, `originZ`, `minHeight
 | `textureScale` / `farScale` | .3 / .2 | tiles per unit near, and the far-scale multiplier |
 | `relief` | .32 | relief-normal strength |
 | `macro` | 1 | macro variation strength (0 disables) |
+| `grassTint` | [1, 1, 1] | multiplier on the grass layer colour (for example [.8, 1, .65] for a greener, less dry look); live in `materialUniforms.keGrassTint` |
 
 **Default material.** A `MeshStandardMaterial` patched through `onBeforeCompile` with five layers from the biome weights (grass, sand, dirt, rock, snow) using the core `KE.materials` tiles: height blending (each layer's weight is raised by its tile height and only layers within a narrow band of the tallest survive), triplanar rock on cliffs plus rock forced on steep per-pixel normals, a second sample at 1/5 scale that takes over with distance to hide tiling, low-frequency macro noise that varies grass hue and brightness, relief normals from the blended height (as in `KE.splatMaterial`), and wet darkening with lower roughness just above `waterLevel`. It chains with `KE.CascadedShadows.setupMaterial` (its `onBeforeCompile` and cache key are composed). `terrain.materialUniforms` exposes `keTexScale`, `keFarScale`, `keRelief`, `keWaterLevel`, `keMacro` and the textures for live tweaking.
 

@@ -1111,7 +1111,7 @@ KE.Pipeline=class{
     this.hdr=caps.halfRT&&o.hdr!==false;this.hdrType=this.hdr?THREE.HalfFloatType:THREE.UnsignedByteType;this.depthOK=caps.depthTexture;
     this.enabled=true;this.frame=0;this.historyValid=false;this.size=[0,0];this.internal=[0,0];this.targets=[];this.stats={passes:0,ms:0};
     this.options={taa:true,taaBlend:.1,upscale:1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,lensFlare:.035,
-      autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,dynamicResolution:{enabled:false,targetFps:60,min:.5,step:.1,downThreshold:1.12,upThreshold:.8,downHold:1,upHold:3},localExposure:{enabled:true,highlightContrast:.75,shadowContrast:.9,detail:1,blurredBlend:.4},fxaa:true,sharpen:.18,
+      autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,dynamicResolution:{enabled:false,targetFps:60,min:.5,step:.1,downThreshold:1.12,upThreshold:.8,downHold:1,upHold:3},localExposure:{enabled:true,highlightContrast:.75,shadowContrast:.9,detail:1,blurredBlend:.4},fxaa:true,sharpen:.28,
       fog:{enabled:true,density:.012,falloff:.12,height:0,start:4,maxOpacity:.9,color:new THREE.Color(.55,.66,.78),inscatter:1.2,inscatterExponent:12,sky:.35,replaceSceneFog:true},
       volumetrics:true,shaftStrength:.25,volumetricFog:{enabled:true,density:.012,falloff:.22,height:0,anisotropy:.45,intensity:1,maxDistance:50,steps:20},dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
       grading:{saturation:1.05,contrast:1.04,temperature:0,tint:0,lift:[0,0,0],gamma:[1,1,1],gain:[1,1,1],vignette:.22,grain:.012,chromaticAberration:.15},sun:null,debugView:'lit'};
@@ -3399,6 +3399,52 @@ let rs=1;const rnext=()=>{rs=(rs+0x6D2B79F5)|0;let t=rs;t=Math.imul(t^(t>>>15),t
    cell owns a fixed slot of the instance buffers, so moving the camera only regenerates cells that
    entered the window (or changed ring) and uploads that sub-range. Blades are procedural arcs bent by
    travelling gusts and pushed by up to 8 interactors in the vertex shader. */
+/* ---------- ground-cover plants: fern clumps and small flowers ----------
+   KE.fernClump builds a fern as real geometry: arched fronds (a rising, drooping rachis) carrying tapering pairs of
+   lance-shaped leaflets angled forward and down, dark green at the heart and brighter toward the tips, with a
+   windWeight attribute (height, branch, flutter, per-frond phase) for KE.foliageMaterial. KE.flowerHead builds a
+   five-petal flower on a short stem; petals are white in vertex colour so instance colours tint them, the centre
+   stays warm. Both are deterministic per seed. */
+KE.fernClump=(THREE,{fronds=11,length=.85,leaflets=18,width=.15,rise=.95,droop=.75,seed=1,base=[.012,.045,.01],tip=[.06,.17,.025]}={})=>{
+  const r=KE.random(seed),P=[],N=[],U=[],C=[],W=[],I=[];let v=0;
+  const push=(p,n,uv,c,w)=>{P.push(p.x,p.y,p.z);N.push(n.x,n.y,n.z);U.push(uv[0],uv[1]);C.push(c[0],c[1],c[2]);W.push(w[0],w[1],w[2],w[3]);return v++;};
+  const up=new THREE.Vector3(0,1,0),t=new THREE.Vector3(),side=new THREE.Vector3(),q=new THREE.Vector3(),n=new THREE.Vector3(),a=new THREE.Vector3(),b=new THREE.Vector3(),c=new THREE.Vector3(),d=new THREE.Vector3();
+  for(let f=0;f<fronds;f++){const yaw=f/fronds*Math.PI*2+(r()-.5)*.5,L=length*(.72+r()*.45),ri=rise*(.8+r()*.4),dr=droop*(.75+r()*.5),phase=r();
+    const dir=new THREE.Vector3(Math.cos(yaw),0,Math.sin(yaw)),tint=.85+r()*.3,age=r()<.12?1:0;
+    const col=(s)=>{const k=Math.min(1,s*1.15);return [ (base[0]+(tip[0]-base[0])*k)*tint+age*.06,(base[1]+(tip[1]-base[1])*k)*tint+age*.03,(base[2]+(tip[2]-base[2])*k)*tint];};
+    const at=(s,out)=>out.copy(dir).multiplyScalar(L*s*(.35+.65*s)).addScaledVector(up,L*(ri*s-dr*s*s));
+    const tangent=(s,out)=>{at(Math.min(1,s+.01),out);at(Math.max(0,s-.01),q);return out.sub(q).normalize();};
+    // rachis: a thin strip
+    const seg=leaflets;let prevL=-1,prevR=-1;
+    for(let k=0;k<=seg;k++){const s=k/seg;at(s,a);tangent(s,t);side.crossVectors(t,up).normalize();const hw=.006*(1-s*.7);n.crossVectors(side,t).normalize();
+      const w=[s,s*.8,.15*s,phase],cc=col(s).map(x=>x*.7);const l=push(q.copy(a).addScaledVector(side,-hw),n,[s,0],cc,w),rr=push(q.copy(a).addScaledVector(side,hw),n,[s,1],cc,w);
+      if(prevL>=0)I.push(prevL,l,prevR,prevR,l,rr);prevL=l;prevR=rr;}
+    // leaflet pairs
+    for(let k=1;k<=leaflets;k++){const s=.1+.88*k/leaflets,taper=Math.max(.18,1-Math.pow((s-.3)/.72,2)),len=width*L/.85*taper*(.85+r()*.3),wd=len*.3;
+      at(s,a);tangent(s,t);side.crossVectors(t,up).normalize();
+      for(const sg of [-1,1]){// leaflet axis: sideways, swept toward the tip and dipping down
+        d.copy(side).multiplyScalar(sg).addScaledVector(t,.55).addScaledVector(up,-.18-.25*s).normalize();
+        const pn=q.crossVectors(d,t).multiplyScalar(sg).normalize();if(pn.y<0)pn.negate();n.copy(pn).lerp(up,.45).normalize();
+        const w0=[s,s*.8,.25+.6*s,phase],w1=[s,s*.8,.9,phase],cc=col(s),ct=col(Math.min(1,s+.15));
+        b.copy(a).addScaledVector(d,len*.42);const perp=c.crossVectors(d,pn).normalize();
+        const i0=push(a,n,[0,.5],cc,w0),i1=push(q.copy(b).addScaledVector(perp,wd),n,[.42,0],cc,w0),i2=push(q.copy(b).addScaledVector(perp,-wd),n,[.42,1],cc,w0),
+              i3=push(q.copy(a).addScaledVector(d,len).addScaledVector(up,-len*.12),n,[1,.5],ct,w1);
+        I.push(i0,i1,i2,i1,i3,i2);}}}
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(N,3));g.setAttribute('uv',new THREE.Float32BufferAttribute(U,2));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(C,3));g.setAttribute('windWeight',new THREE.Float32BufferAttribute(W,4));g.setIndex(I);g.computeBoundingSphere();g.computeBoundingBox();return g;};
+KE.flowerHead=(THREE,{petals=5,radius=.06,stem=.11,tilt=.45,seed=1,center=[1,.62,.12]}={})=>{
+  const r=KE.random(seed),P=[],N=[],C=[],W=[],I=[];let v=0;const push=(x,y,z,nx,ny,nz,c,w)=>{P.push(x,y,z);N.push(nx,ny,nz);C.push(...c);W.push(...w);return v++;};
+  const top=stem,white=[1,1,1],green=[.08,.22,.05];
+  // stem: two crossed thin quads
+  for(const [dx,dz] of [[1,0],[0,1]]){const a=push(-.004*dx,0,-.004*dz,dz,0,dx,green,[0,0,0,0]),b=push(.004*dx,0,.004*dz,dz,0,dx,green,[0,0,0,0]),c=push(-.003*dx,top,-.003*dz,dz,0,dx,green,[1,.6,.2,.3]),d=push(.003*dx,top,.003*dz,dz,0,dx,green,[1,.6,.2,.3]);I.push(a,b,c,b,d,c);}
+  const ww=[1,.6,.8,r()];
+  for(let k=0;k<petals;k++){const ang=k/petals*Math.PI*2+r()*.3,ca=Math.cos(ang),sa=Math.sin(ang),rl=radius*(.85+r()*.3),wd=rl*.42;
+    const ex=ca*rl,ez=sa*rl,ey=top+Math.sin(tilt)*rl*.6,px=-sa*wd,pz=ca*wd,mx=ca*rl*.5,mz=sa*rl*.5,my=top+Math.sin(tilt)*rl*.35;
+    const c0=push(0,top,0,0,1,0,white,ww),c1=push(mx+px,my,mz+pz,0,1,0,white,ww),c2=push(mx-px,my,mz-pz,0,1,0,white,ww),c3=push(ex,ey-.004,ez,0,1,0,white,ww);I.push(c0,c1,c3,c0,c3,c2);}
+  const cen=push(0,top+.012,0,0,1,0,center,ww);for(let k=0;k<6;k++){const a0=k/6*Math.PI*2,a1=(k+1)/6*Math.PI*2,rr=radius*.28;I.push(cen,push(Math.cos(a1)*rr,top+.006,Math.sin(a1)*rr,0,1,0,center,ww),push(Math.cos(a0)*rr,top+.006,Math.sin(a0)*rr,0,1,0,center,ww));}
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(N,3));g.setAttribute('uv',new THREE.Float32BufferAttribute(new Float32Array(v*2),2));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(C,3));g.setAttribute('windWeight',new THREE.Float32BufferAttribute(W,4));g.setIndex(I);g.computeBoundingSphere();return g;};
+
 KE.grassField=(THREE,scene,o={})=>{
   const U=foliageUniforms(THREE),count=Math.max(0,Math.floor(o.count!==undefined?o.count:(KE.settings.grass||7000)));
   const radius=Math.max(2,o.radius||25),cellSize=o.cellSize||clamp(radius/7,1.5,8),lodRadius=clamp(o.lodRadius!==undefined?o.lodRadius:radius*.4,cellSize,radius),farFraction=clamp(o.farFraction!==undefined?o.farFraction:.28,.05,1);
@@ -3783,7 +3829,7 @@ KE.foliage={
   glsl:{gust:GUST_GLSL,treeWind:TREE_WIND_GLSL}
 };
 
-KE.registerModule('foliage',{provides:['foliageUniforms','foliage','foliageMaterial','foliageDepthMaterial','treeGeometry','tree','TREE_SPECIES','leafTexture','barkTexture','barkMaterial','grassField','fur','FoliageSpawner']});
+KE.registerModule('foliage',{provides:['fernClump','flowerHead','foliageUniforms','foliage','foliageMaterial','foliageDepthMaterial','treeGeometry','tree','TREE_SPECIES','leafTexture','barkTexture','barkMaterial','grassField','fur','FoliageSpawner']});
 })();
 
 /* ===== module: 26-weather.js ===== */
@@ -5119,7 +5165,7 @@ const TERRAIN_RELIEF=`vec3 keTReliefNormal(vec3 pos,vec3 n,float h,float strengt
 const TERRAIN_FRAG_DECL=`
 uniform sampler2D keNormalMap;uniform sampler2D keBiome;uniform sampler2D keHA;uniform sampler2D keHB;
 uniform sampler2D keTGrass;uniform sampler2D keTSand;uniform sampler2D keTDirt;uniform sampler2D keTRock;uniform sampler2D keTSnow;
-uniform float keTexScale;uniform float keRelief;uniform float keWaterLevel;uniform float keMacro;uniform float keFarScale;
+uniform float keTexScale;uniform float keRelief;uniform float keWaterLevel;uniform float keMacro;uniform vec3 keGrassTint;uniform float keFarScale;
 varying vec3 keTWorld;varying vec2 keTUV;varying float keTLod;
 ${TERRAIN_RELIEF}
 vec3 keTNormalAt(vec2 uv){vec2 e=texture2D(keNormalMap,uv).xy*2.-1.;return normalize(vec3(e.x,sqrt(max(0.,1.-dot(e,e))),e.y));}
@@ -5144,6 +5190,7 @@ float kTop=max(max(max(kTA.x,kTA.y),max(kTA.z,kTA.w)),kTS)-.2;
 vec4 kBA=max(kTA-kTop,0.)*kLive;float kBS=max(kTS-kTop,0.)*kLiveS;float kSum=dot(kBA,vec4(1.))+kBS+1e-5;kBA/=kSum;kBS/=kSum;
 float kM1=keFbm2(keTWorld.xz*.0042+3.7),kM2=keNoise2(keTWorld.xz*.027-1.3),kM3=keNoise2(keTWorld.xz*.11+7.1);
 vec3 kGrass=mix(texture2D(keTGrass,kuv).rgb,texture2D(keTGrass,kuvF).rgb,kFar)*mix(vec3(.8,.97,.66),vec3(1.2,1.08,.76),smoothstep(.3,.7,kM1)*keMacro+.5*(1.-keMacro));
+kGrass*=keGrassTint;
 vec3 kSand=mix(texture2D(keTSand,kuv).rgb,texture2D(keTSand,kuvF).rgb,kFar);
 vec3 kDirt=mix(texture2D(keTDirt,kuv).rgb,texture2D(keTDirt,kuvF).rgb,kFar);
 vec3 kSnow=mix(texture2D(keTSnow,kuv).rgb,texture2D(keTSnow,kuvF).rgb,kFar);
@@ -5397,7 +5444,7 @@ class GPUTerrain{
     const m=new T.MeshStandardMaterial({roughness:.92,metalness:0});m.name='ke-terrain';m.extensions={derivatives:true};
     m.userData.keTextures=own?[...tex,...tex.heightMaps]:gray;this._materialTextures=own?[...tex,...tex.heightMaps,...gray]:gray;
     const F=this.materialUniforms={keBiome:{value:this.biomeTexture},keHA:{value:ha},keHB:{value:hb},keTGrass:{value:pick('grass')},keTSand:{value:pick('sand')},keTDirt:{value:pick('dirt')},keTRock:{value:pick('rock')},keTSnow:{value:pick('snow')},
-      keTexScale:{value:o.textureScale||.3},keFarScale:{value:o.farScale||.2},keRelief:{value:o.relief===undefined?.32:o.relief},keWaterLevel:{value:this.waterLevel},keMacro:{value:o.macro===undefined?1:o.macro}};
+      keTexScale:{value:o.textureScale||.3},keFarScale:{value:o.farScale||.2},keRelief:{value:o.relief===undefined?.32:o.relief},keWaterLevel:{value:this.waterLevel},keMacro:{value:o.macro===undefined?1:o.macro},keGrassTint:{value:new THREE.Vector3(...(Array.isArray(o.grassTint)?o.grassTint:[1,1,1]))}};
     for(const k of ['keTGrass','keTSand','keTDirt','keTRock','keTSnow'])if(!F[k].value)throw new Error('KE.GPUTerrain: textures missing '+k.slice(3).toLowerCase());
     m.onBeforeCompile=sh=>{for(const k in F)sh.uniforms[k]=F[k];
       let f=TERRAIN_FRAG_DECL+KE.GLSL.hash+'\n'+KE.GLSL.noise+'\n'+sh.fragmentShader;
