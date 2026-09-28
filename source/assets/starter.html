@@ -232,7 +232,7 @@ const toast=message=>{const el=document.getElementById('toast');el.textContent=m
 function progress(){const count=stones.filter(s=>s.collected).length;document.querySelectorAll('#track i').forEach((e,i)=>e.classList.toggle('on',i<count));document.getElementById('quest-title').textContent=count===5?'The island remembers you':`Spirit stones · ${count} / 5`;document.getElementById('quest-copy').textContent=count===5?'All five found. Keep exploring, or start a new run in Settings.':'Follow the golden trail through the island shrine.';}
 const getState=()=>({x:player.x,z:player.z,day,collected:stones.filter(s=>s.collected).map(s=>s.id)});
 const validSave=s=>s&&Number.isFinite(s.x)&&s.x>=2&&s.x<=94&&Number.isFinite(s.z)&&s.z>=2&&s.z<=94&&Number.isFinite(s.day)&&Array.isArray(s.collected)&&s.collected.every(n=>Number.isInteger(n)&&n>=0&&n<5);
-function restore(s){player.x=s.x;player.z=s.z;player.y=ground(s.x,s.z)+player.r;player.vx=player.vy=player.vz=0;day=((s.day%1)+1)%1;for(const stone of stones){stone.collected=s.collected.includes(stone.id);stone.m.visible=stone.ring.visible=!stone.collected;lights.set(stone.light,{enabled:!stone.collected});}follow.initialized=false;sky.setTime(day);sky.refresh();pipeline.resetHistory();if(guide)guide.reset();progress();}
+function restore(s){player.x=s.x;player.z=s.z;player.y=ground(s.x,s.z)+player.r;player.vx=player.vy=player.vz=0;day=((s.day%1)+1)%1;for(const stone of stones){stone.collected=s.collected.includes(stone.id);stone.m.visible=stone.ring.visible=!stone.collected;lights.set(stone.light,{enabled:!stone.collected});}follow.initialized=false;sky.setTime(day);sky.refresh();pipeline.resetHistory();if(guide)guide.reset();if(stones.every(st=>st.collected))startFinale(true);else stopFinale();progress();}
 document.getElementById('save').onclick=()=>toast(store.save('main',getState()).ok?'Adventure saved on this device.':'This browser could not save. Keep this tab open.');
 document.getElementById('load').onclick=()=>{const result=store.load('main',{validate:validSave});if(result.ok&&result.found){restore(result.data);toast('Adventure restored.');}else toast(result.ok?'No saved adventure yet.':'The saved adventure could not be read.');};
 document.getElementById('reset').onclick=()=>{restore({x:48,z:65,day:.13,collected:[]});toast('A new adventure begins.');};
@@ -248,6 +248,14 @@ const keys=e=>{if(intro&&['Escape','Space','Enter'].includes(e.code)){e.preventD
 renderer.domElement.addEventListener('webglcontextlost',e=>{e.preventDefault();loop.pause();toast('Graphics paused. Waiting for the browser to recover…');});renderer.domElement.addEventListener('webglcontextrestored',()=>{applyQuality();sky.refresh();loop.pause(false);toast('Graphics restored.');});
 const litMaterials=new Set();scene.traverse(o=>{for(const m of [o.material].flat())if(m&&m.isMeshStandardMaterial)litMaterials.add(m);});
 
+/* ---------- finale ----------
+   Once every stone is found the shrine answers: a spirit portal and rising embers at its steps, a warm light that swells in,
+   a rising chord and a brief camera shake. Loading an unfinished save clears it. */
+let finale=null;const shake=has('animation')?new KE.CameraShake(T,{maxYaw:.02,maxPitch:.02,maxRoll:.03,maxOffset:[.05,.05,.03],decay:.8}):null;
+function startFinale(quiet=false){if(finale)return;const sy=ground(48,28);finale={fx:[],t:0,light:lights.add({position:[48,sy+2.2,30.6],color:0xffc98a,intensity:0,distance:12,priority:1.2})};
+ if(vfx)finale.fx.push(vfx.create('portal',{position:[48,sy+1.8,31],scale:1.2,color:0x9ff4ff}),vfx.create('embers',{position:[48,sy+.5,30.2],scale:1.4}));
+ if(!quiet){if(shake)shake.add(.45);if(beds)[0,4,7,12].forEach((st,i)=>sound.play(KE.Synth.chime({freq:392*Math.pow(2,st/12),bell:.7}),{bus:'sfx',volume:.42,delay:i*.18}));}}
+function stopFinale(){if(!finale)return;for(const e of finale.fx)e.dispose();lights.remove(finale.light);finale=null;}
 /* ---------- intro flyover (animation module) ----------
    A Sequencer animates a camera-rail parameter and a look target over the island, then hands over to the follow camera.
    Skippable (button, Space, Enter, Escape); automated browsers skip it unless the page URL has ?intro=1. */
@@ -284,7 +292,7 @@ function savePhoto(){renderer.domElement.toBlob(blob=>{if(!blob){toast('This bro
 let frame=0;const target=new T.Vector3();
 const loop=new KE.Loop({onError:fail,update(dt,t){
  if(!paused){if(!photo){day=(day+dt/480)%1;sky.setTime(day);}if(started&&!photo){const motion=input.movement(),move=follow.movement(motion.x,motion.z);player.vx=KE.damp(player.vx,move.x*5.5,12,dt);player.vz=KE.damp(player.vz,move.z*5.5,12,dt);coyote=player.grounded?.12:Math.max(0,coyote-dt);jumpBuffer=input.consume('Space')?.12:Math.max(0,jumpBuffer-dt);if(coyote&&jumpBuffer){player.vy=8.3;player.grounded=false;coyote=jumpBuffer=0;if(beds)sound.play('jump',{bus:'sfx',volume:.35,position:[player.x,player.y,player.z]});else audio.tone(300,.07);}KE.Physics.step([player],dt,collision,ground);if(Math.hypot(move.x,move.z)>.05){hero.rotation.y=Math.atan2(-move.x,-move.z);walkTime+=dt*11;}
- for(const stone of stones)if(!stone.collected&&Math.hypot(player.x-stone.x,player.z-stone.z)<1.15){stone.collected=true;stone.m.visible=stone.ring.visible=false;lights.set(stone.light,{enabled:false});particle.burst(stone.x,ground(stone.x,stone.z)+1,stone.z,30);if(collectFx)collectFx.burst(90,[stone.x,ground(stone.x,stone.z)+1,stone.z]);if(beds)sound.play(KE.Synth.chime({freq:580+stone.id*120,bell:.6}),{bus:'sfx',volume:.6,position:[stone.x,ground(stone.x,stone.z)+1,stone.z]});else audio.tone(580+stone.id*120,.22);progress();toast(stones.every(s=>s.collected)?'All five spirits found. The island is yours.':'A spirit stone found.');}
+ for(const stone of stones)if(!stone.collected&&Math.hypot(player.x-stone.x,player.z-stone.z)<1.15){stone.collected=true;stone.m.visible=stone.ring.visible=false;lights.set(stone.light,{enabled:false});particle.burst(stone.x,ground(stone.x,stone.z)+1,stone.z,30);if(collectFx)collectFx.burst(90,[stone.x,ground(stone.x,stone.z)+1,stone.z]);if(beds)sound.play(KE.Synth.chime({freq:580+stone.id*120,bell:.6}),{bus:'sfx',volume:.6,position:[stone.x,ground(stone.x,stone.z)+1,stone.z]});else audio.tone(580+stone.id*120,.22);progress();if(stones.every(s=>s.collected)){startFinale();toast('All five spirits found. The shrine is awake.');}else toast('A spirit stone found.');}
  }}particle.update(dt);for(const stone of stones){stone.m.rotation.y=t*.9;stone.m.position.y=ground(stone.x,stone.z)+1+Math.sin(t*2+stone.id)*.15;}
  },render(alpha,dt,t){
  hero.position.set(player.x,player.y-player.r,player.z);
@@ -293,6 +301,7 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
  if(fur)fur.update(dt,{x:player.vx,y:player.vy,z:player.vz});if(guide&&!paused)guide.update(dt,t);
  if(intro){intro.seq.update(dt);if(intro)intro.rail.apply(camera,intro.state.u);}
  else{if(!paused){const look=input.consumeLook();follow.rotate(look.x,look.y);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.zoom(look.zoom);}follow.update(player,dt,ground);}
+ if(finale){finale.t+=dt;lights.set(finale.light,{intensity:Math.min(3.2,finale.t*1.2)*(.85+.15*Math.sin(t*3))});}if(shake&&!intro)shake.update(dt,camera);
  if(photo){pipeline.options.dof.focusDistance=Math.max(.5,camera.position.distanceTo(hero.position)+ +phEl('ph-focus').value);}
  wet=KE.damp(wet,raining?1:0,.6,dt);surfaceWeather.update(dt,{raining});
  sky.update(dt,camera);sun.intensity*=1-wet*.6;const night=sky.night;
@@ -315,8 +324,8 @@ const loop=new KE.Loop({onError:fail,update(dt,t){
 try{renderer.compile(scene,camera);}catch(e){}
 loop.start();
 /* Expose a small debug handle for automated checks and your own development tools. */
-window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,sound,world,editor,guide,setPhoto,playIntro:()=>playIntro(()=>{},true),skipIntro:endIntro,isIntro:()=>!!intro,introSeek:t=>{if(intro)intro.seq.seek(t);},getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
- dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();if(guide)guide.dispose();if(editor)editor.dispose();if(world)world.dispose();if(sound)sound.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
+window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,sound,world,editor,guide,setPhoto,startFinale,playIntro:()=>playIntro(()=>{},true),skipIntro:endIntro,isIntro:()=>!!intro,introSeek:t=>{if(intro)intro.seq.seek(t);},getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
+ dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();stopFinale();if(guide)guide.dispose();if(editor)editor.dispose();if(world)world.dispose();if(sound)sound.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();
 </script>
