@@ -196,7 +196,7 @@ async function main(){
      let custom=null;C.command('hello',args=>'hi '+args.join(' '),'test command');custom=C.run('hello world').output[0];C.run('r.TAA 1');
      return {taa,s1:s1.output[0],statEl,s2:s2.output[0],g0,g1,list,bad:bad.ok,unk:unk.ok,help,custom,taa2:t.KE.settings.taa,log:document.querySelectorAll('.ke-ed-conlog div').length};});
    assert(r1.open,'console did not open');console.log('   focus:',r1.focus);assert(comp==='r.TAA ','autocomplete gave "'+comp+'"');assert(r.taa===false&&r.taa2===true,'r.TAA '+JSON.stringify(r));
-   assert(r.statEl&&/fps/.test(r.s1)&&/unit/.test(r.s2),'stat');assert(r.g0!==r.g1,'show grid');assert(r.list.length===3&&!r.bad&&!r.unk&&r.help>=8&&r.custom==='hi world',JSON.stringify(r));return 'autocomplete "'+comp.trim()+'", '+r.log+' console lines';});
+   assert(r.statEl&&/fps/.test(r.s1)&&/unit/.test(r.s2),'stat');assert(r.g0!==r.g1,'show grid');assert(r.list.length===4&&r.list.some(l=>l.startsWith('r.Shadow.Cache'))&&!r.bad&&!r.unk&&r.help>=8&&r.custom==='hi world',JSON.stringify(r));return 'autocomplete "'+comp.trim()+'", '+r.log+' console lines';});
 
  await test('screenshot: editor over a small level with gizmo, outliner, details, drawer, console + stat unit',async()=>{
    await ev(async()=>{t.KE.ConsoleUI.stat('none');t.KE.ConsoleUI.run('stat unit');ed._setTab('log');ed.select(t.world.find('Crate'));ed.setMode('translate');ed.setShow('stats',true);

@@ -271,7 +271,8 @@ check('raycast vehicle rests on its wheels and drives forward (+Z)',r.contact&&r
   p.timeScale=0;const n0=p.step(1/60);p.timeScale=1;
   const handles=[...p.bodies.values()];p.dispose();let threw=false;try{p.step(1/60);}catch(e){threw=/disposed/.test(e.message);}
   return {vc,offGone,s,pausedSame:y===pausedY,n0,hasLines:!!lines,linesGone:!scene.getObjectByName('physics-debug'),worldNull:p.world===null&&p.eventQueue===null,handlesFreed:handles.every(b=>b.rigidBody===null&&b.removed),threw,objectsKept:scene.children.length===5};});
-check('stats report bodies/colliders/awake/stepMs',r.s.bodies===6&&r.s.colliders===6&&r.s.dynamic===5&&r.s.awake>=5&&r.s.stepMs>0,JSON.stringify(r.s));
+/* a 6-body step can finish inside the browser's timer resolution (~0.1 ms without cross-origin isolation), so 0 is a valid reading */
+check('stats report bodies/colliders/awake/stepMs',r.s.bodies===6&&r.s.colliders===6&&r.s.dynamic===5&&r.s.awake>=5&&Number.isFinite(r.s.stepMs)&&r.s.stepMs>=0&&Number.isFinite(r.s.lastStepMs)&&r.s.lastStepMs>=0,JSON.stringify(r.s));
 check('debug renderer draws collider wireframes; debug(false) removes them',r.hasLines&&r.vc>100&&r.offGone,String(r.vc));
 check('pause and timeScale stop the simulation',r.pausedSame&&r.n0===0);
 check('dispose frees world, event queue, handles and debug lines',r.linesGone&&r.worldNull&&r.handlesFreed&&r.threw&&r.objectsKept,JSON.stringify(r));}
