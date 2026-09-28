@@ -97,7 +97,7 @@ These numbers come from Web3D Survey reports (web3dsurvey.com, snapshot 27 Sep 2
 - Float32 blending and filtering are not: `EXT_float_blend` and `OES_texture_float_linear` are near 53 % on iOS (the latter 75.9 % on Android). The engine blends and filters only half-float targets unless `KE.capabilities(renderer).floatBlend`/`floatLinear` say otherwise (the GI atlas checks `floatBlend`).
 - Texture size: every Android report allows 4096², only 76 % allow 8192², so keep atlases and render targets at or below 4096 (the surface atlas is 1254²).
 - MSAA: Android reports top out at 4× (about 1 % reach 8×); the pipeline uses TAA instead of MSAA.
-- GPU timer queries (`EXT_disjoint_timer_query_webgl2`) are reported by 0.26 % of Android and 0.13 % of iOS reports, so auto-quality (`KE.FPS`) uses CPU frame time.
+- GPU timer queries (`EXT_disjoint_timer_query_webgl2`) are reported by 0.26 % of Android and 0.13 % of iOS reports, so auto-quality (`KE.FPS`) uses CPU frame time. On desktops that expose them, `stat gpu` in the console (or `r.ProfileGPU 1` and `pipeline.gpu.timings`) shows per-stage GPU milliseconds for the pipeline; use it to find the expensive pass on a target machine.
 - `KHR_parallel_shader_compile` is reported by 0.14 % of Android reports: compile programs during loading (`renderer.compile(scene, camera)`, as Spirit Isle does) to avoid mid-game stalls, and keep material variants few.
 - Fill rate: rendering at full device pixel ratio multiplies pixel cost; use `KE.settings.scale` and the pipeline's internal resolution (`upscale`) on phones (PlayCanvas optimisation guidelines give the same advice).
 

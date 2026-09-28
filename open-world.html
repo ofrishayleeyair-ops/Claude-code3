@@ -16902,14 +16902,40 @@ KE.Profiler=class{
   report(){return [...this.scopes.entries()].map(([name,s])=>({name,avg:s.avg,last:s.last,max:s.max}));}
 };
 KE.profiler=new KE.Profiler();
+
+/* ---------- GPU timings (EXT_disjoint_timer_query_webgl2) ----------
+   begin(label)/end() bracket GPU work; results arrive a few frames later and are summed per label per frame, then
+   smoothed. Only one query can run at a time, so begin() ends the previous label. Timer queries are common on desktop
+   browsers and almost absent on phones (about 0.3 % of Android reports in public survey data); `available` says which. */
 KE.GPUTimer=class{
-  constructor(renderer){const gl=renderer.getContext();this.gl=gl;this.webgl2=!!renderer.capabilities.isWebGL2;this.ext=this.webgl2?gl.getExtension('EXT_disjoint_timer_query_webgl2'):gl.getExtension('EXT_disjoint_timer_query');this.pending=[];this.ms=0;this.available=!!this.ext;}
-  begin(){if(!this.available||this.active)return;const gl=this.gl,e=this.ext;this.active=this.webgl2?gl.createQuery():e.createQueryEXT();this.webgl2?gl.beginQuery(e.TIME_ELAPSED_EXT,this.active):e.beginQueryEXT(e.TIME_ELAPSED_EXT,this.active);}
-  end(){if(!this.active)return;const gl=this.gl,e=this.ext;this.webgl2?gl.endQuery(e.TIME_ELAPSED_EXT):e.endQueryEXT(e.TIME_ELAPSED_EXT);this.pending.push(this.active);this.active=null;this.poll();}
-  poll(){const gl=this.gl,e=this.ext;while(this.pending.length){const q=this.pending[0];const ready=this.webgl2?gl.getQueryParameter(q,gl.QUERY_RESULT_AVAILABLE):e.getQueryObjectEXT(q,e.QUERY_RESULT_AVAILABLE_EXT);if(!ready)break;const disjoint=gl.getParameter(e.GPU_DISJOINT_EXT);
-    const ns=this.webgl2?gl.getQueryParameter(q,gl.QUERY_RESULT):e.getQueryObjectEXT(q,e.QUERY_RESULT_EXT);if(!disjoint)this.ms+=(ns/1e6-this.ms)*.1;this.webgl2?gl.deleteQuery(q):e.deleteQueryEXT(q);this.pending.shift();}}
-  dispose(){const gl=this.gl,e=this.ext;for(const q of this.pending)this.webgl2?gl.deleteQuery(q):e.deleteQueryEXT(q);this.pending.length=0;}
+  constructor(renderer,{name='gpu',smoothing=.9}={}){const gl=renderer&&renderer.getContext?renderer.getContext():null;
+    this.gl=gl;this.name=name;this.smoothing=smoothing;this.ext=gl&&renderer.capabilities&&renderer.capabilities.isWebGL2?gl.getExtension('EXT_disjoint_timer_query_webgl2'):null;
+    this.available=!!this.ext;this.enabled=KE.GPUTimer.enabledAll;this.frameId=0;this.active=null;this.pending=[];this.free=[];this.open=new Map();this.acc=new Map();this.smoothed=new Map();this.order=[];this.lastSeen=new Map();this.total=0;
+    KE.GPUTimer.instances.add(this);}
+  /* Call once at the start of each frame; collects finished queries. */
+  frame(){if(!this.available)return this;this.poll();if(this.active)this.end();this.frameId++;return this;}
+  begin(label='gpu'){if(!this.enabled||!this.available)return;if(this.active)this.end();const gl=this.gl,q=this.free.pop()||gl.createQuery();
+    gl.beginQuery(this.ext.TIME_ELAPSED_EXT,q);this.active={q,label,frame:this.frameId};this.open.set(this.frameId,(this.open.get(this.frameId)||0)+1);if(!this.order.includes(label))this.order.push(label);}
+  end(){if(!this.active)return;this.gl.endQuery(this.ext.TIME_ELAPSED_EXT);this.pending.push(this.active);this.active=null;
+    if(this.pending.length>512){const old=this.pending.shift();this.gl.deleteQuery(old.q);this._settle(old.frame);}}
+  poll(){if(!this.available||!this.pending.length)return;const gl=this.gl,disjoint=gl.getParameter(this.ext.GPU_DISJOINT_EXT);
+    while(this.pending.length){const p=this.pending[0];if(!gl.getQueryParameter(p.q,gl.QUERY_RESULT_AVAILABLE))break;this.pending.shift();
+      if(!disjoint){const ms=gl.getQueryParameter(p.q,gl.QUERY_RESULT)/1e6;let a=this.acc.get(p.frame);if(!a)this.acc.set(p.frame,a=new Map());a.set(p.label,(a.get(p.label)||0)+ms);}
+      this.free.push(p.q);this._settle(p.frame);}}
+  _settle(frame){const n=(this.open.get(frame)||1)-1;if(n>0){this.open.set(frame,n);return;}this.open.delete(frame);const a=this.acc.get(frame);this.acc.delete(frame);if(!a)return;
+    let total=0;const k=this.smoothing;for(const [label,ms] of a){const prev=this.smoothed.get(label);this.smoothed.set(label,prev===undefined?ms:prev*k+ms*(1-k));this.lastSeen.set(label,frame);total+=ms;}
+    this.total=this.total?this.total*k+total*(1-k):total;}
+  /* [{label, ms}] in first-seen order, for labels measured in the last 60 frames. */
+  get timings(){const out=[];for(const label of this.order){const f=this.lastSeen.get(label);if(f!==undefined&&this.frameId-f<60)out.push({label,ms:this.smoothed.get(label)});}return out;}
+  /* Smoothed total GPU milliseconds per frame (kept from the earlier single-timer API). */
+  get ms(){return this.total;}
+  reset(){this.smoothed.clear();this.lastSeen.clear();this.total=0;return this;}
+  dispose(){if(this.gl){if(this.active){this.gl.endQuery(this.ext.TIME_ELAPSED_EXT);this.gl.deleteQuery(this.active.q);}for(const p of this.pending)this.gl.deleteQuery(p.q);for(const q of this.free)this.gl.deleteQuery(q);}
+    this.pending.length=0;this.free.length=0;this.active=null;KE.GPUTimer.instances.delete(this);}
 };
+KE.GPUTimer.instances=new Set();KE.GPUTimer.enabledAll=false;
+KE.GPUTimer.setEnabled=v=>{KE.GPUTimer.enabledAll=!!v;for(const t of KE.GPUTimer.instances){t.enabled=!!v;if(!v)t.reset();}return !!v;};
+KE.cvars.register('r.ProfileGPU',{type:'boolean',help:'Per-pass GPU timings through timer queries (see stat gpu)',get:()=>KE.GPUTimer.enabledAll,set:v=>KE.GPUTimer.setEnabled(v)});
 
 /* ---------- shared scene uniforms ---------- */
 /* One set of uniform objects shared by reference across materials. KE.Pipeline fills them each frame;
@@ -17189,7 +17215,7 @@ KE.Pipeline=class{
       volumetrics:true,shaftStrength:.25,volumetricFog:{enabled:true,density:.012,falloff:.22,height:0,anisotropy:.45,intensity:1,maxDistance:50,steps:20},dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
       grading:{saturation:1.05,contrast:1.04,temperature:0,tint:0,lift:[0,0,0],gamma:[1,1,1],gain:[1,1,1],vignette:.22,grain:.012,chromaticAberration:.15},sun:null,debugView:'lit'};
     this.set(o);
-    this.uniforms=KE.sceneUniforms(THREE);this.quad=new KE.FullScreenQuad(THREE);
+    this.uniforms=KE.sceneUniforms(THREE);this.quad=new KE.FullScreenQuad(THREE);this.gpu=new KE.GPUTimer(renderer,{name:'pipeline'});
     this.proj=new THREE.Matrix4();this.invProj=new THREE.Matrix4();this.invProjU=new THREE.Matrix4();this.viewProj=new THREE.Matrix4();this.prevViewProj=new THREE.Matrix4();
     this._v2=new THREE.Vector2();this._v3=new THREE.Vector3();this._fwd=new THREE.Vector3();this._sunWorld=new THREE.Vector3();this._fogColor=new THREE.Color();
     const M=(fs,u,defines={})=>new THREE.ShaderMaterial({vertexShader:VS,fragmentShader:fs,uniforms:u,defines,depthTest:false,depthWrite:false,toneMapped:false});
@@ -17263,7 +17289,8 @@ KE.Pipeline=class{
   pass(material,target){this.quad.render(this.renderer,target,material);this.stats.passes++;}
   render(scene,camera,dt=1/60){
     const R=this.renderer,T=this.THREE,o=this.options,U=this.uniforms;
-    if(!this.enabled){KE.prepareCamera(camera);R.render(scene,camera);return;}
+    const G=this.gpu;G.frame();
+    if(!this.enabled){KE.prepareCamera(camera);G.begin('Scene (direct)');R.render(scene,camera);G.end();return;}
     const t0=performance.now();this.setSize();const [W,H]=this.size,[IW,IH]=this.internal;this.frame++;this.stats.passes=0;
     const prevTarget=R.getRenderTarget(),prevTone=R.toneMapping,prevAutoClear=R.autoClear,prevInfo=R.info.autoReset,prevFog=scene.fog,prevBg=scene.background,prevMask=camera.layers.mask;
     R.info.autoReset=false;R.info.reset();
@@ -17277,16 +17304,20 @@ KE.Pipeline=class{
     const sun=o.sun;if(sun){this._sunWorld.copy(sun.position).sub(sun.target.position).normalize();U.keSunDirection.value.copy(this._sunWorld);U.keSunColor.value.copy(sun.color).multiplyScalar(sun.intensity);}
     try{
       // 1. Opaque scene into the HDR target (linear, no tone mapping), without the translucent layer.
+      G.begin('Scene (opaque)');
       if(o.fog.enabled&&o.fog.replaceSceneFog&&this.depthOK)scene.fog=null;R.toneMapping=T.NoToneMapping;
       camera.layers.mask=prevMask&~TRANSLUCENT_BIT;R.autoClear=true;R.setRenderTarget(this.scene);R.render(scene,camera);
       // 2. Copies that translucent materials may sample.
+      G.begin('Scene copies');
       this.m.copy.uniforms.tSrc.value=this.scene.texture;this.pass(this.m.copy,this.colorCopy);
       if(this.depthOK){this.bindDepth(this.m.linearDepth,near,far,texel);this.pass(this.m.linearDepth,this.linearDepth);}
       U.keSceneColor.value=this.colorCopy.texture;U.keSceneDepth.value=this.depthOK?this.linearDepth.texture:null;U.keHasScene.value=this.depthOK?1:0;
       // 3. Translucent layer drawn over the opaque result with depth testing.
+      G.begin('Translucent');
       camera.layers.mask=TRANSLUCENT_BIT;scene.background=null;const sm=R.shadowMap,au=sm.autoUpdate,nu=sm.needsUpdate;sm.autoUpdate=false;sm.needsUpdate=false;R.autoClear=false;R.setRenderTarget(this.scene);R.render(scene,camera);sm.autoUpdate=au;sm.needsUpdate=nu;
       camera.layers.mask=prevMask;scene.background=prevBg;scene.fog=prevFog;
       // 4. Half-resolution ambient occlusion and indirect light.
+      G.begin('GTAO + SSGI');
       const halfTexel=(this._half||(this._half=new T.Vector2())).set(1/this.ao[0].width,1/this.ao[0].height);
       if(o.gtao){const g=this.m.gtao;this.bindDepth(g,near,far,texel);g.uniforms.uRadius.value=o.aoRadius;g.uniforms.uProjScale.value=IH/(2*Math.tan((camera.fov||50)*Math.PI/360));g.uniforms.uFrame.value=this.frame%64;g.uniforms.uPower.value=o.aoPower;this.pass(g,this.ao[0]);this.blur(this.ao,halfTexel,0);}
       let giTex=this._black;
@@ -17294,11 +17325,13 @@ KE.Pipeline=class{
         const tt=this.m.ssgiTemporal,hi=this.frame&1;this.bindDepth(tt,near,far,texel);tt.uniforms.tCurrent.value=this.gi[0].texture;tt.uniforms.tHistory.value=this.giHist[hi^1].texture;tt.uniforms.uInvView.value.copy(camera.matrixWorld);tt.uniforms.uValid.value=this.giValid?1:0;this.pass(tt,this.giHist[hi]);
         this.m.copy.uniforms.tSrc.value=this.giHist[hi].texture;this.pass(this.m.copy,this.gi[0]);this.blur(this.gi,halfTexel,1);giTex=this.gi[0].texture;this.giValid=true;}
       // 5. Light shafts from the sun's screen position.
+      G.begin('Light shafts');
       let shaftsOn=0;if(o.volumetrics&&sun&&this.depthOK){const s=this._v3.copy(this._sunWorld).multiplyScalar(far*.5).add(camera.position).project(camera);camera.getWorldDirection(this._fwd);
         const facing=this._fwd.dot(this._sunWorld),vis=clamp((facing-.1)*2.5,0,1)*clamp(1-Math.max(Math.abs(s.x),Math.abs(s.y))*.45,0,1)*clamp(this._sunWorld.y*6,0,1);
         if(vis>.01){const sx=s.x*.5+.5,sy=s.y*.5+.5,mk=this.m.shaftMask;mk.uniforms.tColor.value=this.scene.texture;mk.uniforms.tDepth.value=this.scene.depthTexture;mk.uniforms.uSunUV.value.set(sx,sy);mk.uniforms.uAspect.value=IW/IH;mk.uniforms.uThreshold.value=this.hdr?1.5:.8;this.pass(mk,this.shafts[0]);
           const b=this.m.shaftBlur;b.uniforms.uSunUV.value.set(sx,sy);b.uniforms.uFrame.value=this.frame%64;b.uniforms.tSrc.value=this.shafts[0].texture;b.uniforms.uStep.value=.55;this.pass(b,this.shafts[1]);b.uniforms.tSrc.value=this.shafts[1].texture;b.uniforms.uStep.value=.22;this.pass(b,this.shafts[0]);shaftsOn=vis;}}
       // 5b. Shadowed volumetric fog from the cascaded shadow maps.
+      G.begin('Volumetric fog');
       let volOn=0;const vf=o.volumetricFog;if(o.volumetrics&&vf.enabled&&sun&&this.depthOK){const v=this.m.volume,vu=v.uniforms;this.bindDepth(v,near,far,texel);let nc=0;
         const cs=this.shadowSource,lightsC=cs?cs.lights:[sun];for(let i=0;i<Math.min(4,lightsC.length);i++){const l=lightsC[i];if(!l.castShadow||!l.shadow||!l.shadow.map)break;vu['tShadow'+i].value=l.shadow.map.texture;vu['uShadowM'+i].value.copy(l.shadow.matrix);nc++;}
         const sp=cs&&cs.splits&&cs.splits.length>1?cs.splits:[0,vf.maxDistance];vu.uSplits.value.set(sp[1]||1e9,sp[2]||1e9,sp[3]||1e9,sp[4]||1e9);if(!cs&&nc)vu.uSplits.value.x=1e9;vu.uCascades.value=R.shadowMap.enabled?nc:0;
@@ -17306,32 +17339,39 @@ KE.Pipeline=class{
         vu.uDensity.value=vf.density;vu.uFalloff.value=vf.falloff;vu.uHeight.value=vf.height;vu.uG.value=vf.anisotropy;vu.uMaxDist.value=vf.maxDistance;vu.uFrame.value=this.frame%64;if(v.defines.STEPS!==vf.steps){v.defines.STEPS=vf.steps;v.needsUpdate=true;}
         if(vu.uSunColor.value.r+vu.uSunColor.value.g+vu.uSunColor.value.b>.01){this.pass(v,this.vol[0]);this.blur(this.vol,halfTexel,1);volOn=1;}}
       // 6. Lighting composite with height fog.
+      G.begin('Composite + fog');
       const c=this.m.composite,cu=c.uniforms,f=o.fog;this.bindDepth(c,near,far,texel);cu.tColor.value=this.scene.texture;cu.tAO.value=o.gtao?this.ao[0].texture:this._white;cu.tGI.value=giTex;cu.tShafts.value=this.shafts[0].texture;cu.uInvView.value.copy(camera.matrixWorld);cu.uCamPos.value.setFromMatrixPosition(camera.matrixWorld);cu.uHalfTexel.value.copy(halfTexel);
       cu.uAO.value=o.gtao?o.aoStrength:0;cu.uGI.value=o.ssgi?o.giStrength:0;cu.uShafts.value=shaftsOn*o.shaftStrength*(volOn?.5:1);cu.tVol.value=this.vol[0].texture;cu.uVol.value=volOn;cu.uFog.value=f.enabled&&this.depthOK?1:0;Object.assign(cu.uFogDensity,{value:f.density});cu.uFogFalloff.value=f.falloff;cu.uFogHeight.value=f.height;cu.uFogStart.value=f.start;cu.uFogMax.value=f.maxOpacity;cu.uFogColor.value.copy(f.color);
       cu.uSunDir.value.copy(this._sunWorld.lengthSq()?this._sunWorld:this._v3.set(0,1,0));if(sun){cu.uSunColor.value.copy(sun.color).multiplyScalar(sun.intensity*(volOn?.25:o.volumetrics?1:.35));cu.uShaftColor.value.copy(sun.color).multiplyScalar(sun.intensity);}else cu.uSunColor.value.setRGB(0,0,0);cu.uInscatter.value=f.inscatter;cu.uInscatterExp.value=f.inscatterExponent;cu.uFogSky.value=f.sky;
       this.pass(c,this.lit);let current=this.lit;
       // 7. Temporal anti-aliasing.
+      G.begin('TAA / upscale');
       if(o.taa){const a=this.m.taa,u=a.uniforms,wi=this.frame&1;u.tCurrent.value=this.lit.texture;u.tHistory.value=this.taa[wi^1].texture;u.tDepth.value=this.scene.depthTexture;u.uInvView.value.copy(camera.matrixWorld);u.uTexel.value.copy(dtexel);u.uCurTexel.value.copy(texel);u.uBlend.value=o.taaBlend*(IW<W?.8:1);u.uValid.value=frameValid?1:0;this.pass(a,this.taa[wi]);current=this.taa[wi];this.historyValid=true;}
       else{this.historyValid=false;}
       // 8. Depth of field and motion blur.
+      G.begin('DOF + motion blur');
       let pi=0;if(o.dof.enabled){const g=this.m.dofGather,u=g.uniforms,d=o.dof;this.bindDepth(g,near,far,texel);u.tColor.value=current.texture;u.uFocus.value=d.focusDistance;u.uAperture.value=d.aperture;u.uMaxBlur.value=d.maxBlur;u.uAutoFocus.value=d.autoFocus?1:0;u.uFullTexel.value.copy(dtexel);this.pass(g,this.dofBlur);
         const cb=this.m.dofCombine;cb.uniforms.tColor.value=current.texture;cb.uniforms.tBlur.value=this.dofBlur.texture;this.pass(cb,this.post[pi]);current=this.post[pi];pi^=1;}
       if(o.motionBlur.enabled&&frameValid){const mb=this.m.motion;this.bindDepth(mb,near,far,dtexel);mb.uniforms.tColor.value=current.texture;mb.uniforms.uInvView.value.copy(camera.matrixWorld);mb.uniforms.uStrength.value=o.motionBlur.strength*clamp(1/(60*Math.max(dt,1e-3)),.25,2);mb.uniforms.uFrame.value=this.frame%64;this.pass(mb,this.post[pi]);current=this.post[pi];pi^=1;}
       // 9. Bloom.
+      G.begin('Bloom');
       let bloomTex=this._black;if(o.bloom&&this.bloomMips.length){const d=this.m.bloomDown,u=this.m.bloomUp;let src=current;
         const th=this.hdr?o.bloomThreshold:.8,knee=Math.max(1e-4,th*o.bloomKnee);d.uniforms.uCurve.value.set(th-knee,knee*2,.25/knee,th);
         this.bloomMips.forEach((t,i)=>{d.uniforms.tSrc.value=src.texture;d.uniforms.uTexel.value.set(1/src.width,1/src.height);d.uniforms.uFirst.value=i===0?1:0;this.pass(d,t);src=t;});
         for(let i=this.bloomMips.length-2;i>=0;i--){const s=this.bloomMips[i+1];u.uniforms.tSrc.value=s.texture;u.uniforms.uTexel.value.set(1/s.width,1/s.height);u.uniforms.uRadius.value=o.bloomRadius;this.pass(u,this.bloomMips[i]);}
         bloomTex=this.bloomMips[0].texture;}
       // 10. Eye adaptation.
+      G.begin('Eye adaptation');
       let expTex=this._white;if(o.autoExposure){const l=this.m.lum,r=this.m.reduce;l.uniforms.tSrc.value=current.texture;l.uniforms.uTexel.value.set(1/64,1/64);this.pass(l,this.lumTargets[0]);
         for(let i=1;i<4;i++){const s=this.lumTargets[i-1];r.uniforms.tSrc.value=s.texture;r.uniforms.uTexel.value.set(1/s.width,1/s.height);this.pass(r,this.lumTargets[i]);}
         const ad=this.m.adapt,ai=this.frame&1;ad.uniforms.tCur.value=this.lumTargets[3].texture;ad.uniforms.tPrev.value=this.adapt[ai^1].texture;ad.uniforms.uDt.value=clamp(dt,0,.25);ad.uniforms.uUp.value=o.adaptUp;ad.uniforms.uDown.value=o.adaptDown;ad.uniforms.uValid.value=this.adaptValid?1:0;this.pass(ad,this.adapt[ai]);this.adaptValid=true;expTex=this.adapt[ai].texture;}
       // 10b. Local exposure grid: log luminance at 64×N, then a separable blur.
+      G.begin('Local exposure');
       const le=o.localExposure,localOn=!!(le&&le.enabled&&this.hdr&&this.localLum);
       if(localOn){const [la,lb,lc]=this.localLum,ll=this.m.localLum,bl=this.m.localBlur;ll.uniforms.tSrc.value=current.texture;ll.uniforms.uTexel.value.set(1/la.width,1/la.height);this.pass(ll,la);
         bl.uniforms.tSrc.value=la.texture;bl.uniforms.uDir.value.set(1.5/la.width,0);this.pass(bl,lb);bl.uniforms.tSrc.value=lb.texture;bl.uniforms.uDir.value.set(0,1.5/la.height);this.pass(bl,lc);}
       // 11. Final grade to the screen (or through FXAA).
+      G.begin('Final + FXAA');
       const fm=this.m.final,fu=fm.uniforms,g=o.grading;fu.tInput.value=current.texture;fu.tBloom.value=bloomTex;fu.tExposure.value=expTex;fu.tAO.value=o.gtao?this.ao[0].texture:this._white;fu.tGI.value=giTex;fu.tDepth.value=this.scene.depthTexture;fu.tScene.value=this.colorCopy.texture;
       fu.uAuto.value=o.autoExposure?1:0;fu.uManual.value=o.exposure*(R.toneMappingExposure||1);fu.uComp.value=o.exposureCompensation;fu.uKey.value=o.exposureKey;fu.uExpRange.value.set(o.minExposure,o.maxExposure);fu.uBloom.value=o.bloom?o.bloomStrength:0;fu.uFlare.value=o.bloom?o.lensFlare:0;
       fu.uWB.value.copy(this.whiteBalance(g.temperature,g.tint));fu.uSat.value=g.saturation;fu.uContrast.value=g.contrast;fu.uLift.value.fromArray(g.lift);fu.uGamma.value.fromArray(g.gamma);fu.uGain.value.fromArray(g.gain);fu.uVignette.value=g.vignette;fu.uGrain.value=g.grain;fu.uCA.value=g.chromaticAberration;
@@ -17339,7 +17379,7 @@ KE.Pipeline=class{
       fu.uLocalOn.value=localOn?1:0;if(localOn){fu.tLocal.value=this.localLum[0].texture;fu.tLocalBlur.value=this.localLum[2].texture;fu.uLocalTexel.value.set(1/this.localLum[0].width,1/this.localLum[0].height);fu.uLocal.value.set(le.highlightContrast,le.shadowContrast,le.detail,le.blurredBlend);}else{fu.tLocal.value=fu.tLocalBlur.value=this._black;}
       if(o.fxaa){this.pass(fm,this.ldr);this.m.fxaa.uniforms.tSrc.value=this.ldr.texture;this.m.fxaa.uniforms.uTexel.value.copy(dtexel);this.pass(this.m.fxaa,prevTarget);}else this.pass(fm,prevTarget);
     }finally{
-      camera.layers.mask=prevMask;scene.background=prevBg;scene.fog=prevFog;R.toneMapping=prevTone;R.autoClear=prevAutoClear;R.setRenderTarget(prevTarget);R.info.autoReset=prevInfo;R.info.render.frame++;/* a following direct render must not share this frame id, or r128 skips its buffer uploads */
+      camera.layers.mask=prevMask;scene.background=prevBg;scene.fog=prevFog;R.toneMapping=prevTone;R.autoClear=prevAutoClear;G.end();R.setRenderTarget(prevTarget);R.info.autoReset=prevInfo;R.info.render.frame++;/* a following direct render must not share this frame id, or r128 skips its buffer uploads */
       if(jitter)camera.clearViewOffset();
     }
     this.prevViewProj.copy(this.viewProj);this.stats.ms=performance.now()-t0;
@@ -17349,7 +17389,7 @@ KE.Pipeline=class{
   /* Approximate white balance multiplier from temperature (-1 cool .. +1 warm) and tint (-1 green .. +1 magenta). */
   whiteBalance(t,tint){const v=this._wb||(this._wb=new this.THREE.Vector3());v.set(1+t*.18-tint*.04,1-Math.abs(t)*.02+tint*.12*-1,1-t*.22-tint*.04);const l=v.x*.2126+v.y*.7152+v.z*.0722;return v.multiplyScalar(1/l);}
   disposeTargets(){for(const t of this.targets){if(t.depthTexture)t.depthTexture.dispose();t.dispose();}this.targets.length=0;this.size=[0,0];this.internal=[0,0];}
-  dispose(){this.disposeTargets();for(const m of Object.values(this.m))m.dispose();this.quad.dispose();this._black.dispose();this._white.dispose();if(this.onSettings)this.onSettings();const U=this.uniforms;U.keSceneColor.value=null;U.keSceneDepth.value=null;U.keHasScene.value=0;this.enabled=false;}
+  dispose(){this.gpu.dispose();this.disposeTargets();for(const m of Object.values(this.m))m.dispose();this.quad.dispose();this._black.dispose();this._white.dispose();if(this.onSettings)this.onSettings();const U=this.uniforms;U.keSceneColor.value=null;U.keSceneDepth.value=null;U.keHasScene.value=0;this.enabled=false;}
 };
 KE.registerModule('pipeline',{provides:['Pipeline','GLSL.ssr']});
 })();
@@ -28552,7 +28592,7 @@ const ConsoleUI={
   _suggest(){const s=this._sugg;if(!s)return;const v=this._input.value;s.textContent='';this._sel=-1;
     if(!v||/\s/.test(v.trim())&&!/^(stat|show)\s+\S*$/i.test(v)){s.hidden=true;return;}
     let items;const m=/^(stat|show)\s+(\S*)$/i.exec(v);
-    if(m){const opts=m[1].toLowerCase()==='stat'?['fps','unit','none']:[...this._flags.values()].map(f=>f.name);items=opts.filter(o=>o.startsWith(m[2].toLowerCase())).map(o=>({name:m[1]+' '+o,help:'',kind:'arg'}));}
+    if(m){const opts=m[1].toLowerCase()==='stat'?['fps','unit','gpu','none']:[...this._flags.values()].map(f=>f.name);items=opts.filter(o=>o.startsWith(m[2].toLowerCase())).map(o=>({name:m[1]+' '+o,help:'',kind:'arg'}));}
     else items=this.complete(v.trim()).slice(0,40);
     if(!items.length){s.hidden=true;return;}
     items.forEach((it,i)=>{const d=h('div',{role:'option',on:{mousedown:e=>{e.preventDefault();this._input.value=it.name+(it.kind==='arg'?'':' ');this._suggest();this._input.focus();}}},h('b',it.name),it.help?h('i',it.help):null,it.value!==undefined?h('em',String(it.value)):null);d.dataset.i=i;d.dataset.name=it.name;s.appendChild(d);});s.hidden=false;},
@@ -28565,8 +28605,10 @@ const ConsoleUI={
     if(e.key==='Enter'){e.preventDefault();let v=inp.value;if(opts.length&&this._sel>=0)v=opts[this._sel].dataset.name;inp.value='';s.hidden=true;this.run(v);return;}
     e.stopPropagation();},
   /* ----- stat overlays: fps (frame rate and time) and unit (frame, profiler scopes, renderer counters) ----- */
-  stat(mode){mode=String(mode||'none').toLowerCase();if(!['fps','unit','none'].includes(mode))throw new RangeError('stat expects fps, unit or none');
+  stat(mode){mode=String(mode||'none').toLowerCase();if(!['fps','unit','gpu','none'].includes(mode))throw new RangeError('stat expects fps, unit, gpu or none');
     this._statMode=this._statMode===mode&&mode!=='none'?'none':mode;
+    /* stat gpu switches the GPU timers on while it is shown (unless r.ProfileGPU already had them on) */
+    if(KE.GPUTimer){if(this._statMode==='gpu'&&!KE.GPUTimer.enabledAll){KE.GPUTimer.setEnabled(true);this._gpuOwned=true;}else if(this._statMode!=='gpu'&&this._gpuOwned){KE.GPUTimer.setEnabled(false);this._gpuOwned=false;}}
     if(this._statMode==='none'){if(this._statRaf)cancelAnimationFrame(this._statRaf);this._statRaf=0;if(this._statEl){this._statEl.remove();this._statEl=null;releaseStyle();}return 'none';}
     if(!this._statEl&&hasDOM){acquireStyle();this._statEl=h('div.ke-ed-stat',{'aria-live':'off'});document.body.appendChild(this._statEl);this._frames.length=0;this._last=0;this._shown=0;
       const loop=t=>{if(!this._statEl)return;this._statRaf=requestAnimationFrame(loop);if(this._last){this._frames.push(t-this._last);if(this._frames.length>120)this._frames.shift();}this._last=t;if(t-this._shown>250){this._shown=t;this._drawStat();}};
@@ -28579,6 +28621,10 @@ const ConsoleUI={
       const rep=KE.profiler?KE.profiler.report().sort((a,b)=>b.avg-a.avg).slice(0,8):[];if(rep.length)rows.push('<span class="hd">Profiler (avg / max ms)</span>');
       for(const r of rep)rows.push(line(r.name.slice(0,22),r.avg.toFixed(2)+' / '+r.max.toFixed(2),col(r.avg*2)));
       const R=this.renderer||(Editor.active&&Editor.active.renderer);if(R&&R.info){const i=R.info;rows.push('<span class="hd">Renderer</span>',line('Draws',i.render.calls)+'  '+line('Tris',i.render.triangles.toLocaleString()),line('Geometries',i.memory.geometries)+'  '+line('Textures',i.memory.textures),line('Programs',i.programs?i.programs.length:0));}}
+    if(this._statMode==='gpu'){const timers=KE.GPUTimer?[...KE.GPUTimer.instances]:[];const live=timers.filter(t=>t.available);
+      if(!live.length)rows.push('<span class="hd">GPU</span>',line('timer queries',timers.length?'not supported by this browser/GPU':'no timed systems yet','w'));
+      for(const t of live){const list=t.timings;rows.push('<span class="hd">GPU · '+esc(t.name)+' (ms)</span>');if(!list.length)rows.push(line('waiting','results arrive after a few frames'));
+        for(const r of list)rows.push(line(r.label.slice(0,22),r.ms.toFixed(2),col(r.ms*4)));if(list.length)rows.push(line('total',t.total.toFixed(2)+' ms',col(t.total)));}}
     el.innerHTML=rows.join('\n');
     const ed=Editor.active,con=this._el?this._el.getBoundingClientRect().bottom:0;let top=12,right=12;if(ed&&ed._view){const r=ed._view.getBoundingClientRect();top=r.top+8;right=innerWidth-r.right+8;}
     el.style.top=Math.max(top,con+8)+'px';el.style.right=right+'px';}
@@ -28587,7 +28633,7 @@ KE.ConsoleUI=ConsoleUI;
 ConsoleUI.command('help',()=>['Commands:',...ConsoleUI.commands().sort((a,b)=>a.name.localeCompare(b.name)).map(c=>'  '+c.name.padEnd(18)+c.help),'Variables: type a name to print it, "<name> <value>" to set it; "list <prefix>" lists them.'].join('\n'),'List commands');
 ConsoleUI.command('clear',()=>{ConsoleUI.clear();},'Clear the console output');
 ConsoleUI.command('list',args=>{const l=KE.cvars?KE.cvars.list(args[0]||''):[];if(!l.length)return 'No variables match "'+(args[0]||'')+'"';return l.map(c=>c.name.padEnd(22)+String(c.value).padEnd(10)+c.help).join('\n');},'list <prefix>: console variables and values');
-ConsoleUI.command('stat',args=>{const m=ConsoleUI.stat(args[0]||'fps');return m==='none'?'stat overlay hidden':'stat '+m+' shown';},'stat fps|unit|none: frame statistics overlay');
+ConsoleUI.command('stat',args=>{const m=ConsoleUI.stat(args[0]||'fps');return m==='none'?'stat overlay hidden':'stat '+m+' shown';},'stat fps|unit|gpu|none: frame statistics overlay');
 ConsoleUI.command('show',args=>{const f=ConsoleUI._flags.get(String(args[0]||'').toLowerCase());if(!args[0])return 'show <flag>: '+([...ConsoleUI._flags.keys()].join(', ')||'no flags (open the editor for grid, icons, bounds)');
   if(!f)return 'Unknown show flag "'+args[0]+'"'+(ConsoleUI._flags.size?' (available: '+[...ConsoleUI._flags.keys()].join(', ')+')':'; open the editor (F8) for grid, icons and bounds');const v=f.fn(args[1]===undefined?undefined:/^(1|on|true)$/i.test(args[1]));return 'show '+f.name+': '+(v?'on':'off');},'show grid|icons|bounds: toggle editor show flags');
 ConsoleUI.command('editor',()=>{const e=Editor.instances[Editor.instances.length-1];if(!e)return 'No KE.Editor has been created';e.toggle();return e.isOpen?'editor opened':'editor closed';},'Toggle the level editor');

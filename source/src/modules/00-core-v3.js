@@ -128,14 +128,40 @@ KE.Profiler=class{
   report(){return [...this.scopes.entries()].map(([name,s])=>({name,avg:s.avg,last:s.last,max:s.max}));}
 };
 KE.profiler=new KE.Profiler();
+
+/* ---------- GPU timings (EXT_disjoint_timer_query_webgl2) ----------
+   begin(label)/end() bracket GPU work; results arrive a few frames later and are summed per label per frame, then
+   smoothed. Only one query can run at a time, so begin() ends the previous label. Timer queries are common on desktop
+   browsers and almost absent on phones (about 0.3 % of Android reports in public survey data); `available` says which. */
 KE.GPUTimer=class{
-  constructor(renderer){const gl=renderer.getContext();this.gl=gl;this.webgl2=!!renderer.capabilities.isWebGL2;this.ext=this.webgl2?gl.getExtension('EXT_disjoint_timer_query_webgl2'):gl.getExtension('EXT_disjoint_timer_query');this.pending=[];this.ms=0;this.available=!!this.ext;}
-  begin(){if(!this.available||this.active)return;const gl=this.gl,e=this.ext;this.active=this.webgl2?gl.createQuery():e.createQueryEXT();this.webgl2?gl.beginQuery(e.TIME_ELAPSED_EXT,this.active):e.beginQueryEXT(e.TIME_ELAPSED_EXT,this.active);}
-  end(){if(!this.active)return;const gl=this.gl,e=this.ext;this.webgl2?gl.endQuery(e.TIME_ELAPSED_EXT):e.endQueryEXT(e.TIME_ELAPSED_EXT);this.pending.push(this.active);this.active=null;this.poll();}
-  poll(){const gl=this.gl,e=this.ext;while(this.pending.length){const q=this.pending[0];const ready=this.webgl2?gl.getQueryParameter(q,gl.QUERY_RESULT_AVAILABLE):e.getQueryObjectEXT(q,e.QUERY_RESULT_AVAILABLE_EXT);if(!ready)break;const disjoint=gl.getParameter(e.GPU_DISJOINT_EXT);
-    const ns=this.webgl2?gl.getQueryParameter(q,gl.QUERY_RESULT):e.getQueryObjectEXT(q,e.QUERY_RESULT_EXT);if(!disjoint)this.ms+=(ns/1e6-this.ms)*.1;this.webgl2?gl.deleteQuery(q):e.deleteQueryEXT(q);this.pending.shift();}}
-  dispose(){const gl=this.gl,e=this.ext;for(const q of this.pending)this.webgl2?gl.deleteQuery(q):e.deleteQueryEXT(q);this.pending.length=0;}
+  constructor(renderer,{name='gpu',smoothing=.9}={}){const gl=renderer&&renderer.getContext?renderer.getContext():null;
+    this.gl=gl;this.name=name;this.smoothing=smoothing;this.ext=gl&&renderer.capabilities&&renderer.capabilities.isWebGL2?gl.getExtension('EXT_disjoint_timer_query_webgl2'):null;
+    this.available=!!this.ext;this.enabled=KE.GPUTimer.enabledAll;this.frameId=0;this.active=null;this.pending=[];this.free=[];this.open=new Map();this.acc=new Map();this.smoothed=new Map();this.order=[];this.lastSeen=new Map();this.total=0;
+    KE.GPUTimer.instances.add(this);}
+  /* Call once at the start of each frame; collects finished queries. */
+  frame(){if(!this.available)return this;this.poll();if(this.active)this.end();this.frameId++;return this;}
+  begin(label='gpu'){if(!this.enabled||!this.available)return;if(this.active)this.end();const gl=this.gl,q=this.free.pop()||gl.createQuery();
+    gl.beginQuery(this.ext.TIME_ELAPSED_EXT,q);this.active={q,label,frame:this.frameId};this.open.set(this.frameId,(this.open.get(this.frameId)||0)+1);if(!this.order.includes(label))this.order.push(label);}
+  end(){if(!this.active)return;this.gl.endQuery(this.ext.TIME_ELAPSED_EXT);this.pending.push(this.active);this.active=null;
+    if(this.pending.length>512){const old=this.pending.shift();this.gl.deleteQuery(old.q);this._settle(old.frame);}}
+  poll(){if(!this.available||!this.pending.length)return;const gl=this.gl,disjoint=gl.getParameter(this.ext.GPU_DISJOINT_EXT);
+    while(this.pending.length){const p=this.pending[0];if(!gl.getQueryParameter(p.q,gl.QUERY_RESULT_AVAILABLE))break;this.pending.shift();
+      if(!disjoint){const ms=gl.getQueryParameter(p.q,gl.QUERY_RESULT)/1e6;let a=this.acc.get(p.frame);if(!a)this.acc.set(p.frame,a=new Map());a.set(p.label,(a.get(p.label)||0)+ms);}
+      this.free.push(p.q);this._settle(p.frame);}}
+  _settle(frame){const n=(this.open.get(frame)||1)-1;if(n>0){this.open.set(frame,n);return;}this.open.delete(frame);const a=this.acc.get(frame);this.acc.delete(frame);if(!a)return;
+    let total=0;const k=this.smoothing;for(const [label,ms] of a){const prev=this.smoothed.get(label);this.smoothed.set(label,prev===undefined?ms:prev*k+ms*(1-k));this.lastSeen.set(label,frame);total+=ms;}
+    this.total=this.total?this.total*k+total*(1-k):total;}
+  /* [{label, ms}] in first-seen order, for labels measured in the last 60 frames. */
+  get timings(){const out=[];for(const label of this.order){const f=this.lastSeen.get(label);if(f!==undefined&&this.frameId-f<60)out.push({label,ms:this.smoothed.get(label)});}return out;}
+  /* Smoothed total GPU milliseconds per frame (kept from the earlier single-timer API). */
+  get ms(){return this.total;}
+  reset(){this.smoothed.clear();this.lastSeen.clear();this.total=0;return this;}
+  dispose(){if(this.gl){if(this.active){this.gl.endQuery(this.ext.TIME_ELAPSED_EXT);this.gl.deleteQuery(this.active.q);}for(const p of this.pending)this.gl.deleteQuery(p.q);for(const q of this.free)this.gl.deleteQuery(q);}
+    this.pending.length=0;this.free.length=0;this.active=null;KE.GPUTimer.instances.delete(this);}
 };
+KE.GPUTimer.instances=new Set();KE.GPUTimer.enabledAll=false;
+KE.GPUTimer.setEnabled=v=>{KE.GPUTimer.enabledAll=!!v;for(const t of KE.GPUTimer.instances){t.enabled=!!v;if(!v)t.reset();}return !!v;};
+KE.cvars.register('r.ProfileGPU',{type:'boolean',help:'Per-pass GPU timings through timer queries (see stat gpu)',get:()=>KE.GPUTimer.enabledAll,set:v=>KE.GPUTimer.setEnabled(v)});
 
 /* ---------- shared scene uniforms ---------- */
 /* One set of uniform objects shared by reference across materials. KE.Pipeline fills them each frame;

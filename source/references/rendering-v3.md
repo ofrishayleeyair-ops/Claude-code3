@@ -69,6 +69,8 @@ Debug views (`pipeline.options.debugView` or console `r.ViewMode`): `lit`, `ao`,
 
 Local exposure options: `localExposure: {enabled: true, highlightContrast: .75, shadowContrast: .9, detail: 1, blurredBlend: .4}`. Cost: three passes over a 64×N grid and ten extra texture reads per output pixel. The bilateral lookup limits halos at strong edges but does not remove them at the grid's 1/64-of-width scale.
 
+GPU timings: `pipeline.gpu` is a `KE.GPUTimer` that brackets every stage above (labels `Scene (opaque)` — which includes shadow-map rendering — through `Final + FXAA`). It records only while enabled (`r.ProfileGPU 1` or the console's `stat gpu`) and only where the browser exposes `EXT_disjoint_timer_query_webgl2` (`pipeline.gpu.available`); `pipeline.gpu.timings` returns `[{label, ms}]` smoothed over frames and `pipeline.gpu.total` the frame sum. Results lag the frame by a few frames and disjoint (invalidated) intervals are dropped. Other systems can time their own GPU work with `new KE.GPUTimer(renderer, {name})`, `frame()` once per frame, and `begin(label)` / `end()`.
+
 Memory at 1920×1080: about eight full-resolution half-float targets (~16 MB each) plus half-resolution and small targets — roughly 150 MB of render targets at Ultra. Lower `KE.settings.scale` on phones.
 
 ## 3. KE.SkyAtmosphere

@@ -330,7 +330,7 @@ const ConsoleUI={
   _suggest(){const s=this._sugg;if(!s)return;const v=this._input.value;s.textContent='';this._sel=-1;
     if(!v||/\s/.test(v.trim())&&!/^(stat|show)\s+\S*$/i.test(v)){s.hidden=true;return;}
     let items;const m=/^(stat|show)\s+(\S*)$/i.exec(v);
-    if(m){const opts=m[1].toLowerCase()==='stat'?['fps','unit','none']:[...this._flags.values()].map(f=>f.name);items=opts.filter(o=>o.startsWith(m[2].toLowerCase())).map(o=>({name:m[1]+' '+o,help:'',kind:'arg'}));}
+    if(m){const opts=m[1].toLowerCase()==='stat'?['fps','unit','gpu','none']:[...this._flags.values()].map(f=>f.name);items=opts.filter(o=>o.startsWith(m[2].toLowerCase())).map(o=>({name:m[1]+' '+o,help:'',kind:'arg'}));}
     else items=this.complete(v.trim()).slice(0,40);
     if(!items.length){s.hidden=true;return;}
     items.forEach((it,i)=>{const d=h('div',{role:'option',on:{mousedown:e=>{e.preventDefault();this._input.value=it.name+(it.kind==='arg'?'':' ');this._suggest();this._input.focus();}}},h('b',it.name),it.help?h('i',it.help):null,it.value!==undefined?h('em',String(it.value)):null);d.dataset.i=i;d.dataset.name=it.name;s.appendChild(d);});s.hidden=false;},
@@ -343,8 +343,10 @@ const ConsoleUI={
     if(e.key==='Enter'){e.preventDefault();let v=inp.value;if(opts.length&&this._sel>=0)v=opts[this._sel].dataset.name;inp.value='';s.hidden=true;this.run(v);return;}
     e.stopPropagation();},
   /* ----- stat overlays: fps (frame rate and time) and unit (frame, profiler scopes, renderer counters) ----- */
-  stat(mode){mode=String(mode||'none').toLowerCase();if(!['fps','unit','none'].includes(mode))throw new RangeError('stat expects fps, unit or none');
+  stat(mode){mode=String(mode||'none').toLowerCase();if(!['fps','unit','gpu','none'].includes(mode))throw new RangeError('stat expects fps, unit, gpu or none');
     this._statMode=this._statMode===mode&&mode!=='none'?'none':mode;
+    /* stat gpu switches the GPU timers on while it is shown (unless r.ProfileGPU already had them on) */
+    if(KE.GPUTimer){if(this._statMode==='gpu'&&!KE.GPUTimer.enabledAll){KE.GPUTimer.setEnabled(true);this._gpuOwned=true;}else if(this._statMode!=='gpu'&&this._gpuOwned){KE.GPUTimer.setEnabled(false);this._gpuOwned=false;}}
     if(this._statMode==='none'){if(this._statRaf)cancelAnimationFrame(this._statRaf);this._statRaf=0;if(this._statEl){this._statEl.remove();this._statEl=null;releaseStyle();}return 'none';}
     if(!this._statEl&&hasDOM){acquireStyle();this._statEl=h('div.ke-ed-stat',{'aria-live':'off'});document.body.appendChild(this._statEl);this._frames.length=0;this._last=0;this._shown=0;
       const loop=t=>{if(!this._statEl)return;this._statRaf=requestAnimationFrame(loop);if(this._last){this._frames.push(t-this._last);if(this._frames.length>120)this._frames.shift();}this._last=t;if(t-this._shown>250){this._shown=t;this._drawStat();}};
@@ -357,6 +359,10 @@ const ConsoleUI={
       const rep=KE.profiler?KE.profiler.report().sort((a,b)=>b.avg-a.avg).slice(0,8):[];if(rep.length)rows.push('<span class="hd">Profiler (avg / max ms)</span>');
       for(const r of rep)rows.push(line(r.name.slice(0,22),r.avg.toFixed(2)+' / '+r.max.toFixed(2),col(r.avg*2)));
       const R=this.renderer||(Editor.active&&Editor.active.renderer);if(R&&R.info){const i=R.info;rows.push('<span class="hd">Renderer</span>',line('Draws',i.render.calls)+'  '+line('Tris',i.render.triangles.toLocaleString()),line('Geometries',i.memory.geometries)+'  '+line('Textures',i.memory.textures),line('Programs',i.programs?i.programs.length:0));}}
+    if(this._statMode==='gpu'){const timers=KE.GPUTimer?[...KE.GPUTimer.instances]:[];const live=timers.filter(t=>t.available);
+      if(!live.length)rows.push('<span class="hd">GPU</span>',line('timer queries',timers.length?'not supported by this browser/GPU':'no timed systems yet','w'));
+      for(const t of live){const list=t.timings;rows.push('<span class="hd">GPU · '+esc(t.name)+' (ms)</span>');if(!list.length)rows.push(line('waiting','results arrive after a few frames'));
+        for(const r of list)rows.push(line(r.label.slice(0,22),r.ms.toFixed(2),col(r.ms*4)));if(list.length)rows.push(line('total',t.total.toFixed(2)+' ms',col(t.total)));}}
     el.innerHTML=rows.join('\n');
     const ed=Editor.active,con=this._el?this._el.getBoundingClientRect().bottom:0;let top=12,right=12;if(ed&&ed._view){const r=ed._view.getBoundingClientRect();top=r.top+8;right=innerWidth-r.right+8;}
     el.style.top=Math.max(top,con+8)+'px';el.style.right=right+'px';}
@@ -365,7 +371,7 @@ KE.ConsoleUI=ConsoleUI;
 ConsoleUI.command('help',()=>['Commands:',...ConsoleUI.commands().sort((a,b)=>a.name.localeCompare(b.name)).map(c=>'  '+c.name.padEnd(18)+c.help),'Variables: type a name to print it, "<name> <value>" to set it; "list <prefix>" lists them.'].join('\n'),'List commands');
 ConsoleUI.command('clear',()=>{ConsoleUI.clear();},'Clear the console output');
 ConsoleUI.command('list',args=>{const l=KE.cvars?KE.cvars.list(args[0]||''):[];if(!l.length)return 'No variables match "'+(args[0]||'')+'"';return l.map(c=>c.name.padEnd(22)+String(c.value).padEnd(10)+c.help).join('\n');},'list <prefix>: console variables and values');
-ConsoleUI.command('stat',args=>{const m=ConsoleUI.stat(args[0]||'fps');return m==='none'?'stat overlay hidden':'stat '+m+' shown';},'stat fps|unit|none: frame statistics overlay');
+ConsoleUI.command('stat',args=>{const m=ConsoleUI.stat(args[0]||'fps');return m==='none'?'stat overlay hidden':'stat '+m+' shown';},'stat fps|unit|gpu|none: frame statistics overlay');
 ConsoleUI.command('show',args=>{const f=ConsoleUI._flags.get(String(args[0]||'').toLowerCase());if(!args[0])return 'show <flag>: '+([...ConsoleUI._flags.keys()].join(', ')||'no flags (open the editor for grid, icons, bounds)');
   if(!f)return 'Unknown show flag "'+args[0]+'"'+(ConsoleUI._flags.size?' (available: '+[...ConsoleUI._flags.keys()].join(', ')+')':'; open the editor (F8) for grid, icons and bounds');const v=f.fn(args[1]===undefined?undefined:/^(1|on|true)$/i.test(args[1]));return 'show '+f.name+': '+(v?'on':'off');},'show grid|icons|bounds: toggle editor show flags');
 ConsoleUI.command('editor',()=>{const e=Editor.instances[Editor.instances.length-1];if(!e)return 'No KE.Editor has been created';e.toggle();return e.isOpen?'editor opened':'editor closed';},'Toggle the level editor');

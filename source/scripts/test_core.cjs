@@ -27,4 +27,17 @@ const T=require('../assets/three.min.js');
 test('terrain height agrees with actual triangle raycasts across odd chunks',()=>{const material=new T.MeshBasicMaterial();for(const sub of [1,2,3]){const land=KE.terrain(T,{w:5,h:5,sub,chunk:3,height:(x,z)=>Math.sin(x*2)+z*z+x*z,material});const ray=new T.Raycaster(),origin=new T.Vector3(),direction=new T.Vector3(0,-1,0);for(const mesh of land)mesh.updateMatrixWorld();for(let x=.51;x<4.5;x+=.21)for(let z=.53;z<4.5;z+=.19){ray.set(origin.set(x,100,z),direction);const hits=ray.intersectObjects(land);assert.ok(hits.length);near(land.heightAt(x,z),hits[0].point.y,2e-5);}land.dispose();}material.dispose();});
 test('terrain normalizes weights, handles edges, and rejects invalid heights',()=>{const material=new T.MeshBasicMaterial(),land=KE.terrain(T,{w:2,h:2,height:(x,z)=>x+z,weights:()=>[2,2,0,0,0,0,0,0],sub:1,material});near(land[0].geometry.attributes.splatA.getX(0),.5);near(land.heightAt(-9,-9),0);near(land.heightAt(100,100),2);assert.throws(()=>KE.terrain(T,{w:2,h:2,height:()=>NaN,material}));assert.throws(()=>KE.terrain(T,{w:2,h:2,height:()=>0,weights:()=>[1],material}));land.dispose();material.dispose();});
 test('disposeObject deduplicates shared geometry material and textures',()=>{const root=new T.Group(),geo=new T.BoxGeometry(),map=new T.Texture(),mat=new T.MeshBasicMaterial({map});let g=0,m=0,t=0;geo.addEventListener('dispose',()=>g++);mat.addEventListener('dispose',()=>m++);map.addEventListener('dispose',()=>t++);root.add(new T.Mesh(geo,mat),new T.Mesh(geo,mat));KE.disposeObject(root,{textures:true});assert.equal(g,1);assert.equal(m,1);assert.equal(t,1);});
+test('GPU timer sums labels per frame, smooths, and ignores disjoint intervals',()=>{
+ // Fake WebGL2 context: each query's result (ns) becomes available two polls after it ends.
+ let polls=0,disjoint=false;const queries=[];const gl={createQuery(){const q={id:queries.length,ns:0,endPoll:-1};queries.push(q);return q;},deleteQuery(){},beginQuery(t,q){gl._cur=q;},endQuery(){gl._cur.endPoll=polls;},
+  getQueryParameter(q,p){return p===1?polls-q.endPoll>=2:q.ns;},getParameter(){return disjoint;},QUERY_RESULT_AVAILABLE:1,QUERY_RESULT:2,getExtension:()=>({TIME_ELAPSED_EXT:9,GPU_DISJOINT_EXT:10})};
+ const t=new KE.GPUTimer({getContext:()=>gl,capabilities:{isWebGL2:true}},{name:'t',smoothing:0});assert.equal(t.available,true);assert.equal(t.enabled,false);
+ t.frame();t.begin('a');t.end();assert.equal(queries.length,0,'disabled timers record nothing');
+ KE.cvars.set('r.ProfileGPU','1');assert.equal(t.enabled,true);
+ const run=(ms)=>{polls++;t.frame();t.begin('a');gl._cur.ns=ms.a*1e6;t.begin('b');gl._cur.ns=ms.b1*1e6;t.begin('b');gl._cur.ns=ms.b2*1e6;t.end();};
+ run({a:2,b1:1,b2:.5});run({a:4,b1:1,b2:1});for(let i=0;i<3;i++){polls++;t.frame();}
+ const tm=Object.fromEntries(t.timings.map(r=>[r.label,r.ms]));near(tm.a,4,1e-9);near(tm.b,2,1e-9);near(t.total,6,1e-9);
+ disjoint=true;run({a:100,b1:100,b2:100});for(let i=0;i<3;i++){polls++;t.frame();}near(Object.fromEntries(t.timings.map(r=>[r.label,r.ms])).a,4,1e-9);
+ assert.equal(t.pending.length,0);KE.cvars.set('r.ProfileGPU','0');assert.equal(t.enabled,false);t.dispose();assert.ok(!KE.GPUTimer.instances.has(t));
+ const none=new KE.GPUTimer({getContext:()=>({getExtension:()=>null}),capabilities:{isWebGL2:true}});assert.equal(none.available,false);none.frame();none.begin('x');none.end();none.dispose();});
 console.log(`${count} core tests passed`);

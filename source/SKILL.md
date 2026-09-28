@@ -51,4 +51,5 @@ A reusable game runtime delivered as self-contained HTML files. `KE.version === 
 - `node <skill-root>/scripts/test_all.cjs` runs every suite and writes a verification record (Node suites plus headless Chromium with software WebGL2; slow). Single suites: `node scripts/test_<module>.cjs`, the game: `node scripts/test_browser.cjs game.html /tmp/out`.
 - The CPU-canvas suites `test_visuals.cjs` and `test_resources.cjs` need `@napi-rs/canvas` on `NODE_PATH`.
 - For a new or changed game: open the built HTML offline, move and jump, collect/interact, change quality presets, try day, night and rain, resize to portrait and landscape, open the editor (F8) and console (backquote), leave and return to the tab, save and load, and read the console. Inspect screenshots; passing tests alone do not prove the frame looks right.
+- To measure cost on a real machine, open the console (backquote) and run `stat unit` (frame time, draws, triangles) and `stat gpu` (per-pipeline-stage GPU time where timer queries exist, which excludes nearly all phones).
 - Report what was verified where (software WebGL in headless Chromium versus real devices), and what was not.
