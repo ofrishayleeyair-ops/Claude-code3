@@ -2,22 +2,39 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#10262d"><title>kitsune enginev3 · Spirit Isle</title>
+<meta name="theme-color" content="#0f2229"><title>kitsune enginev3 · Open World</title>
 <style>
-:root{--ink:#102a30;--cream:#fff3d7;--gold:#efd093}*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#10262d;font-family:system-ui,sans-serif;color:var(--cream)}canvas{display:block;width:100%;height:100%;touch-action:none}button{font:inherit;cursor:pointer}button:focus-visible{outline:3px solid #f6d796;outline-offset:4px}.glass{background:linear-gradient(135deg,#102c35d9,#172e32b8);border:1px solid #e0efd32c;backdrop-filter:blur(16px);box-shadow:0 12px 48px #00161a22}header{position:fixed;top:max(22px,env(safe-area-inset-top));left:26px;pointer-events:none}header .brand{font-size:10px;letter-spacing:3px;text-transform:uppercase;color:#fffb}header h1{font:normal 29px Georgia,serif;margin:5px 0}.top-actions{position:fixed;right:24px;top:max(22px,env(safe-area-inset-top));display:flex;gap:8px;z-index:12}.pill{border:1px solid #ffffff40;background:#132e37b3;color:var(--cream);padding:10px 16px;border-radius:30px;font-size:12px;backdrop-filter:blur(8px);min-height:42px}.pill:hover{background:#244b54}.quest{position:fixed;left:26px;top:110px;border-radius:18px;padding:16px 19px;width:210px;pointer-events:none}.eyebrow{font-size:9px;letter-spacing:2.2px;color:var(--gold);text-transform:uppercase}.quest strong{display:block;margin:9px 0 5px;font-size:14px;font-weight:500}.quest p{font-size:11px;line-height:1.6;color:#c4d2cc;margin:0}.track{display:flex;gap:5px;margin-top:14px}.track i{height:3px;flex:1;border-radius:4px;background:#ffffff25}.track i.on{background:var(--gold);box-shadow:0 0 9px #efbf71}.footer{position:fixed;bottom:25px;left:50%;transform:translateX(-50%);text-align:center;pointer-events:none;max-width:55vw;font-size:10px;letter-spacing:1px;line-height:1.7;color:#fffd;text-shadow:0 2px 8px #000}.footer .line{color:#fffffa88}#stats{font:10px ui-monospace,monospace;position:fixed;right:20px;bottom:12px;pointer-events:none;color:#fff9}#toast{position:fixed;top:90px;left:50%;transform:translateX(-50%);padding:12px 18px;border-radius:30px;max-width:85vw;text-align:center;font-size:12px;opacity:0;transition:opacity .3s;z-index:25;pointer-events:none}#toast.show{opacity:1}#panel{position:fixed;z-index:20;top:80px;right:20px;width:min(360px,calc(100vw - 40px));max-height:calc(100dvh - 110px);overflow:auto;border-radius:20px;padding:22px;background:#fff3dc;color:var(--ink);box-shadow:0 20px 80px #00151a88;touch-action:pan-y}#panel[hidden],#welcome[hidden]{display:none}.panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}.panel-head h2{font:24px Georgia,serif;margin:0}.panel-head button{background:none;border:0;font-size:24px;color:var(--ink)}.ke-seg button{box-shadow:none!important;border-width:1px!important;border-color:#28545040!important;font-weight:500!important}.ke-row>span{font-size:12px!important;font-weight:600!important}.ke-note{font-weight:400!important;line-height:1.6}.save-actions{display:flex;gap:8px;margin-top:18px}.save-actions button{flex:1;background:#173a3b;border:0;color:#fff3d7;border-radius:10px;padding:12px;font-size:12px}#welcome{position:fixed;inset:0;display:grid;place-items:center;z-index:30;background:linear-gradient(90deg,#0d242bc9,#0d242b55);padding:26px}.welcome-card{max-width:480px;width:100%;padding:42px;border-radius:26px;text-align:center}.fox-mark{font-size:30px;color:var(--gold);letter-spacing:4px}.welcome-card h2{font:normal 52px/1.05 Georgia,serif;margin:20px 0}.welcome-card p{color:#d3dfd7;font-size:13px;line-height:1.8}.welcome-card .start{display:block;margin:28px auto 18px;padding:14px 38px;border:0;border-radius:30px;background:var(--gold);color:#183137;font-size:13px}.welcome-card small{display:block;font-size:10px;line-height:1.8;color:#bccbc8}.ke-stick{background:#15353670}.ke-jump{background:#15353680}.error{position:fixed;inset:0;z-index:100;background:#10262d;padding:10vh 10vw;color:#fff;overflow:auto}.error h2{font:32px Georgia,serif}.error p{line-height:1.8;max-width:600px}
-@media(max-width:600px){header{left:18px;top:max(20px,env(safe-area-inset-top))}header h1{font-size:23px}header .brand{font-size:8px;letter-spacing:1.6px}.top-actions{right:14px;gap:6px}.pill{padding:10px 12px;font-size:10px}.quest{left:18px;top:97px;width:177px;padding:13px 15px}.quest p{font-size:10px}.quest strong{font-size:12px}.footer{bottom:22px;max-width:46vw;font-size:8px}.footer .line{display:none}.welcome-card{padding:32px 24px}.welcome-card h2{font-size:44px}#stats{font-size:8px}.ke-stick{width:100px;height:100px;left:18px;bottom:45px}.ke-jump{right:18px;bottom:58px;width:64px;height:64px}}
-@media(max-height:500px){.quest{top:88px;padding:10px;width:175px}.quest p{display:none}header h1{font-size:22px}.welcome-card{padding:20px}.welcome-card h2{font-size:32px;margin:10px}.welcome-card p{margin:6px}.welcome-card .start{margin:12px auto}.footer{bottom:12px}}
-#stats{white-space:pre;text-align:right}.hint{position:fixed;left:50%;top:max(18px,env(safe-area-inset-top));transform:translateX(-50%);font-size:10px;letter-spacing:1.5px;color:#fffc;pointer-events:none;text-shadow:0 2px 8px #000}
+[hidden]{display:none!important}
+:root{--ink:#0f2229;--cream:#fff3d7;--gold:#efd093}*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0f2229;font-family:system-ui,sans-serif;color:var(--cream)}
+canvas{display:block;width:100%;height:100%;touch-action:none}button,select{font:inherit;color:inherit}
+.glass{background:rgba(12,30,36,.58);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,243,215,.16);border-radius:16px}
+header{position:fixed;left:24px;top:max(20px,env(safe-area-inset-top));pointer-events:none;text-shadow:0 2px 10px #0008}
+header .brand{font-size:10px;letter-spacing:2.4px;text-transform:uppercase;opacity:.8}header h1{margin:4px 0 0;font:28px Georgia,serif}
+.actions{position:fixed;right:18px;top:max(18px,env(safe-area-inset-top));display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:70vw}
+.pill{padding:9px 14px;border-radius:999px;cursor:pointer;background:rgba(12,30,36,.58);border:1px solid rgba(255,243,215,.2);font-size:12px}.pill[aria-pressed=true]{background:rgba(239,208,147,.9);color:var(--ink)}
+.pill:focus-visible,select:focus-visible,.start:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+select.pill{appearance:none;-webkit-appearance:none}
+#stats{position:fixed;left:24px;top:calc(max(20px,env(safe-area-inset-top)) + 64px);font:11px/1.5 ui-monospace,monospace;white-space:pre;text-shadow:0 1px 4px #000c;pointer-events:none}
+#hint{position:fixed;left:50%;transform:translateX(-50%);bottom:max(18px,env(safe-area-inset-bottom));font-size:11px;letter-spacing:.6px;text-align:center;opacity:.85;text-shadow:0 1px 4px #000c;pointer-events:none;max-width:52vw}
+#overlay{position:fixed;inset:0;display:grid;place-items:center;background:radial-gradient(circle at 50% 40%,#1d3b44,#0b1a1f);z-index:5;padding:20px}
+.card{max-width:520px;width:100%;padding:30px;text-align:center}.card h2{font:34px Georgia,serif;margin:10px 0}.card p{opacity:.85;line-height:1.6}
+.bar{height:6px;border-radius:3px;background:#ffffff1c;overflow:hidden;margin:18px 0 8px}.bar i{display:block;height:100%;width:0;background:var(--gold);transition:width .25s}
+.start{margin-top:14px;padding:13px 26px;border-radius:999px;border:0;background:var(--gold);color:var(--ink);font-weight:600;cursor:pointer}.start[hidden]{display:none}
+.error{position:fixed;inset:0;display:grid;place-items:center;background:#0f2229;z-index:9;padding:24px;text-align:center}
+#fly-pad{position:fixed;left:22px;bottom:90px;display:none;gap:8px}#fly-pad button{width:54px;height:54px;border-radius:50%}
+@media(max-width:600px){header h1{font-size:21px}.pill{padding:8px 10px;font-size:11px}#hint{display:none}#stats{font-size:10px}}
 </style>
 </head>
 <body>
-<header><div class="brand">kitsune enginev3 / 3.0.0 · Tenko</div><h1>Spirit Isle</h1></header>
-<div class="top-actions"><button class="pill" id="weather" aria-label="Toggle rain">☀ Clear</button><button class="pill" id="gfx" aria-expanded="false" aria-controls="panel">Settings</button></div>
-<section class="quest glass" aria-label="Quest progress"><span class="eyebrow">A small adventure</span><strong id="quest-title">Find the five spirit stones</strong><p id="quest-copy">Follow the golden trail through the island shrine.</p><div class="track" id="track"><i></i><i></i><i></i><i></i><i></i></div></section>
-<div class="footer">EXPLORE AT YOUR OWN PACE<div class="line">WASD / arrows · Space to jump · Drag to look · Q / E to turn · T time of day · ` console</div></div>
-<div id="stats"></div><div class="glass" id="toast" role="status" aria-live="polite"></div>
-<section id="panel" hidden aria-label="Settings"><div class="panel-head"><h2>Make it yours</h2><button id="close-panel" aria-label="Close settings">×</button></div><div id="settings"></div><div class="save-actions"><button id="save">Save</button><button id="load">Load</button><button id="reset">New run</button></div></section>
-<div id="welcome"><div class="welcome-card glass"><div class="fox-mark">◇ / 狐 / ◇</div><span class="eyebrow">Kitsune Engine 3 · Tenko</span><h2>A world with<br>more to discover.</h2><p>Explore a living island under a real sky: drifting volumetric clouds,<br>a full day and night, rain, reflective water and lantern light.</p><button class="start" id="start">Enter Spirit Isle →</button><small>Phone: left joystick + right-side drag + jump<br>Desktop: WASD + drag + Space · wheel to zoom · T to change the hour</small></div></div>
+<header><div class="brand">kitsune enginev3 · Tenko</div><h1>Open World</h1></header>
+<div class="actions"><button class="pill" id="time" aria-label="Advance the time of day">☼ Time</button><button class="pill" id="rain" aria-pressed="false">☂ Rain</button><button class="pill" id="fly" aria-pressed="false">✈ Fly</button><select class="pill" id="quality" aria-label="Quality preset"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="ultra">Ultra</option><option value="cinematic">Cinematic</option></select></div>
+<div id="stats"></div>
+<div id="hint">WASD / arrows move · Shift sprint · Space jump · drag to look · F fly (Q/E down/up) · T time · R rain · ` console</div>
+<div id="fly-pad"><button class="pill" id="fly-up" aria-label="Fly up">▲</button><button class="pill" id="fly-down" aria-label="Fly down">▼</button></div>
+<div id="overlay"><div class="card glass"><div class="brand" style="letter-spacing:3px;font-size:10px;opacity:.75">kitsune enginev3 · world module</div><h2>A whole island to roam</h2>
+<p>Two kilometres of eroded terrain drawn in one call, forests streamed in cells around you with impostors in the distance, a real sky, ocean and weather. Everything is generated on this device; nothing is downloaded.</p>
+<div class="bar"><i id="load-bar"></i></div><div id="load-text" style="font-size:12px;opacity:.8">Starting…</div>
+<button class="start" id="start" hidden>Enter the world</button></div></div>
 <script>
 /**
  * @license
@@ -29315,256 +29332,151 @@ KE.registerModule('editor',{provides:['Editor','ConsoleUI']});
 </script>
 <script>
 (async()=>{'use strict';
-const KE=window.KitsuneEngine,T=window.THREE;
-const fail=error=>{console.error(error);const el=document.createElement('div');el.className='error';const h=document.createElement('h2');h.textContent='The island could not open.';const p=document.createElement('p');p.textContent='Open this downloaded HTML file in a browser with WebGL enabled. If your file viewer cannot run games, use Chrome, Edge, or Firefox. '+String(error.message||error);el.append(h,p);document.body.append(el);};
+const KE=window.KitsuneEngine,T=window.THREE,S=KE.settings,has=n=>!!KE.modules[n],$=id=>document.getElementById(id);
+const fail=error=>{console.error(error);const el=document.createElement('div');el.className='error';const c=document.createElement('div');const h=document.createElement('h2');h.textContent='The world could not open.';const p=document.createElement('p');p.textContent=String(error&&error.message||error);c.append(h,p);el.append(c);document.body.append(el);};
+const status=(text,f)=>{$('load-text').textContent=text;$('load-bar').style.width=Math.round(f*100)+'%';};
+const nextFrame=()=>new Promise(r=>requestAnimationFrame(()=>r()));
+// Run a KE.jobs promise to completion while keeping the page responsive.
+const drain=async promise=>{let done=false;promise.then(()=>{done=true;},()=>{done=true;});while(!done){KE.jobs.run(14);await nextFrame();}return promise;};
 try{
+for(const m of ['pipeline','sky','shadows','world','water','foliage','characters'])if(!has(m))throw new Error('This page needs the '+m+' module in kitsune-engine.js');
 await KE.loadVisualAssets();
-const N=97,rng=KE.random(2026),S=KE.settings,has=name=>!!KE.modules[name];
-function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
 
-/* ---------- renderer, scene, camera, sun ---------- */
-let renderer;try{renderer=new T.WebGLRenderer({antialias:S.aa&&!S.pipeline,powerPreference:'high-performance'});}catch(e){fail(e);return;}
-renderer.setSize(innerWidth,innerHeight);renderer.toneMapping=T.ACESFilmicToneMapping;renderer.toneMappingExposure=1;renderer.outputEncoding=T.sRGBEncoding;renderer.shadowMap.type=T.PCFSoftShadowMap;document.body.prepend(renderer.domElement);
-const scene=new T.Scene(),fog=new T.Color(0xbad7db);scene.fog=new T.Fog(fog,S.view*.4,S.view);
-const camera=new T.PerspectiveCamera(55,innerWidth/innerHeight,.15,1400);KE.prepareCamera(camera);
-const sun=new T.DirectionalLight(0xfff0c9,3),hemi=new T.HemisphereLight(0xd5edff,0x42563c,.12);scene.add(sun,sun.target,hemi);
-sun.shadow.bias=-.0005;sun.shadow.normalBias=.04;
+/* ---------- renderer, scene, camera ---------- */
+const renderer=new T.WebGLRenderer({antialias:false,powerPreference:'high-performance'});renderer.setSize(innerWidth,innerHeight);renderer.outputEncoding=T.sRGBEncoding;renderer.toneMapping=T.ACESFilmicToneMapping;renderer.shadowMap.type=T.PCFSoftShadowMap;document.body.prepend(renderer.domElement);
+const scene=new T.Scene();scene.fog=new T.FogExp2(0xa9c4cf,.0011);
+const camera=new T.PerspectiveCamera(55,innerWidth/innerHeight,.2,5000);KE.prepareCamera(camera);
+const sun=new T.DirectionalLight(0xfff0c9,3),hemi=new T.HemisphereLight(0xd5edff,0x3e4c38,.1);scene.add(sun,sun.target,hemi);
 KE.applyRendererSettings(T,renderer,camera,sun,scene);
 
-/* ---------- terrain ---------- */
-const height=(x,z)=>{const d=Math.hypot((x-48)/1.05,(z-49)/.94);const hill=4*Math.exp(-((x-44)**2+(z-40)**2)/210),ridge=5*Math.exp(-((x-62)**2+(z-29)**2)/130);return 1.4+(32-d)*.075+hill+ridge+Math.sin(x*.18)*Math.cos(z*.16)*.36-Math.max(0,d-30)*.5;};
-const weights=(x,z)=>{const y=height(x,z),sand=clamp((1.25-y)*1.6,0,1),path=Math.exp(-((x-48-Math.sin(z*.13)*2)**2)/3.5)*.8;const slope=Math.hypot(height(x+1,z)-height(x-1,z),height(x,z+1)-height(x,z-1))*.5,rock=clamp((slope-.75)*1.1,0,.85);return[(1-sand)*(1-path)*(1-rock),sand*(1-rock),(1-sand)*path*(1-rock),0,rock,0,0,0];};
-const groundTextures=KE.materials(T,Math.max(S.preset==='low'?128:512,S.tex)),groundMat=KE.splatMaterial(T,groundTextures,{scale:.36});
-const terrain=KE.terrain(T,{w:N,h:N,height,weights,material:groundMat,chunk:32});terrain.forEach(m=>{m.castShadow=true;scene.add(m);});const ground=terrain.heightAt;
+/* ---------- the land: generated, eroded, drawn as one CDLOD terrain ---------- */
+status('Shaping the island',.04);await nextFrame();
+const SEED=7,WORLD=2048;
+const hf=await drain(KE.Heightfield.generate({size:1025,worldSize:WORLD,seed:SEED,islands:true,falloff:.4,amplitude:175,mountains:.55,ridged:.55,jobs:KE.jobs}));
+status('Running rain over it for a few thousand years',.3);await nextFrame();
+await drain(KE.Heightfield.erode(hf,{iterations:90000,seed:3,spawnAbove:0,jobs:KE.jobs}));
+KE.Heightfield.thermalErode(hf,{iterations:3,talus:1.1});
+status('Painting biomes',.55);await nextFrame();
+const terrain=new KE.GPUTerrain(T,{heightfield:hf,castShadow:true,waterLevel:0,textureSize:Math.min(512,S.tex||512)});scene.add(terrain.object);
+const ground=(x,z)=>terrain.heightAt(x,z);
 
-/* ---------- sky, water ---------- */
-let day=.13;
-const sky=new KE.SkyAtmosphere(T,renderer,scene,{sun,hemi,time:day,sunLightIntensity:4,moonLightIntensity:.35,lightDistance:140});
-const water=new KE.Water(T,scene,{level:.1,sky,heightAt:ground,bakedCenter:new T.Vector3(48,0,48),bakedSize:260,amplitude:.07,wavelength:4.5,choppiness:.7,wind:[1,.4],scatter:[.02,.15,.16],absorb:[.5,.11,.08]});
-const solids=[],staticScenery=new T.Group();scene.add(staticScenery);
-function material(color){return new T.MeshStandardMaterial({color:new T.Color(color).convertSRGBToLinear(),roughness:.84});}
-function mesh(geometry,mat,x,y,z,parent=staticScenery){const m=new T.Mesh(geometry,mat);m.position.set(x,y,z);m.castShadow=m.receiveShadow=true;parent.add(m);return m;}
-/* Detailed materials, branching canopies, cutout leaves, shrine architecture and ground cover. */
-const detailSize=Math.max(S.preset==='low'?128:512,S.tex),wood=KE.surface(T,'bark',{color:0x846044,scale:1.2,textureSize:detailSize,bump:.2}),red=KE.surface(T,'lacquer',{color:0xb95231,scale:1.4,textureSize:detailSize,roughness:.58,bump:.08}),black=KE.surface(T,'roof',{color:0x465957,scale:.85,textureSize:detailSize,bump:.23}),gold=new T.MeshStandardMaterial({color:0xc4a35e,roughness:.34,metalness:.65}),rockMat=KE.surface(T,'rock',{color:0xb6b8a7,scale:.58,textureSize:detailSize,bump:.3}),stoneMat=KE.surface(T,'stone',{color:0xc4c8b4,scale:.65,textureSize:detailSize,bump:.23});
-const dummy=new T.Object3D(),tempColor=new T.Color();
-function beam(a,b,r,mat,parent=staticScenery,r2=r){const start=new T.Vector3(...a),end=new T.Vector3(...b),direction=end.clone().sub(start);const m=new T.Mesh(new T.CylinderGeometry(r2,r,direction.length(),10),mat);m.position.copy(start).add(end).multiplyScalar(.5);m.quaternion.setFromUnitVectors(new T.Vector3(0,1,0),direction.normalize());m.castShadow=m.receiveShadow=true;parent.add(m);return m;}
-for(const z of [49,37]){const y=ground(48,z),g=new T.Group();g.position.set(48,y,z);staticScenery.add(g);
- for(const x of [-2.15,2.15]){mesh(new T.CylinderGeometry(.21,.29,4.5,16),red,x,2.25,0,g);mesh(new T.CylinderGeometry(.34,.43,.48,8),stoneMat,x,.23,0,g);mesh(new T.BoxGeometry(.56,.12,.55),gold,x,.56,0,g);solids.push({x:48+x,z,r:.38});for(const yy of [3.72,4.32]){mesh(new T.BoxGeometry(.7,.18,.74),red,x,yy,0,g);mesh(new T.SphereGeometry(.07,8,6),gold,x,yy,.4,g);}}
- mesh(new T.BoxGeometry(5.55,.25,.5),red,0,3.65,0,g);mesh(new T.BoxGeometry(5.8,.2,.5),red,0,4.44,0,g);mesh(new T.BoxGeometry(.3,1,.28),gold,0,4.02,.35,g);
- const curve=new T.CatmullRomCurve3([new T.Vector3(-3.3,4.95,0),new T.Vector3(-2.5,4.68,0),new T.Vector3(0,4.54,0),new T.Vector3(2.5,4.68,0),new T.Vector3(3.3,4.95,0)]);const cap=new T.Mesh(new T.TubeGeometry(curve,36,.2,10,false),black);cap.castShadow=true;g.add(cap);
- const ropeCurve=new T.CatmullRomCurve3([new T.Vector3(-2.1,3.85,.36),new T.Vector3(0,3.5,.36),new T.Vector3(2.1,3.85,.36)]);g.add(new T.Mesh(new T.TubeGeometry(ropeCurve,30,.052,7,false),KE.surface(T,'wood',{color:0xedcda2,scale:3,bump:.1,textureSize:detailSize})));
- for(const x of [-1.2,-.5,.5,1.2]){const paper=mesh(new T.PlaneGeometry(.12,.55),new T.MeshStandardMaterial({color:0xf5eccf,side:T.DoubleSide,roughness:1}),x,3.36,.38,g);paper.rotation.z=x*.15;}
-}
-for(let z=30;z<70;z+=1.1){const x=48+Math.sin(z*.13)*2,y=ground(x,z),m=mesh(new T.CylinderGeometry(.62,.69,.14,8),stoneMat,x,y+.05,z);m.rotation.y=rng()*6.28;}
-/* Roof surface is genuinely curved geometry, with separate ridge, rafters and tile caps. */
-const shrine=new T.Group();shrine.position.set(48,ground(48,28),28);staticScenery.add(shrine);
-mesh(new T.BoxGeometry(5.6,.48,4.5),stoneMat,0,.24,0,shrine);mesh(new T.BoxGeometry(4.6,.22,3.7),wood,0,.58,0,shrine);
-for(const x of [-2,2])for(const z of [-1.5,1.5]){mesh(new T.BoxGeometry(.23,3.1,.23),red,x,2.12,z,shrine);mesh(new T.BoxGeometry(.52,.17,.56),gold,x,3.59,z,shrine);}
-mesh(new T.BoxGeometry(4.2,2.6,.18),wood,0,2,-1.55,shrine);
-for(const x of [-2.05,2.05]){mesh(new T.BoxGeometry(.15,2.6,3.1),wood,x,2,0,shrine);for(let k=0;k<9;k++)mesh(new T.BoxGeometry(.18,1.2,.035),red,x,2.25,-1.35+k*.33,shrine);}
-for(let i=0;i<13;i++)mesh(new T.BoxGeometry(.045,2.4,.12),gold,-1.85+i*.31,2.05,1.49,shrine);
-mesh(new T.BoxGeometry(4.55,.26,.48),red,0,3.65,1.52,shrine);mesh(new T.BoxGeometry(4.55,.26,.48),red,0,3.65,-1.52,shrine);
-function curvedRoof(){const p=[],uv=[],idx=[],nx=28,nz=22;for(let j=0;j<=nz;j++)for(let i=0;i<=nx;i++){const x=(i/nx-.5)*6.5,z=(j/nz-.5)*5.25,edge=Math.abs(z)/2.625,y=5.3-edge*1.65+Math.pow(edge,4)*.55+Math.pow(Math.abs(x)/3.25,5)*.26;p.push(x,y,z);uv.push(i/nx*3,j/nz*2);}for(let j=0;j<nz;j++)for(let i=0;i<nx;i++){const a=j*(nx+1)+i;idx.push(a,a+nx+1,a+1,a+1,a+nx+1,a+nx+2);}const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(p,3));g.setAttribute('uv',new T.Float32BufferAttribute(uv,2));g.setIndex(idx);g.computeVertexNormals();return g;}
-mesh(curvedRoof(),black,0,0,0,shrine);beam([-3.35,5.3,0],[3.35,5.3,0],.14,gold,shrine);
-for(let i=0;i<17;i++){const x=-3.15+i*.39375;for(const sign of [-1,1]){const pts=[];for(let k=0;k<=12;k++){const e=k/12,z=sign*e*2.625,y=5.3-e*1.65+e**4*.55+(Math.abs(x)/3.25)**5*.26+.035;pts.push(new T.Vector3(x,y,z));}const rib=new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(pts),16,.036,5,false),black);shrine.add(rib);}}
-for(let i=0;i<4;i++)mesh(new T.BoxGeometry(2.6,.18,1.1),stoneMat,0,.08+i*.16,2.75-i*.4,shrine);
-/* Procedural forest (foliage module): broadleaf and sakura inland, conifers on the high ground, bushes as understory,
-   Poisson-disc placed, wind-animated, instanced per cell with a lower-detail far level. */
-let forest=null;const forestKit=[];
-if(has('foliage')){const lod=clamp(S.lod||1,.5,1.25),texSize=S.preset==='low'?256:512;
- const clearing=(x,z)=>ground(x,z)>1.9&&Math.abs(x-48-Math.sin(z*.13)*2)>5.4&&Math.hypot(x-48,z-62)>4.5&&Math.hypot(x-48,z-28)>7&&Math.hypot(x-48,z-49)>4&&Math.hypot(x-48,z-37)>4;
- const kind=(species,seed,height,leafOpts={})=>{const tex=KE.leafTexture(T,{species,size:texSize,seed}),near=KE.treeGeometry(T,{species,seed,height,detail:lod,leafCards:{texture:tex}}),far=KE.treeGeometry(T,{species,seed:seed+7,height,detail:.5,leafCards:{texture:tex}});
-  const leaves=KE.foliageMaterial(T,{map:tex,vertexColors:true,...leafOpts}),bark=KE.barkMaterial(T,{species,vertexColors:true});forestKit.push(tex,near.trunk,near.leaves,far.trunk,far.leaves,leaves,bark);
-  return {geometry:near,material:{trunk:bark,leaves},lods:[{geometry:far,material:{trunk:bark,leaves}}],lodDistances:[26,Math.max(60,S.view*.9)]};};
- forest=new KE.FoliageSpawner(T,scene,{bounds:{minX:16,minZ:16,maxX:82,maxZ:80},heightAt:ground,seed:2026,cellSize:12,types:[
-  {name:'sakura',...kind('sakura',3,4.6),spacing:7.5,scale:[.85,1.15],density:(x,z)=>clearing(x,z)&&Math.hypot(x-48,z-40)<17?.9:0},
-  {name:'broadleaf',...kind('broadleaf',4,5.6),spacing:5.2,scale:[.8,1.2],density:(x,z)=>clearing(x,z)?.8:0},
-  {name:'conifer',...kind('conifer',5,7.2),spacing:5,scale:[.8,1.25],density:(x,z)=>clearing(x,z)&&ground(x,z)>4.2?.9:0},
-  {name:'bush',...kind('bush',6,1.3),spacing:3.2,scale:[.8,1.3],castShadow:true,density:(x,z)=>clearing(x,z)?.45:0}]});
- forest.groups.forEach(g=>{if(g.name==='bush')return;for(let i=0;i<g.count;i++){const m=g.matrices,k=i*16;solids.push({x:m[k+12],z:m[k+14],r:.3*Math.hypot(m[k],m[k+1],m[k+2])});}});
-}else{
-/* Branch silhouettes plus layered canopy clusters and individually shaped cutout leaves. */
-const treePoints=[];for(let i=0;i<185;i++){const x=20+rng()*58,z=20+rng()*56;if(ground(x,z)>1.9&&Math.abs(x-48-Math.sin(z*.13)*2)>5.4&&Math.hypot(x-48,z-62)>4&&Math.hypot(x-48,z-28)>6)treePoints.push([x,z,.75+rng()*.8]);}
-const trunks=new T.InstancedMesh(new T.CylinderGeometry(.12,.27,3.6,10),wood,treePoints.length),branches=new T.InstancedMesh(new T.CylinderGeometry(.045,.12,1.8,7),wood,treePoints.length*4),canopyMat=KE.surface(T,'leaf',{color:0x92a76b,scale:1.25,bump:.055,textureSize:detailSize}),canopies=new T.InstancedMesh(new T.SphereGeometry(1,12,8),canopyMat,treePoints.length*5);
-const sprayTex=KE.leafSprayTexture(T);sprayTex.encoding=T.sRGBEncoding;const sprayMat=new T.MeshStandardMaterial({map:sprayTex,color:0xa3b874,alphaTest:.38,side:T.DoubleSide,roughness:1}),sprays=new T.InstancedMesh(new T.PlaneGeometry(1.3,1.3),sprayMat,treePoints.length*22);
-KE.wind(T,canopyMat,{amp:.025});KE.wind(T,sprayMat,{amp:.12});
-treePoints.forEach(([x,z,s],i)=>{const y=ground(x,z);dummy.rotation.set(0,rng()*6.28,.06*(rng()-.5));dummy.position.set(x,y+1.8*s,z);dummy.scale.setScalar(s);dummy.updateMatrix();trunks.setMatrixAt(i,dummy.matrix);solids.push({x,z,r:.24*s});
- for(let k=0;k<4;k++){const a=k*Math.PI/2+i,dx=Math.cos(a),dz=Math.sin(a);dummy.position.set(x+dx*.65*s,y+(2.3+k*.28)*s,z+dz*.65*s);dummy.quaternion.setFromUnitVectors(new T.Vector3(0,1,0),new T.Vector3(dx,.8,dz).normalize());dummy.scale.setScalar(s);dummy.updateMatrix();branches.setMatrixAt(i*4+k,dummy.matrix);}
- for(let k=0;k<5;k++){const a=k*2.399+i,rad=k===4?.2:1.12;dummy.position.set(x+Math.cos(a)*rad*s,y+(3.3+(k%3)*.43)*s,z+Math.sin(a)*rad*s);dummy.rotation.set(.2*rng(),a,.1);dummy.scale.set(1.25*s,(.72+rng()*.5)*s,1.05*s);dummy.updateMatrix();canopies.setMatrixAt(i*5+k,dummy.matrix);tempColor.setHSL(.22+rng()*.05,.24+rng()*.18,.56+rng()*.15);canopies.setColorAt(i*5+k,tempColor);}
- for(let k=0;k<22;k++){const a=rng()*6.283,el=(rng()-.5)*1.5,rad=(1.5+rng()*.6)*s;dummy.position.set(x+Math.cos(a)*rad,y+3.65*s+Math.sin(el)*rad*.7,z+Math.sin(a)*rad);dummy.rotation.set(rng()*Math.PI,a,rng()*2);dummy.scale.setScalar((.55+rng()*.6)*s);dummy.updateMatrix();sprays.setMatrixAt(i*22+k,dummy.matrix);tempColor.setHSL(.2+rng()*.08,.28,.62+rng()*.2);sprays.setColorAt(i*22+k,tempColor);}
-});
-for(const m of [trunks,branches,canopies,sprays]){m.castShadow=m.receiveShadow=true;scene.add(m);}
-}
-const rocks=new T.InstancedMesh(new T.IcosahedronGeometry(1,2),rockMat,90);for(let i=0;i<90;i++){const a=rng()*6.283,r=25+rng()*9,x=48+Math.sin(a)*r,z=49+Math.cos(a)*r,s=.25+rng()*1.4;dummy.position.set(x,ground(x,z)+s*.25,z);dummy.scale.set(s*1.6,s*.8,s);dummy.rotation.set(rng(),rng()*3,rng()*.5);dummy.updateMatrix();rocks.setMatrixAt(i,dummy.matrix);}rocks.castShadow=rocks.receiveShadow=true;scene.add(rocks);
-/* Fern fronds and small flower heads add readable close-range detail. */
-const fernMat=new T.MeshStandardMaterial({vertexColors:true,side:T.DoubleSide,roughness:1});KE.wind(T,fernMat,{amp:.09});const fernPoints=[];for(let i=0;i<650;i++){const x=24+rng()*50,z=24+rng()*49;if(ground(x,z)>1.5&&Math.abs(x-48-Math.sin(z*.13)*2)>2.1)fernPoints.push([x,z]);}const ferns=new T.InstancedMesh(KE.fernGeometry(T),fernMat,fernPoints.length);fernPoints.forEach(([x,z],i)=>{dummy.position.set(x,ground(x,z),z);dummy.rotation.set(0,rng()*6.28,0);dummy.scale.setScalar(.6+rng()*.65);dummy.updateMatrix();ferns.setMatrixAt(i,dummy.matrix);});ferns.receiveShadow=true;scene.add(ferns);
-const flowerGeo=new T.SphereGeometry(.055,5,4),flowers=new T.InstancedMesh(flowerGeo,new T.MeshStandardMaterial({color:0xffffff,roughness:.9}),360);for(let i=0;i<360;i++){const z=33+rng()*34,x=48+Math.sin(z*.13)*2+(rng()<.5?-1:1)*(2+rng()*2.1);dummy.position.set(x,ground(x,z)+.15+rng()*.1,z);dummy.rotation.set(0,0,0);dummy.scale.set(1.5,.6,1.5);dummy.updateMatrix();flowers.setMatrixAt(i,dummy.matrix);tempColor.setHex([0xf3d99b,0xeee6cc,0xc8b7d9][i%3]);flowers.setColorAt(i,tempColor);}scene.add(flowers);
-const lanternCenters=[];for(const z of [59,49,39,31])for(const x of [44.5,51.5]){const y=ground(x,z);mesh(new T.CylinderGeometry(.28,.37,.22,8),stoneMat,x,y+.1,z);mesh(new T.CylinderGeometry(.13,.2,.85,8),stoneMat,x,y+.62,z);mesh(new T.BoxGeometry(.64,.1,.64),stoneMat,x,y+1.08,z);const lit=mesh(new T.BoxGeometry(.38,.46,.38),new T.MeshStandardMaterial({color:0xfbd599,emissive:0xffa94b,emissiveIntensity:.45,roughness:.8}),x,y+1.36,z);for(const dx of [-.25,.25])for(const dz of [-.25,.25])mesh(new T.BoxGeometry(.06,.58,.06),stoneMat,x+dx,y+1.36,z+dz);mesh(new T.ConeGeometry(.55,.35,4),black,x,y+1.77,z).rotation.y=Math.PI/4;lanternCenters.push([x,y+1.35,z]);solids.push({x,z,r:.38});}
-const sceneryBatch=KE.batchStatic(T,staticScenery,{cellSize:16,disposeSource:true});
-const lanternGlow=KE.glow(T,scene,lanternCenters,{size:1.7});lanternGlow.material.opacity=.22;
-/* Soft contact decal under the hero anchors its silhouette. */
-const contactTex=KE.glowTexture(T,'rgba(0,0,0,.5)','rgba(0,0,0,.13)'),contact=new T.Mesh(new T.PlaneGeometry(1.4,1.15),new T.MeshBasicMaterial({map:contactTex,transparent:true,depthWrite:false,opacity:.8,polygonOffset:true,polygonOffsetFactor:-1}));contact.rotation.x=-Math.PI/2;scene.add(contact);
+// Spawn on gentle ground a little inland, searching a spiral from the coast; the forest keeps a clearing there.
+let spawn={x:0,z:0};for(let r=520;r>40;r-=24){let found=false;for(let a=0;a<6.283;a+=.2){const x=Math.cos(a)*r,z=Math.sin(a)*r,h=ground(x,z);if(h>4&&h<22&&terrain.slopeAt(x,z)<.25){spawn={x,z};found=true;break;}}if(found)break;}
+/* ---------- sky, ocean, shadows, post ---------- */
+status('Lighting the sky',.66);await nextFrame();
+let day=.3;
+const sky=new KE.SkyAtmosphere(T,renderer,scene,{sun,hemi,time:day,sunLightIntensity:4,moonLightIntensity:.35,lightDistance:400});
+const water=new KE.Water(T,scene,{level:0,sky,heightAt:ground,bakedCenter:new T.Vector3(0,0,0),bakedSize:WORLD,radius:3200,amplitude:.3,wavelength:11,choppiness:.75,wind:[1,.35],fadeStart:300,fadeEnd:1400});
+const pipeline=new KE.Pipeline(T,renderer,{sun,exposureKey:.2,minExposure:.3,maxExposure:4,bloomStrength:.04,fog:{density:.0011,falloff:.008,height:0,start:40,maxOpacity:.92,inscatter:1.1,inscatterExponent:9,sky:.35},volumetricFog:{maxDistance:120,density:.004,falloff:.03},grading:{saturation:1.06,contrast:1.05,vignette:.18,grain:.008,chromaticAberration:.08}});
 
-/* ---------- lantern and spirit lights (pooled real lights) ---------- */
-const lights=new KE.LightPool(T,scene,{fade:5});
-const lanternLights=lanternCenters.map(([x,y,z])=>lights.add({position:[x,y,z],color:0xffb46a,intensity:2.4,distance:7.5,flicker:.12}));
+/* ---------- forests streamed in cells, impostors beyond ---------- */
+status('Growing forests',.74);await nextFrame();
+const merge=g=>{const m=T.BufferGeometryUtils.mergeBufferGeometries([g.trunk,g.leaves],true);g.trunk.dispose();g.leaves.dispose();return m;};
+const lod=Math.min(1,Math.max(.5,(S.lod||1)*.7)),texSize=S.preset==='low'?256:512,kit=[];
+// A point picks a species first and is dropped outside that species' band, so bands overlap widely: oaks and bushes low, birch mid, pines high.
+const species=[{name:'pine',kind:'conifer',height:12,seed:5,h:[22,160],slope:[0,.9],weight:1.1},{name:'oak',kind:'broadleaf',height:9,seed:4,h:[1.5,95],slope:[0,.7],weight:1.2},{name:'birch',kind:'birch',height:10,seed:8,h:[6,120],slope:[0,.75],weight:.7},{name:'bush',kind:'bush',height:1.6,seed:6,h:[1.2,130],slope:[0,.95],weight:1}];
+const types=[],proxyTypes=[];
+for(const sp of species){const tex=KE.leafTexture(T,{species:sp.kind,size:texSize,seed:sp.seed});const leaves=KE.foliageMaterial(T,{map:tex,vertexColors:true}),bark=KE.barkMaterial(T,{species:sp.kind,vertexColors:true});
+  const geo=merge(KE.treeGeometry(T,{species:sp.kind,seed:sp.seed,height:sp.height,detail:lod,leafCards:{texture:tex}}));kit.push(tex,leaves,bark,geo);
+  const t={name:sp.name,geometry:geo,material:[bark,leaves],weight:sp.weight,scale:[.75,1.3],height:sp.h,slope:sp.slope,sink:.05,castShadow:sp.kind!=='bush'};types.push(t);
+  // Octahedral impostor of the same tree for far cells (HLOD).
+  let imp=null;if(has('geometry')&&KE.Impostor){const probe=new T.Mesh(geo,[bark,leaves]);try{imp=KE.Impostor.bake(T,renderer,probe,{size:512,frames:8,mode:'octahedral',lit:true});kit.push(imp);}catch(e){console.warn('impostor bake failed',e);}}
+  proxyTypes.push(imp?{...t,geometry:imp.geometry,material:imp.material,castShadow:false}:null);}
+const rockMat=new T.MeshStandardMaterial({color:new T.Color(0x8d8a82).convertSRGBToLinear(),roughness:.92,vertexColors:true});kit.push(rockMat);
+if(has('geometry')&&KE.proceduralRock){const rock=KE.proceduralRock(T,{detail:3,seed:4,radius:1.4,roughness:.5});kit.push(rock);types.push({name:'rock',geometry:rock,material:rockMat,weight:.35,scale:[.6,2.4],scaleY:[.5,.9],height:[1,160],slope:[.35,4],sink:.3,align:.6,castShadow:true});proxyTypes.push(null);}
+const forestNoise=KE.noise2D(SEED+11);
+const density=(x,z)=>{const n=forestNoise(x*.0035,z*.0035)*.6+forestNoise(x*.011,z*.011)*.4;return n>-.2?.95:n>-.32?.5:.15;};
+const scatterOpts={cellSize:128,terrain,spacing:7,density,seed:SEED,waterLevel:.6,castShadow:true,receiveShadow:true,filter:(x,y,z)=>(x-spawn.x)**2+(z-spawn.z)**2>196};
+const wp=new KE.WorldPartition({cellSize:128,loadRadius:({low:110,medium:150,high:200,ultra:240,cinematic:280})[S.preset]||200,budgetMs:3,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
+  load:cell=>{const g=KE.scatterCell(T,{...scatterOpts,cell,types});scene.add(g);return g;},
+  unload:(cell,g)=>{if(g)g.userData.dispose();},
+  hlod:proxyTypes.some(Boolean)?cell=>{const list=proxyTypes.map((p,i)=>p||{...types[i],weight:types[i].weight,geometry:types[i].geometry,material:types[i].material,density:0});const g=KE.scatterCell(T,{...scatterOpts,cell,types:list,castShadow:false});scene.add(g);return {dispose(){g.userData.dispose();}};}:null,
+  hlodRadius:1100});
+const csm=new KE.CascadedShadows(T,scene,{sun,maxFar:360,margin:120});csm.setupScene();
+for(const t of types)for(const m of [t.material].flat())csm.setupMaterial(m);
+pipeline.setShadowSource(csm);if(KE.foliage)KE.foliage.setShadowSource(csm);
 
-/* ---------- rendering quality ---------- */
-let grass=null,pipeline=null,csm=null;
-const grassOptions=()=>({count:S.grass,radius:19,heightAt:ground,density:(x,z)=>ground(x,z)>1.5&&Math.abs(x-48-Math.sin(z*.13)*2)>2?.8:0,color:()=>[.5,.7,.31]});
-const pipelineOptions={sun,exposureKey:.2,minExposure:.35,maxExposure:4.5,bloomStrength:.05,aoRadius:1,fog:{density:.0065,falloff:.09,height:0,start:8,maxOpacity:.85,inscatter:1,inscatterExponent:10,sky:.2},grading:{saturation:1.08,contrast:1.05,vignette:.2,grain:.01,chromaticAberration:.12}};
-function applyQuality(){KE.applyRendererSettings(T,renderer,camera,sun,scene);renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=S.shadows;
- if(grass)grass.dispose();grass=has('foliage')?(S.grass>0?KE.grassField(T,scene,{count:S.grass,radius:22,heightAt:ground,density:(x,z)=>ground(x,z)>1.5&&Math.abs(x-48-Math.sin(z*.13)*2)>2?.85:0}):null):KE.grass(T,scene,grassOptions());if(grass&&csm)(grass.setShadowSource?grass.setShadowSource(csm):csm.setupMaterial(grass.mesh.material));
- if(!pipeline)pipeline=new KE.Pipeline(T,renderer,pipelineOptions);else pipeline.applySettings(S);pipeline.resetHistory();
- if(csm){csm.enabled=S.shadows;}
- scene.traverse(o=>{for(const m of [o.material].flat())if(m)m.needsUpdate=true;});}
-applyQuality();
+/* ---------- the fox ---------- */
+status('Waking the fox',.86);await nextFrame();
+const fox=KE.foxModel(T,{textureSize:texSize}),hero=fox.group;scene.add(hero);
+const player=KE.Physics.body({x:spawn.x,z:spawn.z,y:ground(spawn.x,spawn.z)+.4,r:.35,height:1.5,friction:.8});
+const fur=KE.fur?KE.fur(T,hero,{renderer,shells:16,length:.075,lod:{maxDistance:30},include:m=>m.material===fox.materials.orange?1:m.material===fox.materials.cream?.7:false}):null;
+let gait=null,tail=null,wasAir=false;
+if(has('animation')){const body=new T.Group();while(hero.children.length)body.add(hero.children[0]);hero.add(body);
+  gait=new KE.ProceduralGait(T,{body,heightAt:ground,legs:fox.legs.map((leg,i)=>({hip:leg,foot:leg.children[2],group:i===0||i===3?0:1})),stepLength:.42,stepHeight:.1,stepDuration:.17});
+  tail=new KE.SpringChain(T,[fox.tail],{tip:fox.tailTip,stiffness:70,damping:9,gravity:[0,-.6,0],maxAngle:.7});}
+csm.setupScene(hero);
+let grass=null;const makeGrass=()=>{if(grass)grass.dispose();grass=S.grass>0?KE.grassField(T,scene,{count:Math.min(S.grass,14000),radius:34,heightAt:ground,density:(x,z)=>{const h=ground(x,z);return h>1.4&&h<70&&terrain.slopeAt(x,z)<.55?.85:0;}}):null;if(grass)grass.setShadowSource(csm);};makeGrass();
 
-/* The fox (characters module): rounded anatomy, fibre-textured fur, layered ears, knee-less legs and a brush tail on a pivot. */
-if(!has('characters'))throw new Error('Spirit Isle needs the characters module (src/modules/62-characters.js) in kitsune-engine.js');
-const fox=KE.foxModel(T,{textureSize:detailSize}),hero=fox.group;scene.add(hero);const {orange,cream}=fox.materials,foxLegs=fox.legs,foxTail=fox.tail;
-/* Shell fur on the orange and cream coat; a procedural gait plants the paws on the terrain and a spring swings the tail. */
-const fur=has('foliage')?KE.fur(T,hero,{renderer,shells:S.preset==='ultra'||S.preset==='cinematic'?24:16,length:.075,lod:{maxDistance:30},include:m=>m.material===orange?1:m.material===cream?.7:false}):null;
-let foxGait=null,tailSpring=null,wasAirborne=false;
-if(has('animation')){const foxBody=new T.Group();while(hero.children.length)foxBody.add(hero.children[0]);hero.add(foxBody);
- foxGait=new KE.ProceduralGait(T,{body:foxBody,heightAt:ground,legs:foxLegs.map((leg,i)=>({hip:leg,foot:leg.children[2],group:i===0||i===3?0:1})),stepLength:.42,stepHeight:.1,stepDuration:.17});
- tailSpring=new KE.SpringChain(T,[foxTail],{tip:[.21,.43,.9],stiffness:70,damping:9,gravity:[0,-.6,0],maxAngle:.7});}
-/* ---------- cascaded shadows for everything lit ---------- */
-csm=new KE.CascadedShadows(T,scene,{sun,maxFar:110,margin:40});csm.setupScene();csm.enabled=S.shadows;pipeline.setShadowSource(csm);if(KE.foliage)KE.foliage.setShadowSource(csm);if(grass&&grass.setShadowSource)grass.setShadowSource(csm);
-/* Probe-volume diffuse GI over the island: refreshed a probe per frame, nearest first. */
-const gi=new KE.ProbeVolume(T,renderer,scene,{bounds:new T.Box3(new T.Vector3(10,0,10),new T.Vector3(86,12,86)),spacing:7,heightAt:ground,faceSize:16,probesPerFrame:1});gi.tag(scene);gi.setupScene();
-/* Surface weather: rain wets and darkens the ground, stones and wood, fills puddles on flat ground and ripples them.
-   The fox, foliage cards and glowing stones are left dry. */
-const surfaceWeather=new KE.SurfaceWeather(T,{puddleScale:.16,puddleCoverage:.55});hero.traverse(o=>o.userData.keNoWeather=true);
-scene.traverse(o=>{if(!o.material||o.userData.keNoWeather)return;for(const m of [o.material].flat())if(m&&m.side!==T.DoubleSide&&!(m.alphaTest>0)&&!(m.emissiveIntensity>1))surfaceWeather.setupMaterial(m);});
+/* ---------- weather, particles, sound ---------- */
+const weather=has('weather')?new KE.SurfaceWeather(T,{puddleScale:.05,puddleCoverage:.4}):null;
+if(weather){try{weather.setupMaterial(terrain.material);}catch(e){console.warn('weather on terrain disabled',e);}for(const t of types)for(const m of [t.material].flat())if(m.side!==T.DoubleSide&&!(m.alphaTest>0))weather.setupMaterial(m);}
+const vfx=has('vfx')?new KE.VFX(T,renderer,scene,{budget:S.vfx}):null;let rainFx=null;if(vfx){rainFx=vfx.emitter(vfx.presets.rain({attachTo:camera,attachRotation:false,ground}));rainFx.stop({clear:true});}
+const sound=has('audio')&&KE.AudioEngine?new KE.AudioEngine(T,{volume:.8}):null;let beds=null,stepSeed=0;
+const startSound=()=>{if(!sound||beds)return;sound.unlock().then(()=>{if(beds)return;sound.setReverb({preset:'forest',wet:.15});beds={wind:sound.ambience('wind',{intensity:.3}),day:sound.ambience('forest-day',{intensity:.5}),night:sound.ambience('night',{intensity:0}),rain:sound.ambience('rain',{intensity:0}),sea:sound.ambience('water',{intensity:0})};}).catch(()=>{});};
+if(gait&&sound)gait.onFootPlant=(leg,i,c)=>{if(!beds)return;const h=ground(c.x,c.z),surface=h<2?'sand':terrain.slopeAt(c.x,c.z)>.7?'stone':'grass';sound.play(KE.Synth.footstep({surface,intensity:.4,seed:(stepSeed++)%4}),{position:[c.x,c.y,c.z],volume:.3,bus:'sfx'});};
 
-/* ---------- player, input, gameplay ---------- */
-const player=KE.Physics.body({x:48,z:65,y:ground(48,65)+.35,r:.35,height:1.5,friction:.8});
-const input=new KE.Input(renderer.domElement),follow=new KE.FollowCamera(T,camera,{distance:7.8,pitch:.31,height:1.05});input.setEnabled(false);
-const collision=(x,z)=>x<2||z<2||x>94||z>94||ground(x,z)<.35||solids.some(o=>(o.x-x)**2+(o.z-z)**2<o.r**2);
-const particle=new KE.Particles(T,scene,{capacity:200,size:.15,color:0xffda96,gravity:-1}),audio=new KE.Audio(),store=new KE.SaveStore('kitsune-enginev3-spirit-isle',1);
-const spiritMat=new T.MeshStandardMaterial({color:0x8ce4d9,emissive:0x2fd9c8,emissiveIntensity:1.6,roughness:.2,metalness:.1});
-const stoneLocations=[[48,59],[46,49],[49,40],[42,32],[58,34]],stones=stoneLocations.map(([x,z],i)=>{const m=mesh(new T.OctahedronGeometry(.42,0),spiritMat,x,ground(x,z)+1,z,scene);const ring=mesh(new T.TorusGeometry(.65,.015,4,32),gold,x,ground(x,z)+.1,z,scene);ring.rotation.x=-Math.PI/2;
- const light=lights.add({position:[x,ground(x,z)+1.1,z],color:0x8fe8ff,intensity:.9,distance:3.5,priority:.8});return{m,ring,x,z,light,collected:false,id:i};});
-csm.setupMaterial(spiritMat);
-/* Rain is bounded around the player and only simulated when visible. */
-let raining=false,wet=0;const rainCount=500,rainPos=new Float32Array(rainCount*6),rainData=Array.from({length:rainCount},()=>({x:(rng()-.5)*26,z:(rng()-.5)*26,y:rng()*16,s:9+rng()*5})),rainGeometry=new T.BufferGeometry();rainGeometry.setAttribute('position',new T.BufferAttribute(rainPos,3).setUsage(T.DynamicDrawUsage));const rain=new T.LineSegments(rainGeometry,new T.LineBasicMaterial({color:0x9fb8c4,transparent:true,opacity:.35,depthWrite:false}));rain.frustumCulled=false;scene.add(rain);
-/* GPU particles: fireflies by the shrine and lanterns at night, rain that follows the camera, and spirit sparks when a stone is found. */
-let vfx=null,vfxRain=null,collectFx=null,firefliesOn=false;const fireflies=[];
-if(has('vfx')){vfx=new KE.VFX(T,renderer,scene,{budget:S.vfx});
- for(const [x,z] of [[44,53],[53,45],[41,36],[56,31],[45,24],[53,60],[38,46]])fireflies.push(vfx.create('fireflies',{position:[x,ground(x,z)+.5,z]}));fireflies.forEach(f=>f.stop({clear:true}));
- vfxRain=vfx.emitter(vfx.presets.rain({attachTo:camera,attachRotation:false,ground}));vfxRain.stop({clear:true});
- collectFx=vfx.emitter({capacity:256,spawn:{rate:0,shape:{type:'sphere',radius:.3}},init:{life:[.7,1.4],speed:[1.5,4.2],size:[.05,.12],color:[0xc9fff8,0x4fe3d2]},forces:{gravity:[0,-2.2,0],drag:.7},collision:{heightAt:ground,bounce:.35},render:{blending:'additive',texture:'glow',emissive:5}});}
-/* Rigid-body props (Rapier): offering crates and barrels by the shrine that the fox can shove, and paper lanterns bobbing off the south shore. */
-let physics=null,heroBody=null;const props=[];
-if(has('physics3d')&&KE.Physics3D.available){try{physics=await KE.Physics3D.create(T,{scene});physics.addTerrain(terrain);
-  const crateGeo=new T.BoxGeometry(.55,.55,.55),barrelGeo=new T.CylinderGeometry(.27,.27,.66,14);
-  for(const [x,z,k,h] of [[43.4,33.2,0,0],[43.4,33.2,0,1],[44.1,33.9,1,0],[52.8,33.5,0,0],[53.3,34.3,1,0],[52.3,57.2,0,0],[43.7,57.8,1,0],[44.3,57.1,0,0]]){
-   const m=new T.Mesh(k?barrelGeo:crateGeo,wood);m.position.set(x,ground(x,z)+.36+h*.56+(k?.06:0),z);m.rotation.y=rng()*6.28;m.castShadow=m.receiveShadow=true;scene.add(m);
-   props.push(k?physics.addCylinder(m,{density:.5,friction:.7}):physics.addBox(m,{density:.45,friction:.7}));}
-  heroBody=physics.addCapsule(null,{type:'kinematic',radius:.32,halfHeight:.35,position:[player.x,player.y+.3,player.z]});
-  const paper=new T.MeshStandardMaterial({color:0xfff1d6,emissive:0xffa24a,emissiveIntensity:1.2,roughness:.8});csm.setupMaterial(paper);
-  for(let i=0;i<7;i++){const a=-.55+i*.18,x=48+Math.sin(a)*36.5,z=49+Math.cos(a)*35;const m=new T.Mesh(new T.BoxGeometry(.42,.36,.42),paper);m.position.set(x,.5,z);m.castShadow=true;scene.add(m);
-   const b=physics.addBox(m,{density:.3,friction:.4});physics.addBuoyancy(b,{waterLevel:(x,z)=>water.heightAt(x,z),density:1,drag:1.2});props.push(b);}
- }catch(e){console.warn('Spirit Isle: rigid-body props disabled',e);physics=null;}}
-/* Spirit guide (AI module): a wisp walks a navmesh built from the terrain, trees, lanterns and shrine. Its behavior tree leads
-   the fox toward the nearest remaining stone, waits when the fox falls behind, comes back when it is far away, and circles
-   the fox once every stone is found. */
-let guide=null;
-if(has('ai')){try{
- const obstacles=solids.map(o=>({x:o.x,z:o.z,r:o.r})).concat(lanternCenters.map(([x,,z])=>({x,z,r:.45})),[{x:48,z:28,hx:2.9,hz:2.4,rotation:0}]);
- const nav=KE.NavMesh.build(T,{bounds:{minX:12,minZ:12,maxX:86,maxZ:86},heightAt:ground,cellSize:.6,maxSlope:38,stepHeight:.5,agentRadius:.3,waterLevel:.45,obstacles});
- const crowd=new KE.Crowd(nav,{maxAgents:2});
- const wispMat=new T.MeshStandardMaterial({color:0xe6fdff,emissive:0x8ff3ff,emissiveIntensity:5,roughness:.3});
- const wisp=new T.Mesh(new T.SphereGeometry(.2,20,14),wispMat);wisp.userData.keNoWeather=wisp.userData.keNoGI=true;scene.add(wisp);
- const start=nav.nearestPoint(new T.Vector3(49.6,0,62.5),new T.Vector3(),{radius:6})||new T.Vector3(48,ground(48,62),62);
- const agent=crowd.addAgent({position:start,radius:.3,maxSpeed:3.4,maxAccel:9});
- const light=lights.add({position:[start.x,start.y+1.2,start.z],color:0x9ff4ff,intensity:1.2,distance:4.5,priority:.95});
- const trail=vfx?vfx.create('trail',{attachTo:wisp,color:0x9ff4ff,scale:.5}):null;
- const bb=new KE.Blackboard(),{BT}=KE,goal=new T.Vector3(),lastGoal=new T.Vector3(1e9,0,0);let spin=0;
- const aim=(x,z)=>{goal.set(x,0,z);if(goal.distanceToSquared(lastGoal)>1.2){lastGoal.copy(goal);agent.setTarget(goal);}};
- const toFox=()=>Math.hypot(agent.position.x-player.x,agent.position.z-player.z);
- const tree=BT.tree(BT.selector([
-  BT.condition(()=>stones.every(s=>s.collected),BT.action((c,b,dt)=>{spin+=dt*1.4;aim(player.x+Math.cos(spin)*1.8,player.z+Math.sin(spin)*1.8);return 'running';}),{abort:'lower',name:'celebrate'}),
-  BT.condition(()=>toFox()>9,BT.action(()=>{aim(player.x,player.z);return toFox()<3?'success':'running';}),{abort:'lower',name:'return'}),
-  BT.action(()=>{let best=null,d=1e9;for(const s of stones)if(!s.collected){const dd=Math.hypot(s.x-player.x,s.z-player.z);if(dd<d){d=dd;best=s;}}if(!best)return 'failure';bb.set('stone',best.id);
-   if(toFox()>5.5){agent.stop();lastGoal.set(1e9,0,0);return 'running';}aim(best.x+.9,best.z+.9);return 'running';},{name:'lead'})]),{blackboard:bb});
- guide={nav,crowd,agent,wisp,tree,blackboard:bb,update(dt,t){tree.tick(dt,this);crowd.update(dt);const p=agent.position;wisp.position.set(p.x,p.y+1.15+Math.sin(t*2.3)*.14,p.z);lights.set(light,{position:wisp.position});},
-  reset(){agent.teleport(nav.nearestPoint(new T.Vector3(player.x+1.5,0,player.z-1.5),new T.Vector3(),{radius:6})||start);lastGoal.set(1e9,0,0);tree.reset();},
-  dispose(){if(trail)trail.dispose();lights.remove&&lights.remove(light);scene.remove(wisp);wisp.geometry.dispose();wispMat.dispose();crowd.dispose();nav.dispose();}};
-}catch(e){console.warn('Spirit Isle: spirit guide disabled',e);guide=null;}}
-/* Spatial audio (audio module): day birds, night crickets, rain and shore waves; generative music that follows the time of day;
-   synthesized footsteps from the gait's paw plants (stone on the path, grass elsewhere). Falls back to the core tone synth. */
-const sound=has('audio')&&KE.AudioEngine?new KE.AudioEngine(T,{volume:.8}):null;let beds=null,music=null,musicMood='calm',stepSeed=0;
-const onPath=(x,z)=>Math.abs(x-48-Math.sin(z*.13)*2)<1.15&&z>29&&z<70;
-function startSound(){if(!sound||beds)return;sound.unlock().then(()=>{if(beds)return;sound.setReverb({preset:'forest',wet:.18});
-  beds={day:sound.ambience('forest-day',{intensity:.6}),night:sound.ambience('night',{intensity:.05}),rain:sound.ambience('rain',{intensity:0}),shore:sound.ambience('water',{position:[48,0,82],intensity:.7}),wind:sound.ambience('wind',{intensity:.2})};
-  music=sound.music({mood:musicMood,intensity:.3});}).catch(()=>{});}
-if(sound&&foxGait)foxGait.onFootPlant=(leg,i,contact)=>{if(!beds||Math.hypot(player.vx,player.vz)<.4)return;const surface=onPath(contact.x,contact.z)?'stone':ground(contact.x,contact.z)<1.6?'sand':wet>.6?'water':'grass';
-  sound.play(KE.Synth.footstep({surface,intensity:.3+Math.min(.4,Math.hypot(player.vx,player.vz)*.07),seed:(stepSeed++)%4}),{position:contact,volume:.35,bus:'sfx'});};
-/* Level editor (F8) and developer console (backquote): the editor docks over the island with its own camera and loop;
-   actors you place are kept in a GameWorld that shares the scene, physics, audio and particles. */
-let world=null,editor=null;
-if(has('editor')&&KE.Editor&&KE.GameWorld){world=new KE.GameWorld(T,scene,{camera,renderer,physics,audio:sound||undefined,vfx:vfx||undefined,stepPhysics:true,updateVFX:false});
- editor=new KE.Editor(T,{renderer,scene,camera,world,levelName:'Spirit Isle',render:dt=>pipeline.render(scene,camera,dt),
-  onUpdate:dt=>{sky.update(dt,camera);csm.update(camera);gi.update(camera);lights.update(dt,camera);if(forest)forest.update(camera);if(vfx)vfx.update(dt,camera);if(sound)sound.update(dt,camera);},
-  onOpen:()=>{loop.pause(true);input.setEnabled(false);},onClose:()=>{loop.pause(false);input.setEnabled(started&&!paused);follow.initialized=false;}});}
-let started=false,paused=false,toastTimer=0,coyote=0,jumpBuffer=0,walkTime=0;
-const toast=message=>{const el=document.getElementById('toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),2800);};
-function progress(){const count=stones.filter(s=>s.collected).length;document.querySelectorAll('#track i').forEach((e,i)=>e.classList.toggle('on',i<count));document.getElementById('quest-title').textContent=count===5?'The island remembers you':`Spirit stones · ${count} / 5`;document.getElementById('quest-copy').textContent=count===5?'All five found. Keep exploring, or start a new run in Settings.':'Follow the golden trail through the island shrine.';}
-const getState=()=>({x:player.x,z:player.z,day,collected:stones.filter(s=>s.collected).map(s=>s.id)});
-const validSave=s=>s&&Number.isFinite(s.x)&&s.x>=2&&s.x<=94&&Number.isFinite(s.z)&&s.z>=2&&s.z<=94&&Number.isFinite(s.day)&&Array.isArray(s.collected)&&s.collected.every(n=>Number.isInteger(n)&&n>=0&&n<5);
-function restore(s){player.x=s.x;player.z=s.z;player.y=ground(s.x,s.z)+player.r;player.vx=player.vy=player.vz=0;day=((s.day%1)+1)%1;for(const stone of stones){stone.collected=s.collected.includes(stone.id);stone.m.visible=stone.ring.visible=!stone.collected;lights.set(stone.light,{enabled:!stone.collected});}follow.initialized=false;sky.setTime(day);sky.refresh();pipeline.resetHistory();if(guide)guide.reset();progress();}
-document.getElementById('save').onclick=()=>toast(store.save('main',getState()).ok?'Adventure saved on this device.':'This browser could not save. Keep this tab open.');
-document.getElementById('load').onclick=()=>{const result=store.load('main',{validate:validSave});if(result.ok&&result.found){restore(result.data);toast('Adventure restored.');}else toast(result.ok?'No saved adventure yet.':'The saved adventure could not be read.');};
-document.getElementById('reset').onclick=()=>{restore({x:48,z:65,day:.13,collected:[]});toast('A new adventure begins.');};
-const panel=document.getElementById('panel');function togglePanel(open){panel.hidden=!open;document.getElementById('gfx').setAttribute('aria-expanded',String(open));paused=open;input.setEnabled(started&&!open);if(open)document.getElementById('close-panel').focus();else document.getElementById('gfx').focus();}
-document.getElementById('gfx').onclick=()=>togglePanel(panel.hidden);document.getElementById('close-panel').onclick=()=>togglePanel(false);
-document.getElementById('settings').append(KE.settingsPanel());
-const offSettings=KE.events.on('settings',(s,key)=>{applyQuality();if(['tex','terrain','aa'].includes(key))toast('This option fully applies when you reopen the game.');});
-const setRain=v=>{raining=!!v;document.getElementById('weather').textContent=raining?'☂ Rain':'☀ Clear';sky.setWeather({coverage:raining?.82:.42,density:raining?1.4:1});};
-document.getElementById('weather').onclick=()=>setRain(!raining);
-document.getElementById('start').onclick=()=>{started=true;input.setEnabled(true);document.getElementById('welcome').hidden=true;audio.unlock();startSound();toast('Your adventure begins. Find the glowing stones.');};
+/* ---------- input, camera, modes ---------- */
+const input=new KE.Input(renderer.domElement),follow=new KE.FollowCamera(T,camera,{distance:7.5,pitch:.3,height:1.1});input.setEnabled(false);
+let started=false,flying=false,raining=false,wet=0,coyote=0;const fly={pos:new T.Vector3(),yaw:0,pitch:-.25,up:0};
+const setFly=v=>{flying=!!v;$('fly').setAttribute('aria-pressed',String(flying));$('fly-pad').style.display=flying&&matchMedia('(pointer:coarse)').matches?'flex':'none';if(flying){fly.pos.copy(camera.position);const d=new T.Vector3();camera.getWorldDirection(d);fly.yaw=Math.atan2(-d.x,-d.z);fly.pitch=Math.asin(Math.max(-1,Math.min(1,d.y)));}else follow.initialized=false;};
+const setRain=v=>{raining=!!v;$('rain').setAttribute('aria-pressed',String(raining));sky.setWeather({coverage:raining?.85:.4,density:raining?1.4:1});};
+const setDay=v=>{day=((v%1)+1)%1;sky.setTime(day);sky.refresh();};
+$('fly').onclick=()=>setFly(!flying);$('rain').onclick=()=>setRain(!raining);$('time').onclick=()=>setDay(day+1/12);
+for(const [id,dir] of [['fly-up',1],['fly-down',-1]]){const b=$(id);b.onpointerdown=()=>fly.up=dir;b.onpointerup=b.onpointerleave=()=>fly.up=0;}
+const q=$('quality');q.value=S.preset;q.onchange=()=>{KE.applyPreset(q.value);};
+const applyQuality=()=>{KE.applyRendererSettings(T,renderer,camera,sun,scene);renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=S.shadows;pipeline.applySettings(S);pipeline.resetHistory();csm.enabled=S.shadows;makeGrass();q.value=S.preset;};
+const offSettings=KE.events.on('settings',applyQuality);
+const keys=e=>{if(!started)return;if(e.code==='KeyF')setFly(!flying);if(e.code==='KeyT')setDay(day+1/12);if(e.code==='KeyR')setRain(!raining);};window.addEventListener('keydown',keys);
 const resize=()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();};window.addEventListener('resize',resize);
-const keys=e=>{if(e.code==='Escape'&&started)togglePanel(panel.hidden);if(e.code==='KeyT'&&started&&!paused){day=(day+1/12)%1;sky.setTime(day);sky.refresh();toast('The hour turns.');}};window.addEventListener('keydown',keys);
-renderer.domElement.addEventListener('webglcontextlost',e=>{e.preventDefault();loop.pause();toast('Graphics paused. Waiting for the browser to recover…');});renderer.domElement.addEventListener('webglcontextrestored',()=>{applyQuality();sky.refresh();loop.pause(false);toast('Graphics restored.');});
-const litMaterials=new Set();scene.traverse(o=>{for(const m of [o.material].flat())if(m&&m.isMeshStandardMaterial)litMaterials.add(m);});
+
+/* ---------- warm up: load the cells around the spawn, compile programs ---------- */
+status('Streaming the first cells',.93);await nextFrame();
+camera.position.set(spawn.x,ground(spawn.x,spawn.z)+4,spawn.z+8);camera.lookAt(spawn.x,ground(spawn.x,spawn.z),spawn.z);
+wp.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);terrain.update(camera,renderer);
+try{renderer.compile(scene,camera);}catch(e){}
+status('Ready',1);$('start').hidden=false;$('start').focus();
+$('start').onclick=()=>{started=true;input.setEnabled(true);$('overlay').hidden=true;startSound();};
 
 /* ---------- frame loop ---------- */
-let frame=0;const target=new T.Vector3();
-const loop=new KE.Loop({onError:fail,update(dt,t){
- if(!paused){day=(day+dt/480)%1;sky.setTime(day);if(started){const motion=input.movement(),move=follow.movement(motion.x,motion.z);player.vx=KE.damp(player.vx,move.x*5.5,12,dt);player.vz=KE.damp(player.vz,move.z*5.5,12,dt);coyote=player.grounded?.12:Math.max(0,coyote-dt);jumpBuffer=input.consume('Space')?.12:Math.max(0,jumpBuffer-dt);if(coyote&&jumpBuffer){player.vy=8.3;player.grounded=false;coyote=jumpBuffer=0;if(beds)sound.play('jump',{bus:'sfx',volume:.35,position:[player.x,player.y,player.z]});else audio.tone(300,.07);}KE.Physics.step([player],dt,collision,ground);if(Math.hypot(move.x,move.z)>.05){hero.rotation.y=Math.atan2(-move.x,-move.z);walkTime+=dt*11;}
- for(const stone of stones)if(!stone.collected&&Math.hypot(player.x-stone.x,player.z-stone.z)<1.15){stone.collected=true;stone.m.visible=stone.ring.visible=false;lights.set(stone.light,{enabled:false});particle.burst(stone.x,ground(stone.x,stone.z)+1,stone.z,30);if(collectFx)collectFx.burst(90,[stone.x,ground(stone.x,stone.z)+1,stone.z]);if(beds)sound.play(KE.Synth.chime({freq:580+stone.id*120,bell:.6}),{bus:'sfx',volume:.6,position:[stone.x,ground(stone.x,stone.z)+1,stone.z]});else audio.tone(580+stone.id*120,.22);progress();toast(stones.every(s=>s.collected)?'All five spirits found. The island is yours.':'A spirit stone found.');}
- }}particle.update(dt);for(const stone of stones){stone.m.rotation.y=t*.9;stone.m.position.y=ground(stone.x,stone.z)+1+Math.sin(t*2+stone.id)*.15;}
- },render(alpha,dt,t){
- hero.position.set(player.x,player.y-player.r,player.z);
- if(foxGait){const air=player.y-player.r-ground(player.x,player.z)>.12;if(air){foxLegs.forEach((leg,i)=>leg.rotation.x=KE.damp(leg.rotation.x,i<2?-.7:.6,14,dt));}else{if(wasAirborne)foxGait.reset();foxGait.update(dt,{x:player.vx,y:0,z:player.vz});}wasAirborne=air;tailSpring.update(dt);}
- else{hero.position.y+=Math.sin(walkTime)*.025;const gait=Math.min(1,Math.hypot(player.vx,player.vz)/4);foxLegs.forEach((leg,i)=>leg.rotation.x=Math.sin(walkTime+(i===0||i===3?0:Math.PI))*.55*gait);foxTail.rotation.y=Math.sin(t*1.8)*.1;}
- if(fur)fur.update(dt,{x:player.vx,y:player.vy,z:player.vz});if(guide&&!paused)guide.update(dt,t);
- if(!paused){const look=input.consumeLook();follow.rotate(look.x,look.y);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.zoom(look.zoom);}follow.update(player,dt,ground);
- wet=KE.damp(wet,raining?1:0,.6,dt);surfaceWeather.update(dt,{raining});
- sky.update(dt,camera);sun.intensity*=1-wet*.6;const night=sky.night;
- csm.update(camera);gi.update(camera);lights.intensity=Math.min(1,night*1.4+wet*.3);lights.update(dt,camera);
- fog.copy(sky.fogColor);scene.fog.color.copy(fog);const f=pipeline.options.fog;f.color.copy(sky.fogColor);f.density=.0065*(1+wet*2.2);
- water.rain=wet;water.update(dt,camera,{pipeline});
- litMaterials.forEach(m=>m.envMapIntensity=1+night*.6);if(KE.foliage){KE.foliage.update(dt,{wind:1+wet*1.2,windDir:[.8,.6],interactors:[hero.position]});}else{KE.windUniforms.uTime.value=t;KE.windUniforms.uWind.value=1+wet*1.2;}if(forest)forest.update(camera);lanternGlow.material.opacity=.12+night*.8;
- renderer.toneMappingExposure=pipeline.enabled?1:1+night*1.6;
- contact.position.set(player.x,ground(player.x,player.z)+.018,player.z);contact.material.opacity=clamp(1-(player.y-player.r-ground(player.x,player.z))*.25,0,.75);if(grass)grass.update(player.x,player.z);
- if(vfx){const ff=night>.35;if(ff!==firefliesOn){firefliesOn=ff;fireflies.forEach(f=>ff?f.play():f.stop());}const rv=raining&&S.fx;if(rv!==vfxRain.playing){rv?vfxRain.play():vfxRain.stop();}vfx.update(dt,camera);}
- if(beds){beds.day.intensity=(1-night)*.6*(1-wet*.6);beds.night.intensity=night*.75;beds.rain.intensity=wet*.85;beds.wind.intensity=.18+wet*.35;
-  const mood=stones.every(s=>s.collected)?'triumphant':night>.5?'night':'calm';if(mood!==musicMood){musicMood=mood;music.setMood(mood,5);}music.intensity=mood==='triumphant'?.7:.3+wet*.1;sound.update(dt,camera);}
- if(physics){heroBody.moveKinematic([player.x,player.y-player.r+.67,player.z]);physics.step(dt);}
- rain.visible=raining&&S.fx&&!vfx;if(rain.visible){for(let i=0;i<rainCount;i++){const d=rainData[i],y=player.y+((d.y-t*d.s)%16+16)%16;rainPos.set([player.x+d.x,y,player.z+d.z,player.x+d.x+.12,y-.6,player.z+d.z],i*6);}rainGeometry.attributes.position.needsUpdate=true;}
- pipeline.render(scene,camera,dt);
- const fps=KE.FPS.tick(performance.now(),()=>{applyQuality();toast('Quality adjusted for smoother play.');});
- if(++frame%20===0){const st=KE.rendererStats(renderer);document.getElementById('stats').textContent=S.showFps?`${fps} FPS · ${S.preset}${pipeline.enabled?' · Tenko '+pipeline.stats.passes+' passes':''}\n${st.calls} draws · ${(st.triangles/1000).toFixed(0)}k tris`:'';}
- }});/* Compile every scene program now, during loading: Android browsers lack non-blocking shader compilation, so programs
-   first compiled mid-game stall frames. */
-try{renderer.compile(scene,camera);}catch(e){}
-loop.start();
-/* Expose a small debug handle for automated checks and your own development tools. */
-window.demo={KE,renderer,sceneryBatch,scene,camera,player,stones,ground,input,follow,loop,sky,water,pipeline:()=>pipeline,csm,lights,gi,surfaceWeather,vfx,physics,props,forest,fur,foxGait,sound,world,editor,guide,getState,restore,applyQuality,setDay:v=>{day=v;sky.setTime(v);sky.refresh();},setRain,
- dispose(){loop.dispose();input.dispose();audio.dispose();offSettings();clearTimeout(toastTimer);window.removeEventListener('resize',resize);window.removeEventListener('keydown',keys);pipeline.dispose();gi.dispose();surfaceWeather.dispose();if(guide)guide.dispose();if(editor)editor.dispose();if(world)world.dispose();if(sound)sound.dispose();if(vfx)vfx.dispose();if(physics)physics.dispose();if(fur)fur.dispose();if(forest){forest.dispose();forestKit.forEach(r=>r.dispose());}if(grass)grass.dispose();csm.dispose();lights.dispose();water.dispose();sky.dispose();KE.disposeObject(scene,{textures:true});if(KE._ramp){KE._ramp.dispose();KE._ramp=null;}KE._detailTex=null;renderer.dispose();renderer.domElement.remove();}};
+const v3=new T.Vector3(),fwd=new T.Vector3(),right=new T.Vector3();let frame=0;
+const collision=(x,z)=>Math.abs(x)>WORLD/2-8||Math.abs(z)>WORLD/2-8||ground(x,z)<-.6;
+const loop=new KE.Loop({onError:fail,update(dt){
+  if(!started||flying)return;const m=input.movement(),mv=follow.movement(m.x,m.z),speed=input.keys.has('ShiftLeft')||input.keys.has('ShiftRight')?13:6;
+  player.vx=KE.damp(player.vx,mv.x*speed,10,dt);player.vz=KE.damp(player.vz,mv.z*speed,10,dt);coyote=player.grounded?.12:Math.max(0,coyote-dt);
+  if(input.consume('Space')&&coyote){player.vy=8;player.grounded=false;coyote=0;if(beds)sound.play('jump',{bus:'sfx',volume:.3,position:[player.x,player.y,player.z]});}
+  KE.Physics.step([player],dt,collision,ground);if(Math.hypot(mv.x,mv.z)>.05){const target=Math.atan2(-mv.x,-mv.z);let d=target-hero.rotation.y;d=Math.atan2(Math.sin(d),Math.cos(d));hero.rotation.y+=d*Math.min(1,dt*12);}},
+ render(alpha,dt,t){
+  hero.position.set(player.x,player.y-player.r,player.z);
+  if(gait){const air=player.y-player.r-ground(player.x,player.z)>.15;if(!air){if(wasAir)gait.reset();gait.update(dt,{x:player.vx,y:0,z:player.vz});}wasAir=air;tail.update(dt);}
+  if(fur)fur.update(dt,{x:player.vx,y:player.vy,z:player.vz});
+  if(flying){const look=input.consumeLook();fly.yaw-=look.x*.004;fly.pitch=Math.max(-1.45,Math.min(1.45,fly.pitch-look.y*.004));const m=input.movement(),boost=input.keys.has('ShiftLeft')?4:1,sp=60*boost;
+    fwd.set(-Math.sin(fly.yaw)*Math.cos(fly.pitch),Math.sin(fly.pitch),-Math.cos(fly.yaw)*Math.cos(fly.pitch));right.set(Math.cos(fly.yaw),0,-Math.sin(fly.yaw));
+    fly.pos.addScaledVector(fwd,-m.z*sp*dt).addScaledVector(right,m.x*sp*dt);fly.pos.y+=((input.keys.has('KeyE')?1:0)-(input.keys.has('KeyQ')?1:0)+fly.up)*sp*.6*dt;
+    fly.pos.y=Math.max(fly.pos.y,Math.max(ground(fly.pos.x,fly.pos.z),0)+2);camera.position.copy(fly.pos);camera.lookAt(v3.copy(fly.pos).add(fwd));}
+  else if(started){const look=input.consumeLook();follow.rotate(look.x,look.y);follow.zoom(look.zoom);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.update(player,dt,ground);}
+  else{const a=t*.05;camera.position.set(spawn.x+Math.cos(a)*14,ground(spawn.x,spawn.z)+5,spawn.z+Math.sin(a)*14);camera.lookAt(spawn.x,ground(spawn.x,spawn.z)+1,spawn.z);}
+  wet=KE.damp(wet,raining?1:0,.5,dt);
+  terrain.update(camera,renderer);wp.update(flying?camera.position:hero.position,dt);
+  sky.update(dt,camera);sun.intensity*=1-wet*.6;const night=sky.night;
+  csm.update(camera);scene.fog.color.copy(sky.fogColor);const f=pipeline.options.fog;f.color.copy(sky.fogColor);f.density=.0011*(1+wet*2.5);
+  water.rain=wet;water.update(dt,camera,{pipeline});
+  if(KE.foliage)KE.foliage.update(dt,{wind:1+wet*1.4,windDir:[.8,.6],interactors:[hero.position]});
+  if(grass)grass.update(flying?camera.position:hero.position);
+  if(weather)weather.update(dt,{raining});
+  if(vfx){const rv=raining&&S.fx;if(rv!==rainFx.playing)rv?rainFx.play():rainFx.stop();vfx.update(dt,camera);}
+  if(beds){const shore=Math.max(0,1-Math.max(0,ground(camera.position.x,camera.position.z))/12);beds.day.intensity=(1-night)*.5*(1-wet*.6);beds.night.intensity=night*.7;beds.rain.intensity=wet*.85;beds.wind.intensity=.2+wet*.3+Math.min(.4,Math.max(0,camera.position.y-60)/300);beds.sea.intensity=shore*.8;sound.update(dt,camera);}
+  pipeline.render(scene,camera,dt);
+  const fps=KE.FPS.tick(performance.now(),()=>{applyQuality();});
+  if(++frame%15===0){const st=terrain.stats(),ws=wp.stats(),r=renderer.info.render;$('stats').textContent=`${fps} FPS · ${S.preset}${pipeline.enabled?' · Tenko '+pipeline.stats.passes+' passes':''}\n${r.calls} draws · ${(r.triangles/1e6).toFixed(2)}M tris · terrain ${st.patches} patches in ${st.drawCalls} draw\ncells ${ws.loaded} loaded · ${ws.hlod} impostor · alt ${(flying?camera.position.y:player.y).toFixed(0)} m`;}
+ }});loop.start();
+
+window.demo={KE,renderer,scene,camera,terrain,heightfield:hf,partition:wp,player,sky,water,csm,pipeline:()=>pipeline,fox,gait,fur,vfx,sound,weather,
+ getState:()=>({x:player.x,z:player.z,y:player.y,day,flying,raining,cells:wp.stats().loaded}),setDay,setRain,setFly,
+ flyTo(x,y,z,yaw=fly.yaw,pitch=fly.pitch){setFly(true);fly.pos.set(x,y,z);fly.yaw=yaw;fly.pitch=pitch;},
+ teleport(x,z){player.x=x;player.z=z;player.y=ground(x,z)+.5;player.vx=player.vz=player.vy=0;follow.initialized=false;if(gait)gait.reset();},
+ dispose(){loop.dispose();input.dispose();offSettings();window.removeEventListener('keydown',keys);window.removeEventListener('resize',resize);wp.dispose();if(grass)grass.dispose();if(fur)fur.dispose();if(vfx)vfx.dispose();if(sound)sound.dispose();if(weather)weather.dispose();
+  pipeline.dispose();csm.dispose();water.dispose();sky.dispose();terrain.dispose();for(const r of kit)if(r&&r.dispose)r.dispose();fox.dispose();renderer.dispose();renderer.domElement.remove();}};
 }catch(error){fail(error);}
 })();
 </script>

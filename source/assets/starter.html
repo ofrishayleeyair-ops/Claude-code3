@@ -127,23 +127,9 @@ function applyQuality(){KE.applyRendererSettings(T,renderer,camera,sun,scene);re
  scene.traverse(o=>{for(const m of [o.material].flat())if(m)m.needsUpdate=true;});}
 applyQuality();
 
-/* Rounded anatomy, fibre detail, layered ears, paws, articulated legs and a curved brush tail. */
-const hero=new T.Group();scene.add(hero);
-const orange=KE.surface(T,'fur',{color:0xcc793f,roughness:.94,scale:8,bump:.012,textureSize:detailSize}),cream=KE.surface(T,'fur',{color:0xf2dfb6,roughness:.96,scale:9,bump:.01,textureSize:detailSize}),ink=material(0x302925),noseMat=new T.MeshStandardMaterial({color:0x17171a,roughness:.3}),eyeMat=new T.MeshStandardMaterial({color:0x8b5b26,roughness:.19});
-const orb=(r,mat,x,y,z,sx=1,sy=1,sz=1,parent=hero)=>{const m=mesh(new T.SphereGeometry(r,20,14),mat,x,y,z,parent);m.scale.set(sx,sy,sz);return m;};
-orb(.34,orange,0,.58,.03,1,1.06,1.62);orb(.28,orange,0,.78,-.3,1,1.25,1.1);orb(.255,cream,0,.65,-.38,.8,1.27,.6);orb(.29,orange,0,1.03,-.43,1.12,.97,1.03);
-orb(.2,orange,-.22,1.00,-.39,.82,.7,.9);orb(.2,orange,.22,1.00,-.39,.82,.7,.9);
-orb(.23,cream,0,.92,-.63,.82,.53,1.02);orb(.17,cream,0,.87,-.66,.87,.32,1);orb(.07,noseMat,0,.96,-.84,1.05,.64,.7);
-function ear(x){const e=new T.Group();e.position.set(x,1.22,-.37);e.rotation.z=x<0?.16:-.16;hero.add(e);
- const g=new T.BufferGeometry(),p=[-.12,0,.04,.12,0,.04,0,.4,.025, -.12,0,.04,0,.4,.025,0,.06,.15, .12,0,.04,0,.06,.15,0,.4,.025];g.setAttribute('position',new T.Float32BufferAttribute(p,3));g.computeVertexNormals();mesh(g,orange,0,0,0,e);
- const face=new T.Shape();face.moveTo(-.087,.02);face.lineTo(.087,.02);face.lineTo(0,.3);face.closePath();const inner=mesh(new T.ShapeGeometry(face),cream,0,.035,.02,e);inner.rotation.y=Math.PI;}
-ear(-.19);ear(.19);
-for(const x of [-.175,.175]){orb(.062,ink,x,1.088,-.643,1.05,.68,.46);orb(.043,eyeMat,x,1.092,-.663,.78,.9,.45);orb(.02,noseMat,x,1.092,-.678,.5,1,.35);orb(.01,material(0xfff9db),x-.009,1.109,-.685,1,1,.5);orb(.055,orange,x,1.147,-.619,1.2,.38,.7);}
-const foxLegs=[];for(const x of [-.205,.205])for(const z of [-.27,.34]){const leg=new T.Group();leg.position.set(x,.52,z);hero.add(leg);orb(.096,orange,0,-.13,0,1,1.9,1,leg);orb(.083,ink,0,-.32,-.01,.8,1.2,.85,leg);orb(.10,ink,0,-.43,-.052,.94,.52,1.36,leg);foxLegs.push(leg);}
-const foxTail=new T.Group();foxTail.position.set(0,.55,.41);hero.add(foxTail);
-const tailCurve=new T.CatmullRomCurve3([new T.Vector3(0,0,0),new T.Vector3(.06,.08,.23),new T.Vector3(.13,.17,.48),new T.Vector3(.21,.29,.74),new T.Vector3(.21,.43,.9)]);
-const tailG=new T.TubeGeometry(tailCurve,24,.19,12,false);const pa=tailG.attributes.position;for(let i=0;i<=24;i++){const c=tailCurve.getPointAt(i/24),radius=Math.sin((i/24*.86+.09)*Math.PI)*.94+.08;for(let j=0;j<=12;j++){const k=i*13+j;pa.setXYZ(k,c.x+(pa.getX(k)-c.x)*radius,c.y+(pa.getY(k)-c.y)*radius,c.z+(pa.getZ(k)-c.z)*radius);}}tailG.computeVertexNormals();mesh(tailG,orange,0,0,0,foxTail);orb(.13,cream,.21,.44,.89,.7,1.12,1.12,foxTail);
-const whiskerPos=[];for(const side of [-1,1])for(let i=0;i<3;i++)whiskerPos.push(side*.12,.945-i*.017,-.735,side*(.31+i*.025),.955-i*.04,-.70);const whiskers=new T.BufferGeometry();whiskers.setAttribute('position',new T.Float32BufferAttribute(whiskerPos,3));hero.add(new T.LineSegments(whiskers,new T.LineBasicMaterial({color:0xe5d9bc,transparent:true,opacity:.54})));
+/* The fox (characters module): rounded anatomy, fibre-textured fur, layered ears, knee-less legs and a brush tail on a pivot. */
+if(!has('characters'))throw new Error('Spirit Isle needs the characters module (src/modules/62-characters.js) in kitsune-engine.js');
+const fox=KE.foxModel(T,{textureSize:detailSize}),hero=fox.group;scene.add(hero);const {orange,cream}=fox.materials,foxLegs=fox.legs,foxTail=fox.tail;
 /* Shell fur on the orange and cream coat; a procedural gait plants the paws on the terrain and a spring swings the tail. */
 const fur=has('foliage')?KE.fur(T,hero,{renderer,shells:S.preset==='ultra'||S.preset==='cinematic'?24:16,length:.075,lod:{maxDistance:30},include:m=>m.material===orange?1:m.material===cream?.7:false}):null;
 let foxGait=null,tailSpring=null,wasAirborne=false;

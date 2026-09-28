@@ -28,6 +28,7 @@ const SUITES=[
   ['audio','node',['scripts/test_audio.cjs'],1500,'browser'],
   ['editor','node',['scripts/test_editor.cjs','--pipeline'],1200,'browser'],
   ['game','node',['scripts/test_browser.cjs','../spirit-isle.html','/tmp/kitsune-browser'],900,'browser'],
+  ['open-world','node',['scripts/test_open_world.cjs'],900,'browser'],
   ['visuals','node',['scripts/test_visuals.cjs'],300,'node'],
   ['resources','node',['scripts/test_resources.cjs'],300,'node'],
 ];

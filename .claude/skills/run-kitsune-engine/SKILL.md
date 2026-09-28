@@ -62,6 +62,7 @@ tmux send-keys -t ke 'quit' Enter
 
 | command | what it does |
 |---|---|
+| `launch open-world.html` | the streamed 2 km world (build it with `python3 source/scripts/build.py source/examples/src/open-world.html open-world.html`); its `demo` adds `flyTo(x,y,z,yaw,pitch)`, `setFly`, `teleport(x,z)`, `terrain`, `partition`; test: `node source/scripts/test_open_world.cjs` |
 | `launch [file.html] [w h]` | open a built game (default `spirit-isle.html`, 960×600); waits for `window.demo`, the game's error card, or the first page error (reported as `GAME ERROR`) |
 | `start` | click "Enter Spirit Isle" (enables input) |
 | `ss [name]` | screenshot (5-minute timeout) |

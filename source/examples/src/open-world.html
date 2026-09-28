@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f2229"><title>kitsune enginev3 · Open World</title>
+<style>
+[hidden]{display:none!important}
+:root{--ink:#0f2229;--cream:#fff3d7;--gold:#efd093}*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0f2229;font-family:system-ui,sans-serif;color:var(--cream)}
+canvas{display:block;width:100%;height:100%;touch-action:none}button,select{font:inherit;color:inherit}
+.glass{background:rgba(12,30,36,.58);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,243,215,.16);border-radius:16px}
+header{position:fixed;left:24px;top:max(20px,env(safe-area-inset-top));pointer-events:none;text-shadow:0 2px 10px #0008}
+header .brand{font-size:10px;letter-spacing:2.4px;text-transform:uppercase;opacity:.8}header h1{margin:4px 0 0;font:28px Georgia,serif}
+.actions{position:fixed;right:18px;top:max(18px,env(safe-area-inset-top));display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:70vw}
+.pill{padding:9px 14px;border-radius:999px;cursor:pointer;background:rgba(12,30,36,.58);border:1px solid rgba(255,243,215,.2);font-size:12px}.pill[aria-pressed=true]{background:rgba(239,208,147,.9);color:var(--ink)}
+.pill:focus-visible,select:focus-visible,.start:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+select.pill{appearance:none;-webkit-appearance:none}
+#stats{position:fixed;left:24px;top:calc(max(20px,env(safe-area-inset-top)) + 64px);font:11px/1.5 ui-monospace,monospace;white-space:pre;text-shadow:0 1px 4px #000c;pointer-events:none}
+#hint{position:fixed;left:50%;transform:translateX(-50%);bottom:max(18px,env(safe-area-inset-bottom));font-size:11px;letter-spacing:.6px;text-align:center;opacity:.85;text-shadow:0 1px 4px #000c;pointer-events:none;max-width:52vw}
+#overlay{position:fixed;inset:0;display:grid;place-items:center;background:radial-gradient(circle at 50% 40%,#1d3b44,#0b1a1f);z-index:5;padding:20px}
+.card{max-width:520px;width:100%;padding:30px;text-align:center}.card h2{font:34px Georgia,serif;margin:10px 0}.card p{opacity:.85;line-height:1.6}
+.bar{height:6px;border-radius:3px;background:#ffffff1c;overflow:hidden;margin:18px 0 8px}.bar i{display:block;height:100%;width:0;background:var(--gold);transition:width .25s}
+.start{margin-top:14px;padding:13px 26px;border-radius:999px;border:0;background:var(--gold);color:var(--ink);font-weight:600;cursor:pointer}.start[hidden]{display:none}
+.error{position:fixed;inset:0;display:grid;place-items:center;background:#0f2229;z-index:9;padding:24px;text-align:center}
+#fly-pad{position:fixed;left:22px;bottom:90px;display:none;gap:8px}#fly-pad button{width:54px;height:54px;border-radius:50%}
+@media(max-width:600px){header h1{font-size:21px}.pill{padding:8px 10px;font-size:11px}#hint{display:none}#stats{font-size:10px}}
+</style>
+</head>
+<body>
+<header><div class="brand">kitsune enginev3 · Tenko</div><h1>Open World</h1></header>
+<div class="actions"><button class="pill" id="time" aria-label="Advance the time of day">☼ Time</button><button class="pill" id="rain" aria-pressed="false">☂ Rain</button><button class="pill" id="fly" aria-pressed="false">✈ Fly</button><select class="pill" id="quality" aria-label="Quality preset"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="ultra">Ultra</option><option value="cinematic">Cinematic</option></select></div>
+<div id="stats"></div>
+<div id="hint">WASD / arrows move · Shift sprint · Space jump · drag to look · F fly (Q/E down/up) · T time · R rain · ` console</div>
+<div id="fly-pad"><button class="pill" id="fly-up" aria-label="Fly up">▲</button><button class="pill" id="fly-down" aria-label="Fly down">▼</button></div>
+<div id="overlay"><div class="card glass"><div class="brand" style="letter-spacing:3px;font-size:10px;opacity:.75">kitsune enginev3 · world module</div><h2>A whole island to roam</h2>
+<p>Two kilometres of eroded terrain drawn in one call, forests streamed in cells around you with impostors in the distance, a real sky, ocean and weather. Everything is generated on this device; nothing is downloaded.</p>
+<div class="bar"><i id="load-bar"></i></div><div id="load-text" style="font-size:12px;opacity:.8">Starting…</div>
+<button class="start" id="start" hidden>Enter the world</button></div></div>
+<!--THREE-->
+<!--KITSUNE-->
+<script>
+(async()=>{'use strict';
+const KE=window.KitsuneEngine,T=window.THREE,S=KE.settings,has=n=>!!KE.modules[n],$=id=>document.getElementById(id);
+const fail=error=>{console.error(error);const el=document.createElement('div');el.className='error';const c=document.createElement('div');const h=document.createElement('h2');h.textContent='The world could not open.';const p=document.createElement('p');p.textContent=String(error&&error.message||error);c.append(h,p);el.append(c);document.body.append(el);};
+const status=(text,f)=>{$('load-text').textContent=text;$('load-bar').style.width=Math.round(f*100)+'%';};
+const nextFrame=()=>new Promise(r=>requestAnimationFrame(()=>r()));
+// Run a KE.jobs promise to completion while keeping the page responsive.
+const drain=async promise=>{let done=false;promise.then(()=>{done=true;},()=>{done=true;});while(!done){KE.jobs.run(14);await nextFrame();}return promise;};
+try{
+for(const m of ['pipeline','sky','shadows','world','water','foliage','characters'])if(!has(m))throw new Error('This page needs the '+m+' module in kitsune-engine.js');
+await KE.loadVisualAssets();
+
+/* ---------- renderer, scene, camera ---------- */
+const renderer=new T.WebGLRenderer({antialias:false,powerPreference:'high-performance'});renderer.setSize(innerWidth,innerHeight);renderer.outputEncoding=T.sRGBEncoding;renderer.toneMapping=T.ACESFilmicToneMapping;renderer.shadowMap.type=T.PCFSoftShadowMap;document.body.prepend(renderer.domElement);
+const scene=new T.Scene();scene.fog=new T.FogExp2(0xa9c4cf,.0011);
+const camera=new T.PerspectiveCamera(55,innerWidth/innerHeight,.2,5000);KE.prepareCamera(camera);
+const sun=new T.DirectionalLight(0xfff0c9,3),hemi=new T.HemisphereLight(0xd5edff,0x3e4c38,.1);scene.add(sun,sun.target,hemi);
+KE.applyRendererSettings(T,renderer,camera,sun,scene);
+
+/* ---------- the land: generated, eroded, drawn as one CDLOD terrain ---------- */
+status('Shaping the island',.04);await nextFrame();
+const SEED=7,WORLD=2048;
+const hf=await drain(KE.Heightfield.generate({size:1025,worldSize:WORLD,seed:SEED,islands:true,falloff:.4,amplitude:175,mountains:.55,ridged:.55,jobs:KE.jobs}));
+status('Running rain over it for a few thousand years',.3);await nextFrame();
+await drain(KE.Heightfield.erode(hf,{iterations:90000,seed:3,spawnAbove:0,jobs:KE.jobs}));
+KE.Heightfield.thermalErode(hf,{iterations:3,talus:1.1});
+status('Painting biomes',.55);await nextFrame();
+const terrain=new KE.GPUTerrain(T,{heightfield:hf,castShadow:true,waterLevel:0,textureSize:Math.min(512,S.tex||512)});scene.add(terrain.object);
+const ground=(x,z)=>terrain.heightAt(x,z);
+
+// Spawn on gentle ground a little inland, searching a spiral from the coast; the forest keeps a clearing there.
+let spawn={x:0,z:0};for(let r=520;r>40;r-=24){let found=false;for(let a=0;a<6.283;a+=.2){const x=Math.cos(a)*r,z=Math.sin(a)*r,h=ground(x,z);if(h>4&&h<22&&terrain.slopeAt(x,z)<.25){spawn={x,z};found=true;break;}}if(found)break;}
+/* ---------- sky, ocean, shadows, post ---------- */
+status('Lighting the sky',.66);await nextFrame();
+let day=.3;
+const sky=new KE.SkyAtmosphere(T,renderer,scene,{sun,hemi,time:day,sunLightIntensity:4,moonLightIntensity:.35,lightDistance:400});
+const water=new KE.Water(T,scene,{level:0,sky,heightAt:ground,bakedCenter:new T.Vector3(0,0,0),bakedSize:WORLD,radius:3200,amplitude:.3,wavelength:11,choppiness:.75,wind:[1,.35],fadeStart:300,fadeEnd:1400});
+const pipeline=new KE.Pipeline(T,renderer,{sun,exposureKey:.2,minExposure:.3,maxExposure:4,bloomStrength:.04,fog:{density:.0011,falloff:.008,height:0,start:40,maxOpacity:.92,inscatter:1.1,inscatterExponent:9,sky:.35},volumetricFog:{maxDistance:120,density:.004,falloff:.03},grading:{saturation:1.06,contrast:1.05,vignette:.18,grain:.008,chromaticAberration:.08}});
+
+/* ---------- forests streamed in cells, impostors beyond ---------- */
+status('Growing forests',.74);await nextFrame();
+const merge=g=>{const m=T.BufferGeometryUtils.mergeBufferGeometries([g.trunk,g.leaves],true);g.trunk.dispose();g.leaves.dispose();return m;};
+const lod=Math.min(1,Math.max(.5,(S.lod||1)*.7)),texSize=S.preset==='low'?256:512,kit=[];
+// A point picks a species first and is dropped outside that species' band, so bands overlap widely: oaks and bushes low, birch mid, pines high.
+const species=[{name:'pine',kind:'conifer',height:12,seed:5,h:[22,160],slope:[0,.9],weight:1.1},{name:'oak',kind:'broadleaf',height:9,seed:4,h:[1.5,95],slope:[0,.7],weight:1.2},{name:'birch',kind:'birch',height:10,seed:8,h:[6,120],slope:[0,.75],weight:.7},{name:'bush',kind:'bush',height:1.6,seed:6,h:[1.2,130],slope:[0,.95],weight:1}];
+const types=[],proxyTypes=[];
+for(const sp of species){const tex=KE.leafTexture(T,{species:sp.kind,size:texSize,seed:sp.seed});const leaves=KE.foliageMaterial(T,{map:tex,vertexColors:true}),bark=KE.barkMaterial(T,{species:sp.kind,vertexColors:true});
+  const geo=merge(KE.treeGeometry(T,{species:sp.kind,seed:sp.seed,height:sp.height,detail:lod,leafCards:{texture:tex}}));kit.push(tex,leaves,bark,geo);
+  const t={name:sp.name,geometry:geo,material:[bark,leaves],weight:sp.weight,scale:[.75,1.3],height:sp.h,slope:sp.slope,sink:.05,castShadow:sp.kind!=='bush'};types.push(t);
+  // Octahedral impostor of the same tree for far cells (HLOD).
+  let imp=null;if(has('geometry')&&KE.Impostor){const probe=new T.Mesh(geo,[bark,leaves]);try{imp=KE.Impostor.bake(T,renderer,probe,{size:512,frames:8,mode:'octahedral',lit:true});kit.push(imp);}catch(e){console.warn('impostor bake failed',e);}}
+  proxyTypes.push(imp?{...t,geometry:imp.geometry,material:imp.material,castShadow:false}:null);}
+const rockMat=new T.MeshStandardMaterial({color:new T.Color(0x8d8a82).convertSRGBToLinear(),roughness:.92,vertexColors:true});kit.push(rockMat);
+if(has('geometry')&&KE.proceduralRock){const rock=KE.proceduralRock(T,{detail:3,seed:4,radius:1.4,roughness:.5});kit.push(rock);types.push({name:'rock',geometry:rock,material:rockMat,weight:.35,scale:[.6,2.4],scaleY:[.5,.9],height:[1,160],slope:[.35,4],sink:.3,align:.6,castShadow:true});proxyTypes.push(null);}
+const forestNoise=KE.noise2D(SEED+11);
+const density=(x,z)=>{const n=forestNoise(x*.0035,z*.0035)*.6+forestNoise(x*.011,z*.011)*.4;return n>-.2?.95:n>-.32?.5:.15;};
+const scatterOpts={cellSize:128,terrain,spacing:7,density,seed:SEED,waterLevel:.6,castShadow:true,receiveShadow:true,filter:(x,y,z)=>(x-spawn.x)**2+(z-spawn.z)**2>196};
+const wp=new KE.WorldPartition({cellSize:128,loadRadius:({low:110,medium:150,high:200,ultra:240,cinematic:280})[S.preset]||200,budgetMs:3,maxConcurrent:2,bounds:{minX:-WORLD/2,minZ:-WORLD/2,maxX:WORLD/2,maxZ:WORLD/2},
+  load:cell=>{const g=KE.scatterCell(T,{...scatterOpts,cell,types});scene.add(g);return g;},
+  unload:(cell,g)=>{if(g)g.userData.dispose();},
+  hlod:proxyTypes.some(Boolean)?cell=>{const list=proxyTypes.map((p,i)=>p||{...types[i],weight:types[i].weight,geometry:types[i].geometry,material:types[i].material,density:0});const g=KE.scatterCell(T,{...scatterOpts,cell,types:list,castShadow:false});scene.add(g);return {dispose(){g.userData.dispose();}};}:null,
+  hlodRadius:1100});
+const csm=new KE.CascadedShadows(T,scene,{sun,maxFar:360,margin:120});csm.setupScene();
+for(const t of types)for(const m of [t.material].flat())csm.setupMaterial(m);
+pipeline.setShadowSource(csm);if(KE.foliage)KE.foliage.setShadowSource(csm);
+
+/* ---------- the fox ---------- */
+status('Waking the fox',.86);await nextFrame();
+const fox=KE.foxModel(T,{textureSize:texSize}),hero=fox.group;scene.add(hero);
+const player=KE.Physics.body({x:spawn.x,z:spawn.z,y:ground(spawn.x,spawn.z)+.4,r:.35,height:1.5,friction:.8});
+const fur=KE.fur?KE.fur(T,hero,{renderer,shells:16,length:.075,lod:{maxDistance:30},include:m=>m.material===fox.materials.orange?1:m.material===fox.materials.cream?.7:false}):null;
+let gait=null,tail=null,wasAir=false;
+if(has('animation')){const body=new T.Group();while(hero.children.length)body.add(hero.children[0]);hero.add(body);
+  gait=new KE.ProceduralGait(T,{body,heightAt:ground,legs:fox.legs.map((leg,i)=>({hip:leg,foot:leg.children[2],group:i===0||i===3?0:1})),stepLength:.42,stepHeight:.1,stepDuration:.17});
+  tail=new KE.SpringChain(T,[fox.tail],{tip:fox.tailTip,stiffness:70,damping:9,gravity:[0,-.6,0],maxAngle:.7});}
+csm.setupScene(hero);
+let grass=null;const makeGrass=()=>{if(grass)grass.dispose();grass=S.grass>0?KE.grassField(T,scene,{count:Math.min(S.grass,14000),radius:34,heightAt:ground,density:(x,z)=>{const h=ground(x,z);return h>1.4&&h<70&&terrain.slopeAt(x,z)<.55?.85:0;}}):null;if(grass)grass.setShadowSource(csm);};makeGrass();
+
+/* ---------- weather, particles, sound ---------- */
+const weather=has('weather')?new KE.SurfaceWeather(T,{puddleScale:.05,puddleCoverage:.4}):null;
+if(weather){try{weather.setupMaterial(terrain.material);}catch(e){console.warn('weather on terrain disabled',e);}for(const t of types)for(const m of [t.material].flat())if(m.side!==T.DoubleSide&&!(m.alphaTest>0))weather.setupMaterial(m);}
+const vfx=has('vfx')?new KE.VFX(T,renderer,scene,{budget:S.vfx}):null;let rainFx=null;if(vfx){rainFx=vfx.emitter(vfx.presets.rain({attachTo:camera,attachRotation:false,ground}));rainFx.stop({clear:true});}
+const sound=has('audio')&&KE.AudioEngine?new KE.AudioEngine(T,{volume:.8}):null;let beds=null,stepSeed=0;
+const startSound=()=>{if(!sound||beds)return;sound.unlock().then(()=>{if(beds)return;sound.setReverb({preset:'forest',wet:.15});beds={wind:sound.ambience('wind',{intensity:.3}),day:sound.ambience('forest-day',{intensity:.5}),night:sound.ambience('night',{intensity:0}),rain:sound.ambience('rain',{intensity:0}),sea:sound.ambience('water',{intensity:0})};}).catch(()=>{});};
+if(gait&&sound)gait.onFootPlant=(leg,i,c)=>{if(!beds)return;const h=ground(c.x,c.z),surface=h<2?'sand':terrain.slopeAt(c.x,c.z)>.7?'stone':'grass';sound.play(KE.Synth.footstep({surface,intensity:.4,seed:(stepSeed++)%4}),{position:[c.x,c.y,c.z],volume:.3,bus:'sfx'});};
+
+/* ---------- input, camera, modes ---------- */
+const input=new KE.Input(renderer.domElement),follow=new KE.FollowCamera(T,camera,{distance:7.5,pitch:.3,height:1.1});input.setEnabled(false);
+let started=false,flying=false,raining=false,wet=0,coyote=0;const fly={pos:new T.Vector3(),yaw:0,pitch:-.25,up:0};
+const setFly=v=>{flying=!!v;$('fly').setAttribute('aria-pressed',String(flying));$('fly-pad').style.display=flying&&matchMedia('(pointer:coarse)').matches?'flex':'none';if(flying){fly.pos.copy(camera.position);const d=new T.Vector3();camera.getWorldDirection(d);fly.yaw=Math.atan2(-d.x,-d.z);fly.pitch=Math.asin(Math.max(-1,Math.min(1,d.y)));}else follow.initialized=false;};
+const setRain=v=>{raining=!!v;$('rain').setAttribute('aria-pressed',String(raining));sky.setWeather({coverage:raining?.85:.4,density:raining?1.4:1});};
+const setDay=v=>{day=((v%1)+1)%1;sky.setTime(day);sky.refresh();};
+$('fly').onclick=()=>setFly(!flying);$('rain').onclick=()=>setRain(!raining);$('time').onclick=()=>setDay(day+1/12);
+for(const [id,dir] of [['fly-up',1],['fly-down',-1]]){const b=$(id);b.onpointerdown=()=>fly.up=dir;b.onpointerup=b.onpointerleave=()=>fly.up=0;}
+const q=$('quality');q.value=S.preset;q.onchange=()=>{KE.applyPreset(q.value);};
+const applyQuality=()=>{KE.applyRendererSettings(T,renderer,camera,sun,scene);renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=S.shadows;pipeline.applySettings(S);pipeline.resetHistory();csm.enabled=S.shadows;makeGrass();q.value=S.preset;};
+const offSettings=KE.events.on('settings',applyQuality);
+const keys=e=>{if(!started)return;if(e.code==='KeyF')setFly(!flying);if(e.code==='KeyT')setDay(day+1/12);if(e.code==='KeyR')setRain(!raining);};window.addEventListener('keydown',keys);
+const resize=()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();};window.addEventListener('resize',resize);
+
+/* ---------- warm up: load the cells around the spawn, compile programs ---------- */
+status('Streaming the first cells',.93);await nextFrame();
+camera.position.set(spawn.x,ground(spawn.x,spawn.z)+4,spawn.z+8);camera.lookAt(spawn.x,ground(spawn.x,spawn.z),spawn.z);
+wp.update(new T.Vector3(spawn.x,0,spawn.z),0,Infinity);terrain.update(camera,renderer);
+try{renderer.compile(scene,camera);}catch(e){}
+status('Ready',1);$('start').hidden=false;$('start').focus();
+$('start').onclick=()=>{started=true;input.setEnabled(true);$('overlay').hidden=true;startSound();};
+
+/* ---------- frame loop ---------- */
+const v3=new T.Vector3(),fwd=new T.Vector3(),right=new T.Vector3();let frame=0;
+const collision=(x,z)=>Math.abs(x)>WORLD/2-8||Math.abs(z)>WORLD/2-8||ground(x,z)<-.6;
+const loop=new KE.Loop({onError:fail,update(dt){
+  if(!started||flying)return;const m=input.movement(),mv=follow.movement(m.x,m.z),speed=input.keys.has('ShiftLeft')||input.keys.has('ShiftRight')?13:6;
+  player.vx=KE.damp(player.vx,mv.x*speed,10,dt);player.vz=KE.damp(player.vz,mv.z*speed,10,dt);coyote=player.grounded?.12:Math.max(0,coyote-dt);
+  if(input.consume('Space')&&coyote){player.vy=8;player.grounded=false;coyote=0;if(beds)sound.play('jump',{bus:'sfx',volume:.3,position:[player.x,player.y,player.z]});}
+  KE.Physics.step([player],dt,collision,ground);if(Math.hypot(mv.x,mv.z)>.05){const target=Math.atan2(-mv.x,-mv.z);let d=target-hero.rotation.y;d=Math.atan2(Math.sin(d),Math.cos(d));hero.rotation.y+=d*Math.min(1,dt*12);}},
+ render(alpha,dt,t){
+  hero.position.set(player.x,player.y-player.r,player.z);
+  if(gait){const air=player.y-player.r-ground(player.x,player.z)>.15;if(!air){if(wasAir)gait.reset();gait.update(dt,{x:player.vx,y:0,z:player.vz});}wasAir=air;tail.update(dt);}
+  if(fur)fur.update(dt,{x:player.vx,y:player.vy,z:player.vz});
+  if(flying){const look=input.consumeLook();fly.yaw-=look.x*.004;fly.pitch=Math.max(-1.45,Math.min(1.45,fly.pitch-look.y*.004));const m=input.movement(),boost=input.keys.has('ShiftLeft')?4:1,sp=60*boost;
+    fwd.set(-Math.sin(fly.yaw)*Math.cos(fly.pitch),Math.sin(fly.pitch),-Math.cos(fly.yaw)*Math.cos(fly.pitch));right.set(Math.cos(fly.yaw),0,-Math.sin(fly.yaw));
+    fly.pos.addScaledVector(fwd,-m.z*sp*dt).addScaledVector(right,m.x*sp*dt);fly.pos.y+=((input.keys.has('KeyE')?1:0)-(input.keys.has('KeyQ')?1:0)+fly.up)*sp*.6*dt;
+    fly.pos.y=Math.max(fly.pos.y,Math.max(ground(fly.pos.x,fly.pos.z),0)+2);camera.position.copy(fly.pos);camera.lookAt(v3.copy(fly.pos).add(fwd));}
+  else if(started){const look=input.consumeLook();follow.rotate(look.x,look.y);follow.zoom(look.zoom);if(input.keys.has('KeyQ'))follow.rotate(-dt*1.5,0);if(input.keys.has('KeyE'))follow.rotate(dt*1.5,0);follow.update(player,dt,ground);}
+  else{const a=t*.05;camera.position.set(spawn.x+Math.cos(a)*14,ground(spawn.x,spawn.z)+5,spawn.z+Math.sin(a)*14);camera.lookAt(spawn.x,ground(spawn.x,spawn.z)+1,spawn.z);}
+  wet=KE.damp(wet,raining?1:0,.5,dt);
+  terrain.update(camera,renderer);wp.update(flying?camera.position:hero.position,dt);
+  sky.update(dt,camera);sun.intensity*=1-wet*.6;const night=sky.night;
+  csm.update(camera);scene.fog.color.copy(sky.fogColor);const f=pipeline.options.fog;f.color.copy(sky.fogColor);f.density=.0011*(1+wet*2.5);
+  water.rain=wet;water.update(dt,camera,{pipeline});
+  if(KE.foliage)KE.foliage.update(dt,{wind:1+wet*1.4,windDir:[.8,.6],interactors:[hero.position]});
+  if(grass)grass.update(flying?camera.position:hero.position);
+  if(weather)weather.update(dt,{raining});
+  if(vfx){const rv=raining&&S.fx;if(rv!==rainFx.playing)rv?rainFx.play():rainFx.stop();vfx.update(dt,camera);}
+  if(beds){const shore=Math.max(0,1-Math.max(0,ground(camera.position.x,camera.position.z))/12);beds.day.intensity=(1-night)*.5*(1-wet*.6);beds.night.intensity=night*.7;beds.rain.intensity=wet*.85;beds.wind.intensity=.2+wet*.3+Math.min(.4,Math.max(0,camera.position.y-60)/300);beds.sea.intensity=shore*.8;sound.update(dt,camera);}
+  pipeline.render(scene,camera,dt);
+  const fps=KE.FPS.tick(performance.now(),()=>{applyQuality();});
+  if(++frame%15===0){const st=terrain.stats(),ws=wp.stats(),r=renderer.info.render;$('stats').textContent=`${fps} FPS · ${S.preset}${pipeline.enabled?' · Tenko '+pipeline.stats.passes+' passes':''}\n${r.calls} draws · ${(r.triangles/1e6).toFixed(2)}M tris · terrain ${st.patches} patches in ${st.drawCalls} draw\ncells ${ws.loaded} loaded · ${ws.hlod} impostor · alt ${(flying?camera.position.y:player.y).toFixed(0)} m`;}
+ }});loop.start();
+
+window.demo={KE,renderer,scene,camera,terrain,heightfield:hf,partition:wp,player,sky,water,csm,pipeline:()=>pipeline,fox,gait,fur,vfx,sound,weather,
+ getState:()=>({x:player.x,z:player.z,y:player.y,day,flying,raining,cells:wp.stats().loaded}),setDay,setRain,setFly,
+ flyTo(x,y,z,yaw=fly.yaw,pitch=fly.pitch){setFly(true);fly.pos.set(x,y,z);fly.yaw=yaw;fly.pitch=pitch;},
+ teleport(x,z){player.x=x;player.z=z;player.y=ground(x,z)+.5;player.vx=player.vz=player.vy=0;follow.initialized=false;if(gait)gait.reset();},
+ dispose(){loop.dispose();input.dispose();offSettings();window.removeEventListener('keydown',keys);window.removeEventListener('resize',resize);wp.dispose();if(grass)grass.dispose();if(fur)fur.dispose();if(vfx)vfx.dispose();if(sound)sound.dispose();if(weather)weather.dispose();
+  pipeline.dispose();csm.dispose();water.dispose();sky.dispose();terrain.dispose();for(const r of kit)if(r&&r.dispose)r.dispose();fox.dispose();renderer.dispose();renderer.domElement.remove();}};
+}catch(error){fail(error);}
+})();
+</script>
+</body></html>

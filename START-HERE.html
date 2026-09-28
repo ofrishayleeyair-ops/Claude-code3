@@ -2,7 +2,7 @@
 <small>Offline game engine · Edition 3 / Runtime 3.0.0 · Tenko</small>
 <h1>kitsune enginev3</h1>
 <p>A modular browser game engine on Three.js r128 that still builds every game into one offline HTML file. Version 3 adds an HDR render pipeline with temporal upscaling, a physical sky with volumetric clouds, cascaded soft shadows, probe-based global illumination, water and weather, procedural forests and fur, cluster LOD, open-world terrain, Rapier physics, GPU particles, procedural animation, navmesh AI, spatial audio, a gameplay framework and an in-game editor. Spirit Isle, the included game, uses all of it.</p>
-<a class="launch" href="spirit-isle.html">Open Spirit Isle →</a>
+<a class="launch" href="spirit-isle.html">Open Spirit Isle →</a><a class="launch" href="open-world.html">Open the Open World →</a>
 
 <h2>Spirit Isle</h2>
 <div class="grid">
@@ -19,6 +19,9 @@
 </ol>
 <p>Headless and low-power machines start on the Low preset, which turns the HDR pipeline, shadows and GI off; pick High or Ultra in Settings to see the full renderer.</p>
 
+<h2>Open World</h2>
+<figure><img src="media/open-world.png" alt="Low aerial view over a forested island coast with a turquoise bay, sandy beach and snow-capped mountains under volumetric clouds"><figcaption>A 2 km island generated and eroded on load, drawn as one CDLOD terrain call; forests stream in 128 m cells around you, with impostors to the horizon.</figcaption></figure>
+<p>Open <strong>open-world.html</strong> the same way. Walk with the fox (Shift to sprint), press <strong>F</strong> to fly (Q/E down and up), <strong>T</strong> for the time of day and <strong>R</strong> for rain. Loading generates the whole island on your device, which takes several seconds.</p>
 <h2>What is in the engine</h2>
 <table><thead><tr><th>Area</th><th>Systems</th></tr></thead><tbody>
 <tr><td>Rendering</td><td>HDR pipeline: TAA with temporal upscaling, GTAO, SSGI, screen-space reflections for translucent materials, height and volumetric fog, light shafts, bloom and lens flare, eye adaptation and local exposure, ACES grading, depth of field, motion blur, debug view modes.</td></tr>

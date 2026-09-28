@@ -23,11 +23,14 @@ Read this page first, then the reference for the system you are touching.
 | 32-world | `world` | `KE.Heightfield`, `KE.GPUTerrain`, `KE.WorldPartition`, `KE.scatterCell` | world.md | test_world.cjs |
 | 40-physics | `physics3d` | `KE.Physics3D` (Rapier) | physics.md | test_physics.cjs |
 | 50-vfx | `vfx` | `KE.VFX` | vfx.md | test_vfx.cjs |
+| 62-characters | `characters` | `KE.foxModel` | engine-overview.md §1 | test_browser.cjs, test_open_world.cjs |
 | 60-animation | `animation` | `KE.tween`, `KE.IK`, `KE.IKChain`, `KE.SpringChain`, `KE.ProceduralGait`, `KE.AnimStateMachine`, `KE.Sequencer`, `KE.CameraRail` | animation.md | test_animation.cjs |
 | 70-ai | `ai` | `KE.NavMesh`, `KE.Crowd`, `KE.BT`, `KE.Blackboard`, `KE.Perception`, `KE.EQS`, `KE.FSM`, `KE.steering` | ai.md | test_ai.cjs |
 | 80-audio | `audio` | `KE.AudioEngine`, `KE.Synth`, `KE.SoundCue` | audio.md | test_audio.cjs |
 | 85-gameplay | `gameplay` | `KE.GameWorld`, `KE.Components`, `KE.Level`, `KE.Blueprint`, `KE.Prefabs` | gameplay.md | test_editor.cjs |
 | 90-editor | `editor` | `KE.Editor` (F8), `KE.ConsoleUI` (backquote) | editor.md | test_editor.cjs |
+
+The rows are in file order except `62-characters`, listed here for grouping; it loads between animation and AI. `KE.foxModel(THREE, {textureSize, coat, belly, castShadow})` returns `{group, legs, tail, tailTip, ears, materials, dispose()}`: the Spirit Isle fox built from scaled spheres, with knee-less leg groups (paw is each leg's third child, the layout `KE.ProceduralGait` expects) and the tail on a pivot for `KE.SpringChain`.
 
 Modules load in file order. Optional integrations are checked at call time (`if (KE.VFX)`), so a bundle built with `build_engine.py --modules 00,10,12` still runs. Libraries: `assets/kitsune-libs.js` provides `RAPIER` (physics) and `MeshoptSimplifier`/`MeshoptClusterizer` (geometry); without it physics reports `available:false` and geometry falls back to its JavaScript simplifier.
 
@@ -59,7 +62,7 @@ This table names the UE5 feature each system is modelled on so you can find the 
 
 ## 3. Frame order for a full game
 
-Spirit Isle (`assets/starter.html`) is the reference integration; each system is guarded with `has('module')`. Per rendered frame:
+Spirit Isle (`assets/starter.html`) is the reference integration; each system is guarded with `has('module')`. The open-world showcase (`examples/src/open-world.html`, built to `../open-world.html`) is the reference for large worlds: a 2 km island generated and eroded while loading, `KE.GPUTerrain`, `KE.WorldPartition` cells filled by `KE.scatterCell` with octahedral impostor HLOD proxies (the same scatter with impostor geometry, so placements match), fly mode, weather and sound. At High it drew about 540 calls and 3.7 million triangles per frame in the test view (shadow passes included); the full-detail radius shrinks with the preset. Per rendered frame:
 
 1. Move the player (`KE.Physics` legacy or `KE.Physics3D`), camera follow.
 2. Character animation: `ProceduralGait.update`, `SpringChain.update`, `fur.update`.
