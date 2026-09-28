@@ -2790,7 +2790,167 @@ KE.Water=class{
     this.underwater=under;U.uUnder.value=under?1:0;return this;}
   dispose(){this.mesh.parent&&this.mesh.parent.remove(this.mesh);this.mesh.geometry.dispose();this.material.dispose();this.normalTex.dispose();if(this.uniforms.tBaked.value)this.uniforms.tBaked.value.dispose();}
 };
-KE.registerModule('water',{provides:['Water','waterWaves']});
+/* ---------- KE.River ----------
+   A river as a ribbon along a centre line. KE.River.profile resamples the control points (Catmull-Rom, every `step`
+   metres) and gives each sample a water surface height that stays below the ground and falls monotonically
+   downstream (never below the sea), a width, a depth, the flow direction and a speed from the local slope.
+   KE.River.carve cuts a parabolic bed, a low bank lip and valley walls of a set slope into a KE.Heightfield (and
+   marks the bed in masks.flow, so biome painting puts gravel/dirt there). The surface shades like KE.Water: sky or
+   screen-space reflection, refraction of the opaque scene with absorption, sun glint, foam where the water thins
+   against the banks, and white water on steep reaches; its detail normals scroll downstream in ribbon
+   coordinates (metres across, metres along), so the water visibly flows around bends. CPU queries (nearest,
+   heightAt, flowAt, pointAt) serve boats, swimming and placement filters. */
+const RIVER_VS=`attribute vec3 flow;varying vec3 vWorld;varying vec2 vRib;varying vec3 vFlow;varying float vViewZ;
+void main(){vec4 wp=modelMatrix*vec4(position,1.);vWorld=wp.xyz;vRib=uv;vFlow=flow;vec4 mv=viewMatrix*wp;vViewZ=-mv.z;gl_Position=projectionMatrix*mv;}`;
+const RIVER_FS=`${KE.GLSL_SCENE_DECL}
+uniform float uTime;uniform samplerCube tSky;uniform float uHasSky;uniform sampler2D tNormal;uniform vec3 uScatter;uniform vec3 uAbsorb;uniform vec3 uFoamColor;uniform float uFoamDepth;uniform float uRefract;uniform float uDetail;uniform float uRain;uniform float uSunGlint;uniform vec3 uAmbient;uniform vec3 uHorizon;uniform vec3 uZenith;uniform float uOpacity;
+varying vec3 vWorld;varying vec2 vRib;varying vec3 vFlow;varying float vViewZ;
+${KE.GLSL.hash}
+${KE.GLSL.ssr}
+float ign(vec2 p){return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715))));}
+vec3 skyAt(vec3 d){if(uHasSky>.5)return textureCube(tSky,d).rgb;return mix(uHorizon,uZenith,clamp(d.y,0.,1.));}
+void main(){vec3 V=normalize(cameraPosition-vWorld);float dist=length(cameraPosition-vWorld),fade=1.-smoothstep(30.,180.,dist);
+ vec2 fd=normalize(vFlow.xy+vec2(1e-5,0.)),fs=vec2(-fd.y,fd.x);float sp=vFlow.z;
+ vec3 a=texture2D(tNormal,vec2(vRib.x,vRib.y-uTime*sp)*.16).xyz*2.-1.,b=texture2D(tNormal,vec2(vRib.x*1.3+5.,vRib.y*.8-uTime*sp*1.35)*.37).xyz*2.-1.;
+ vec2 d=(a.xy+b.xy)*uDetail*(1.+sp*.35)*fade;vec3 N=normalize(vec3(0.,1.,0.)+vec3(fs.x,0.,fs.y)*d.x+vec3(fd.x,0.,fd.y)*d.y);
+ if(uRain>0.){vec2 c=texture2D(tNormal,vWorld.xz*.9+vec2(uTime*.7,-uTime*.5)).xy*2.-1.;N=normalize(N+vec3(c.x,0.,c.y)*uRain*.35*fade);}
+ float NdV=clamp(dot(N,V),0.,1.),F=.02+.98*pow(1.-NdV,5.);vec3 sunI=keSunColor*max(keSunDirection.y,0.);
+ vec3 R=reflect(-V,N);R.y=abs(R.y);vec3 refl=skyAt(R);vec2 suv=gl_FragCoord.xy/keResolution;float thick=2.;vec3 below=uScatter;
+ if(keHasScene>.5){float z0=texture2D(keSceneDepth,suv).r;vec2 ruv=suv+N.xz*uRefract*clamp((z0-vViewZ)*.5,0.,1.)/max(vViewZ*.15,1.);float z1=texture2D(keSceneDepth,ruv).r;if(z1<vViewZ){ruv=suv;z1=z0;}
+  thick=max(z1-vViewZ,0.);below=texture2D(keSceneColor,ruv).rgb;vec3 vpos=(keViewMatrix*vec4(vWorld,1.)).xyz,vn=normalize((keViewMatrix*vec4(N,0.)).xyz);vec4 ssr=keTraceSSR(vpos,vn,.05,ign(gl_FragCoord.xy+keFrame));refl=mix(refl,ssr.rgb,ssr.a);}
+ vec3 transm=exp(-uAbsorb*thick),refr=below*transm+uScatter*(uAmbient+sunI*.35)*(1.-transm);
+ vec3 H=normalize(V+keSunDirection);float spec=pow(max(dot(N,H),0.),700.)*10.+pow(max(dot(N,H),0.),90.)*.25;
+ float fn=texture2D(tNormal,vec2(vRib.x*.45,vRib.y*.12-uTime*sp*.12)).r*.6+texture2D(tNormal,vec2(vRib.x*.9+.3,vRib.y*.3-uTime*sp*.3)).g*.4;fn=clamp((fn-.5)*2.6+.5,0.,1.);
+ float bank=keHasScene*(1.-smoothstep(0.,uFoamDepth,thick*max(V.y,.2))),white=smoothstep(2.2,4.5,sp);
+ float foam=clamp(bank*smoothstep(.55,.9,fn)*(.25+.55*white)+white*smoothstep(.5,.85,fn)*.8,0.,1.);
+ vec3 col=mix(refr,refl,F)+keSunColor*spec*uSunGlint;col=mix(col,uFoamColor*(uAmbient+sunI*.8),foam*.85);
+ gl_FragColor=vec4(col,keHasScene>.5?1.:clamp(uOpacity+F*.3+foam,0.,1.));
+ #include <tonemapping_fragment>
+ #include <encodings_fragment>
+}`;
+const rsmooth=(a,b,x)=>{const t=Math.min(1,Math.max(0,(x-a)/(b-a)));return t*t*(3-2*t);};
+KE.River=class{
+  /* points: [[x,z],…] from source to mouth; heightAt: the terrain height before carving (or pass a ready profile). */
+  constructor(THREE,scene,o={}){
+    this.THREE=THREE;this.scene=scene;this.time=0;this.rain=0;
+    const opt=this.options=Object.assign({points:null,heightAt:null,profile:null,width:[8,24],depth:[1.6,3],step:4,minSlope:.002,seaLevel:0,speed:[.8,3.2],overlap:3,segmentsAcross:4,sky:null,
+      scatter:[.03,.1,.08],absorb:[.38,.13,.1],foamColor:[.86,.9,.88],foamDepth:.18,refraction:.03,detail:.3,sunGlint:1,opacity:.85,horizon:[.55,.7,.8],zenith:[.2,.4,.7]},o);
+    this.path=opt.profile||KE.River.profile(opt.points,opt.heightAt,opt);this.pts=this.path.pts;this.length=this.path.length;
+    this._index(64);
+    const U=KE.sceneUniforms(THREE);this.normalTex=detailNormalTexture(THREE);
+    this.uniforms={...U,uTime:{value:0},tSky:{value:null},uHasSky:{value:0},tNormal:{value:this.normalTex},uScatter:{value:new THREE.Color(...opt.scatter)},uAbsorb:{value:new THREE.Vector3(...opt.absorb)},
+      uFoamColor:{value:new THREE.Color(...opt.foamColor)},uFoamDepth:{value:opt.foamDepth},uRefract:{value:opt.refraction},uDetail:{value:opt.detail},uRain:{value:0},uSunGlint:{value:opt.sunGlint},
+      uAmbient:{value:new THREE.Color(.25,.3,.35)},uHorizon:{value:new THREE.Color(...opt.horizon)},uZenith:{value:new THREE.Color(...opt.zenith)},uOpacity:{value:opt.opacity}};
+    this.material=new THREE.ShaderMaterial({vertexShader:RIVER_VS,fragmentShader:RIVER_FS,uniforms:this.uniforms,transparent:true,depthWrite:true,side:THREE.DoubleSide,toneMapped:true});
+    this.material.extensions={derivatives:true};
+    this.mesh=new THREE.Mesh(this._geometry(),this.material);this.mesh.name='ke-river';this.mesh.layers.set(KE.LAYERS.TRANSLUCENT);if(scene)scene.add(this.mesh);
+    if(opt.sky)this.setSky(opt.sky);}
+  static profile(points,heightAt,o={}){
+    if(!points||points.length<2||typeof heightAt!=='function')throw new TypeError('KE.River.profile needs points [[x,z],…] and heightAt(x,z)');
+    const step=o.step||4,wA=o.width||[8,24],dA=o.depth||[1.6,3],sea=o.seaLevel===undefined?0:o.seaLevel,minSlope=o.minSlope===undefined?.002:o.minSlope,spA=o.speed||[.8,3.2],lateral=o.lateral||0;
+    const P=points.map(p=>Array.isArray(p)?[p[0],p[1]]:[p.x,p.z]),dense=[];
+    for(let i=0;i<P.length-1;i++){const p0=P[Math.max(0,i-1)],p1=P[i],p2=P[i+1],p3=P[Math.min(P.length-1,i+2)],n=Math.max(4,Math.ceil(Math.hypot(p2[0]-p1[0],p2[1]-p1[1])/step*2));
+      for(let k=0;k<n;k++){const t=k/n,t2=t*t,t3=t2*t;dense.push([0,1].map(j=>.5*(2*p1[j]+(-p0[j]+p2[j])*t+(2*p0[j]-5*p1[j]+4*p2[j]-p3[j])*t2+(-p0[j]+3*p1[j]-3*p2[j]+p3[j])*t3)));}}
+    dense.push(P[P.length-1]);const L=[0];for(let i=1;i<dense.length;i++)L.push(L[i-1]+Math.hypot(dense[i][0]-dense[i-1][0],dense[i][1]-dense[i-1][1]));
+    const total=L[L.length-1],n=Math.max(2,Math.round(total/step)),pts=[];let j=0;
+    for(let i=0;i<=n;i++){const s=i/n*total;while(j<dense.length-2&&L[j+1]<s)j++;const f=(s-L[j])/Math.max(1e-6,L[j+1]-L[j]),x=dense[j][0]+(dense[j+1][0]-dense[j][0])*f,z=dense[j][1]+(dense[j+1][1]-dense[j][1])*f,t=s/total;
+      pts.push({x,z,s,t,ground:heightAt(x,z),w:wA[0]+(wA[1]-wA[0])*t,depth:dA[0]+(dA[1]-dA[0])*t,y:0,dx:0,dz:1,nx:1,nz:0,speed:spA[0]});}
+    /* surface: below the ground by a third of the depth, falling at least minSlope per metre, not below the sea; smoothed without breaking either rule.
+       With `lateral`, the ground is the lowest sample across the channel ± lateral metres, so a path drawn along a hillside
+       still puts the water at the foot of the slope (the carve then cuts the uphill side) instead of on an embankment. */
+    if(lateral>0)for(let i=0;i<pts.length;i++){const a=pts[Math.max(0,i-1)],b=pts[Math.min(pts.length-1,i+1)],dx=b.x-a.x,dz=b.z-a.z,l=Math.hypot(dx,dz)||1,nx=-dz/l,nz=dx/l,p=pts[i],reach=p.w*.5+lateral;
+      for(let k=1;k<=6;k++){const d=reach*k/6;p.ground=Math.min(p.ground,heightAt(p.x+nx*d,p.z+nz*d),heightAt(p.x-nx*d,p.z-nz*d));}}
+    const cap=pts.map(p=>p.ground-p.depth*.35);let prev=Infinity;
+    for(let i=0;i<pts.length;i++){const d=i?pts[i].s-pts[i-1].s:0;prev=Math.max(sea+.05,Math.min(cap[i],prev-minSlope*d));pts[i].y=prev;}
+    for(let pass=0;pass<6;pass++){for(let i=1;i<pts.length-1;i++){const v=(pts[i-1].y+pts[i].y*2+pts[i+1].y)/4;pts[i].y=Math.max(sea+.05,Math.min(v,cap[i],pts[i-1].y-minSlope*(pts[i].s-pts[i-1].s)));}}
+    for(let i=0;i<pts.length;i++){const a=pts[Math.max(0,i-1)],b=pts[Math.min(pts.length-1,i+1)],dx=b.x-a.x,dz=b.z-a.z,l=Math.hypot(dx,dz)||1,p=pts[i];p.dx=dx/l;p.dz=dz/l;p.nx=-p.dz;p.nz=p.dx;
+      const slope=Math.max(0,(a.y-b.y)/Math.max(1e-3,b.s-a.s));p.speed=Math.min(spA[1],spA[0]+slope*260);}
+    return {pts,length:total};}
+  /* Cut the channel and its valley into a heightfield (call before building terrain from it). */
+  static carve(hf,path,o={}){
+    /* Every segment proposes a surface (bed inside the channel, bank lip, valley walls rising at `slope` that steepen
+       toward the edge of the carve region); the lowest proposal wins. Taking the minimum over all nearby segments keeps
+       the result continuous where two reaches at different water levels are about equally near (a nearest-segment
+       choice would leave a step there). A soft minimum rounds the crease where the walls meet the land. */
+    const bank=o.bank===undefined?5:o.bank,valley=o.valley===undefined?150:o.valley,slope=o.valleySlope===undefined?.45:o.valleySlope,lip=o.lip===undefined?.5:o.lip;
+    const S=hf.size,sp=hf.spacing,D=hf.data,tgt=new Float32Array(S*S).fill(Infinity),best=new Float32Array(S*S).fill(Infinity),lev=new Float32Array(S*S),P=path.pts;
+    for(let i=0;i<P.length-1;i++){const a=P[i],b=P[i+1],R=valley+Math.max(a.w,b.w)*.5+bank,ex=b.x-a.x,ez=b.z-a.z,el=ex*ex+ez*ez||1;
+      const i0=Math.max(0,Math.floor((Math.min(a.x,b.x)-R-hf.originX)/sp)),i1=Math.min(S-1,Math.ceil((Math.max(a.x,b.x)+R-hf.originX)/sp)),j0=Math.max(0,Math.floor((Math.min(a.z,b.z)-R-hf.originZ)/sp)),j1=Math.min(S-1,Math.ceil((Math.max(a.z,b.z)+R-hf.originZ)/sp));
+      for(let jj=j0;jj<=j1;jj++){const z=hf.originZ+jj*sp;for(let ii=i0;ii<=i1;ii++){const x=hf.originX+ii*sp,t=Math.min(1,Math.max(0,((x-a.x)*ex+(z-a.z)*ez)/el)),dx=x-a.x-ex*t,dz=z-a.z-ez*t,dist=Math.sqrt(dx*dx+dz*dz);
+        const hw=(a.w+(b.w-a.w)*t)*.5;if(dist>hw+bank+valley)continue;const y=a.y+(b.y-a.y)*t,dep=a.depth+(b.depth-a.depth)*t,k=jj*S+ii,q=Math.min(1,dist/hw),u=Math.max(0,dist-hw-bank),edge=Math.max(0,(u-valley*.7)/(valley*.3));
+        const target=dist<hw?y-dep*(1-q*q)-.1:y+lip*rsmooth(hw,hw+bank,dist)+u*slope+edge*edge*valley*1.5;if(target<tgt[k])tgt[k]=target;
+        if(dist-hw<best[k]){best[k]=dist-hw;lev[k]=dist>hw*.9&&dist<hw+bank?y+lip*rsmooth(hw*.9,hw+bank*.6,dist)-.05:-Infinity;}}}}
+    const flow=hf.masks&&hf.masks.flow,sk=6;let carved=0;
+    for(let k=0;k<S*S;k++){const target=tgt[k];if(target===Infinity)continue;const h=D[k];
+      let nh=Math.min(h,target)-Math.max(sk-Math.abs(h-target),0)**2/(4*sk);if(nh>h)nh=h;nh=Math.max(nh,lev[k]);   // a low levee where the land beside the river lies below the water
+      if(nh!==h){D[k]=nh;carved++;}if(flow&&best[k]<bank)flow[k]=Math.max(flow[k],4000*Math.min(1,1-best[k]/(bank*2)));}
+    hf.recomputeRange();hf.version++;return {carved};}
+  _index(cell){this._cell=cell;const m=this._grid=new Map(),P=this.pts,reach=cell;
+    for(let i=0;i<P.length-1;i++){const a=P[i],b=P[i+1],r=Math.max(a.w,b.w)*.5+reach,x0=Math.floor((Math.min(a.x,b.x)-r)/cell),x1=Math.floor((Math.max(a.x,b.x)+r)/cell),z0=Math.floor((Math.min(a.z,b.z)-r)/cell),z1=Math.floor((Math.max(a.z,b.z)+r)/cell);
+      for(let gz=z0;gz<=z1;gz++)for(let gx=x0;gx<=x1;gx++){const key=gx+','+gz;let l=m.get(key);if(!l)m.set(key,l=[]);l.push(i);}}}
+  _geometry(){const T=this.THREE,P=this.pts,A=Math.max(1,this.options.segmentsAcross|0),ov=this.options.overlap,pos=[],uv=[],flow=[],idx=[];
+    for(const p of P){const hw=p.w*.5+ov;for(let k=0;k<=A;k++){const u=k/A*2-1;pos.push(p.x+p.nx*u*hw,p.y,p.z+p.nz*u*hw);uv.push(u*hw,p.s);flow.push(p.dx,p.dz,p.speed);}}
+    for(let i=0;i<P.length-1;i++)for(let k=0;k<A;k++){const a=i*(A+1)+k,b=a+1,c=a+A+1,d=c+1;idx.push(a,b,c,b,d,c);}
+    const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(pos,3));g.setAttribute('uv',new T.Float32BufferAttribute(uv,2));g.setAttribute('flow',new T.Float32BufferAttribute(flow,3));g.setIndex(idx);g.computeBoundingSphere();g.computeBoundingBox();return g;}
+  /* Nearest point on the centre line within reach (64 m beyond the banks): {d, i, t, s, x, z, y (surface), w, dx, dz, speed}; d is Infinity when farther. */
+  nearest(x,z,out={}){out.d=Infinity;const l=this._grid.get(Math.floor(x/this._cell)+','+Math.floor(z/this._cell));if(!l)return out;const P=this.pts;
+    for(const i of l){const a=P[i],b=P[i+1],ex=b.x-a.x,ez=b.z-a.z,el=ex*ex+ez*ez||1,t=Math.min(1,Math.max(0,((x-a.x)*ex+(z-a.z)*ez)/el)),px=a.x+ex*t,pz=a.z+ez*t,d=Math.hypot(x-px,z-pz);
+      if(d<out.d){out.d=d;out.i=i;out.t=t;out.x=px;out.z=pz;out.s=a.s+(b.s-a.s)*t;out.y=a.y+(b.y-a.y)*t;out.w=a.w+(b.w-a.w)*t;out.dx=a.dx+(b.dx-a.dx)*t;out.dz=a.dz+(b.dz-a.dz)*t;out.speed=a.speed+(b.speed-a.speed)*t;}}
+    return out;}
+  /* Distance from the water's edge (negative inside the channel); Infinity when out of reach. */
+  edgeDistance(x,z){const n=this.nearest(x,z,this._q||(this._q={}));return n.d===Infinity?Infinity:n.d-n.w*.5;}
+  heightAt(x,z){const n=this.nearest(x,z,this._q||(this._q={}));return n.d<=n.w*.5+this.options.overlap?n.y:-Infinity;}
+  flowAt(x,z,out={x:0,z:0}){const n=this.nearest(x,z,this._q||(this._q={}));if(n.d>n.w*.5+this.options.overlap){out.x=out.z=0;return out;}const k=n.speed*(1-Math.pow(Math.min(1,n.d/(n.w*.5)),2)*.7);out.x=n.dx*k;out.z=n.dz*k;return out;}
+  /* Point at arc length s from the source: {x, z, y, w, dx, dz, nx, nz, speed}. */
+  pointAt(s,out={}){const P=this.pts;s=Math.min(this.length,Math.max(0,s));let lo=0,hi=P.length-1;while(hi-lo>1){const m=(lo+hi)>>1;if(P[m].s<=s)lo=m;else hi=m;}
+    const a=P[lo],b=P[hi],t=(s-a.s)/Math.max(1e-6,b.s-a.s);for(const k of ['x','z','y','w','dx','dz','nx','nz','speed'])out[k]=a[k]+(b[k]-a[k])*t;out.s=s;return out;}
+  setSky(sky){const tex=sky&&sky.cube?sky.cube.texture:sky;this.sky=sky&&sky.cube?sky:null;this.uniforms.tSky.value=tex||null;this.uniforms.uHasSky.value=tex?1:0;return this;}
+  update(dt,{ambient=null}={}){this.time+=dt;const U=this.uniforms;U.uTime.value=this.time;U.uRain.value=this.rain;if(ambient)U.uAmbient.value.copy(ambient);else if(this.sky)U.uAmbient.value.copy(this.sky.zenithColor).lerp(this.sky.fogColor,.5);return this;}
+  dispose(){this.mesh.parent&&this.mesh.parent.remove(this.mesh);this.mesh.geometry.dispose();this.material.dispose();this.normalTex.dispose();}
+};
+
+/* ---------- KE.boatModel ----------
+   Procedural Japanese wooden boats. 'wasen': a small flat-bottomed plank boat with a transom stern and a tall raked
+   bow, thwarts and an optional boatman in a sedge hat with a pole. 'yakatabune': a longer pleasure boat with a
+   roofed cabin and paper lanterns (emissive) along the eaves. The hull is lofted from cross-sections (outer and
+   inner skins, gunwale rim, transom); planks come from the wood tile running along the hull. Local frame: +x bow,
+   y up, waterline at y = draft. Returns {group, length, width, draft, materials, dispose}. */
+KE.boatModel=(THREE,o={})=>{
+  const style=o.style||'wasen',yak=style==='yakatabune',L=o.length||(yak?9.5:5.6),W=o.width||(yak?2.3:1.35),D=o.depth||(yak?.75:.55),r=KE.random((o.seed||1)*977+17),th=.035,N=18;
+  const woodTex=KE.paintTile(THREE,'wood',o.textureSize||256,(o.seed||1)*13+5);woodTex.encoding=THREE.sRGBEncoding;woodTex.wrapS=woodTex.wrapT=THREE.RepeatWrapping;
+  const tone=new THREE.Color(o.color||(yak?0x9a7650:0x8b6b4a)),outer=new THREE.MeshStandardMaterial({map:woodTex,color:tone,roughness:.82}),inner=new THREE.MeshStandardMaterial({map:woodTex,color:tone.clone().multiplyScalar(.78),roughness:.88,side:THREE.DoubleSide});
+  const group=new THREE.Group();group.name='ke-boat-'+style;const mats=[outer,inner],geos=[];
+  const hw=t=>W/2*Math.min(1,.8+.4*t)*(1-.97*Math.pow(rsmooth(.6,1,t),1.5)),top=t=>D+D*.8*Math.pow(rsmooth(.55,1,t),2)+(yak?0:D*.12*Math.pow(1-t,3)),bot=t=>D*.55*Math.pow(rsmooth(.68,1,t),2)+.04*Math.pow(1-t,6);
+  const prof=(t,inset)=>{const h=Math.max(.001,hw(t)-inset),fb=h*.62,b=bot(t)+inset,tp=top(t);return [[-h,tp],[-fb,b+D*.12],[0,b],[fb,b+D*.12],[h,tp]];};
+  const skin=(inset,flip)=>{const pos=[],uv=[],idx=[];for(let i=0;i<=N;i++){const t=i/N,x=-L/2+t*L,p=prof(t,inset);let arc=0;for(let k=0;k<p.length;k++){if(k)arc+=Math.hypot(p[k][0]-p[k-1][0],p[k][1]-p[k-1][1]);pos.push(x,p[k][1],p[k][0]);uv.push(arc/.9,x/2.5);}}
+    for(let i=0;i<N;i++)for(let k=0;k<4;k++){const a=i*5+k,b=a+1,c=a+5,d=c+1;if(flip)idx.push(a,b,c,b,d,c);else idx.push(a,c,b,b,c,d);}
+    const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));g.setIndex(idx);g.computeVertexNormals();return g;};
+  const add=(g,m,cast=true)=>{geos.push(g);const mesh=new THREE.Mesh(g,m);mesh.castShadow=cast;mesh.receiveShadow=true;group.add(mesh);return mesh;};
+  add(skin(0,false),outer);add(skin(th,true),inner);
+  /* gunwale rim and transom */
+  {const pos=[],idx=[];for(let i=0;i<=N;i++){const t=i/N,x=-L/2+t*L,h=hw(t),tp=top(t);pos.push(x,tp,-h,x,tp,-Math.max(0,h-th*2),x,tp,h,x,tp,Math.max(0,h-th*2));}
+    for(let i=0;i<N;i++){const a=i*4,c=a+4;idx.push(a,c,a+1,a+1,c,c+1,a+2,a+3,c+2,a+3,c+3,c+2);}
+    const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setIndex(idx);g.computeVertexNormals();add(g,inner,false);
+    const p=prof(0,0),tr=new THREE.Shape();tr.moveTo(p[0][0],p[0][1]);for(const q of p.slice(1))tr.lineTo(q[0],q[1]);const tg=new THREE.ShapeGeometry(tr);tg.rotateY(-Math.PI/2);tg.translate(-L/2,0,0);add(tg,outer);}
+  const box=(sx,sy,sz,x,y,z,m=inner)=>{const g=new THREE.BoxGeometry(sx,sy,sz);g.translate(x,y,z);return add(g,m);};
+  for(const t of yak?[.2,.45,.7]:[.3,.62])box(.16,.04,hw(t)*2-.08,-L/2+t*L,top(t)-.12,0);
+  if(yak){/* cabin: posts, a gently arched roof with overhanging eaves, and paper lanterns */
+    const roofTex=KE.paintTile(THREE,'roof',256,(o.seed||1)*7+3);roofTex.encoding=THREE.sRGBEncoding;const roofMat=new THREE.MeshStandardMaterial({map:roofTex,color:0x5b5750,roughness:.75,side:THREE.DoubleSide}),lamp=new THREE.MeshStandardMaterial({color:0xf6dcc0,emissive:0xff6a2a,emissiveIntensity:o.lanterns===false?0:1.6,roughness:.9});mats.push(roofMat,lamp);
+    const x0=-L*.3,x1=L*.28,cw=W*.46,ph=1.45,base=top(.5)-.1;
+    for(const x of [x0,(x0+x1)/2,x1])for(const z of [-cw,cw])box(.09,ph,.09,x,base+ph/2,z);
+    const rg=new THREE.PlaneGeometry(x1-x0+1.1,cw*2+.9,10,6),rp=rg.attributes.position;for(let i=0;i<rp.count;i++){const y=rp.getY(i);rp.setZ(i,-(y*y)*.28);}rg.computeVertexNormals();rg.rotateX(-Math.PI/2);rg.translate((x0+x1)/2,base+ph+.18,0);add(rg,roofMat);
+    for(let k=0;k<4;k++){const lg=new THREE.CylinderGeometry(.13,.13,.3,10);lg.translate(x0+(k+.5)*(x1-x0)/4,base+ph-.12,cw+.36);const m=add(lg,lamp,false);m.userData.lantern=true;}}
+  else if(o.boatman!==false){/* boatman with a sedge hat and pole at the stern */
+    const cloth=new THREE.MeshStandardMaterial({color:0x2e3d5c,roughness:.9}),skinM=new THREE.MeshStandardMaterial({color:0xd8a888,roughness:.7}),straw=new THREE.MeshStandardMaterial({color:0xcfb77a,roughness:.95,side:THREE.DoubleSide});mats.push(cloth,skinM,straw);
+    const bx=-L*.3,by=bot(.2)+.05,body=new THREE.CylinderGeometry(.17,.22,1.05,10);body.translate(bx,by+.55,0);add(body,cloth);
+    const head=new THREE.SphereGeometry(.12,12,10);head.translate(bx,by+1.2,0);add(head,skinM);const hat=new THREE.ConeGeometry(.36,.2,16,1,true);hat.translate(bx,by+1.35,0);add(hat,straw);
+    const pole=new THREE.CylinderGeometry(.025,.025,3.6,6);pole.rotateZ(.5);pole.translate(bx-.55,by+1.,.18);add(pole,inner);}
+  const draft=o.draft||D*.38;
+  return {group,style,length:L,width:W,draft,materials:mats,
+    dispose(){for(const g of geos)g.dispose();for(const m of mats)m.dispose();woodTex.dispose();group.parent&&group.parent.remove(group);}};
+};
+
+KE.registerModule('water',{provides:['Water','waterWaves','River','boatModel']});
 })();
 
 /* ===== module: 24-foliage.js ===== */
@@ -3034,20 +3194,40 @@ function drawSakuraCluster(g,r,W,H,f){
   for(const s of spurs){const m=2+Math.floor(r()*3);for(let i=0;i<m;i++){const a=r()*TAU,d=W*.04*r();drawBlossom(g,r,s[0]+Math.cos(a)*d,s[1]+Math.sin(a)*d,W*(.07+r()*.035),r()*TAU);}}
   for(let i=0;i<5;i++){const p=twigPoint(b,c,e,.3+.7*r());g.fillStyle='#e58aa6';g.beginPath();g.ellipse(p[0]+(r()-.5)*W*.2,p[1]+(r()-.5)*W*.1,W*.018,W*.028,r()*3,0,TAU);g.fill();}
 }
-function drawNeedles(g,r,x0,y0,x1,y1,len,f,dark){
+function drawNeedles(g,r,x0,y0,x1,y1,len,f,dark,hue=130){
   const L=Math.hypot(x1-x0,y1-y0),a=Math.atan2(y1-y0,x1-x0),n=Math.floor(L/(2.6*f));g.lineCap='round';
   for(let i=0;i<n;i++){const t=i/n,x=lerp(x0,x1,t),y=lerp(y0,y1,t),l=len*(.55+.45*Math.sin(Math.PI*(.15+.85*t)))*(.85+.3*r());
-    for(const s of [-1,1]){const na=a+s*(.9+r()*.35)-.25*s*t,ex=x+Math.cos(na)*l,ey=y+Math.sin(na)*l,h=130+r()*22,lg=(20+r()*12)*dark;
+    for(const s of [-1,1]){const na=a+s*(.9+r()*.35)-.25*s*t,ex=x+Math.cos(na)*l,ey=y+Math.sin(na)*l,h=hue+r()*22,lg=(20+r()*12)*dark;
       g.strokeStyle=hsl(h,38+r()*14,lg);g.lineWidth=1.9*f;g.beginPath();g.moveTo(x,y);g.lineTo(ex,ey);g.stroke();
       g.strokeStyle=hsl(h-10,40,lg*1.55,.8);g.lineWidth=1.2*f;g.beginPath();g.moveTo(lerp(x,ex,.6),lerp(y,ey,.6));g.lineTo(ex,ey);g.stroke();}}
 }
-function drawConiferCluster(g,r,W,H,f){
-  const bx=W*.5,by=H*.985,ex=W*(.5+(r()-.5)*.12),ey=H*.06;
-  const twigs=[];for(let k=0;k<7;k++){const t=.18+.72*k/6,x=lerp(bx,ex,t),y=lerp(by,ey,t),s=k%2?1:-1,a=-Math.PI/2+s*(.75+r()*.25),l=W*(.3-.18*t)*(.8+.4*r());twigs.push([x,y,x+Math.cos(a)*l,y+Math.sin(a)*l]);}
-  for(const t of twigs)drawNeedles(g,r,t[0],t[1],t[2],t[3],W*.07,f,.8);
+function drawConiferCluster(g,r,W,H,f,species='conifer'){
+  const pine=species==='jpine',cedar=species==='cedar',nl=pine?1.45:cedar?.8:1,hue=pine?118:cedar?122:130,dk=pine?.82:cedar?.78:1;
+  const bx=W*.5,by=H*.985,ex=W*(.5+(r()-.5)*.12),ey=H*.06,n=cedar?11:7;
+  const twigs=[];for(let k=0;k<n;k++){const t=.18+.72*k/(n-1),x=lerp(bx,ex,t),y=lerp(by,ey,t),s=k%2?1:-1,a=-Math.PI/2+s*(.75+r()*.25),l=W*(.3-.18*t)*(.8+.4*r());twigs.push([x,y,x+Math.cos(a)*l,y+Math.sin(a)*l]);}
+  for(const t of twigs)drawNeedles(g,r,t[0],t[1],t[2],t[3],W*.07*nl,f,.8*dk,hue);
   g.strokeStyle='#5b4030';g.lineWidth=3.2*f;g.beginPath();g.moveTo(bx,by);g.lineTo(ex,ey);g.stroke();
   for(const t of twigs){g.lineWidth=1.8*f;g.beginPath();g.moveTo(t[0],t[1]);g.lineTo(t[2],t[3]);g.stroke();}
-  drawNeedles(g,r,bx,by-H*.05,ex,ey,W*.085,f,1);
+  drawNeedles(g,r,bx,by-H*.05,ex,ey,W*.085*nl,f,dk,hue);
+}
+/* Japanese maple spray: palmate leaves with seven pointed, finely toothed lobes on a forked twig; red to orange with a few yellow. */
+function drawPalmate(g,r,x,y,ang,R,f){
+  const lobes=7,spread=4.3,u=r(),hue=u<.62?2+r()*12:u<.9?16+r()*14:36+r()*10,sat=68+r()*16,lig=34+r()*12;
+  g.save();g.translate(x,y);g.rotate(ang);g.strokeStyle=hsl(hue,sat*.6,lig*.6);g.lineWidth=Math.max(1,R*.05);g.beginPath();g.moveTo(-R*.45,0);g.lineTo(0,0);g.stroke();
+  const pts=[];for(let i=0;i<lobes;i++){const th=-spread/2+i*spread/(lobes-1),L=R*(1-.42*Math.pow(Math.abs(i-(lobes-1)/2)/((lobes-1)/2),1.4))*(.9+.2*r()),vh=th+spread/(lobes-1)/2,w=.2;
+    pts.push([Math.cos(th-w)*L*.45,Math.sin(th-w)*L*.45],[Math.cos(th-w*.35)*L*.8,Math.sin(th-w*.35)*L*.8],[Math.cos(th)*L,Math.sin(th)*L],[Math.cos(th+w*.35)*L*.8,Math.sin(th+w*.35)*L*.8],[Math.cos(th+w)*L*.45,Math.sin(th+w)*L*.45]);
+    if(i<lobes-1)pts.push([Math.cos(vh)*R*.3,Math.sin(vh)*R*.3]);}
+  const gr=g.createRadialGradient(0,0,R*.05,0,0,R);gr.addColorStop(0,hsl(hue+6,sat*.9,lig*.72));gr.addColorStop(.6,hsl(hue,sat,lig));gr.addColorStop(1,hsl(hue-2,sat,lig*1.14));
+  g.fillStyle=gr;g.beginPath();g.moveTo(0,0);for(const p of pts)g.lineTo(p[0],p[1]);g.closePath();g.fill();
+  g.strokeStyle=hsl(hue+10,sat*.7,Math.min(80,lig*1.5),.55);g.lineWidth=Math.max(.6,R*.028);for(let i=0;i<lobes;i++){const th=-spread/2+i*spread/(lobes-1);g.beginPath();g.moveTo(0,0);g.lineTo(Math.cos(th)*R*.8,Math.sin(th)*R*.8);g.stroke();}
+  g.strokeStyle='rgba(60,10,5,.35)';g.lineWidth=Math.max(.5,R*.02);g.beginPath();g.moveTo(0,0);for(const p of pts)g.lineTo(p[0],p[1]);g.closePath();g.stroke();g.restore();
+}
+function drawMapleCluster(g,r,W,H,f){
+  const b=[W*.5,H*.985],e=[W*(.5+(r()-.5)*.2),H*.14],c=[W*(.5+(r()-.5)*.35),H*.55],twigs=[[b,c,e,1]];
+  for(let k=0;k<2;k++){const t=.3+.3*k,p=twigPoint(b,c,e,t),sg=k?1:-1,a=twigAngle(b,c,e,t)+sg*(.7+r()*.3),L=H*.32,end=[clamp(p[0]+Math.cos(a)*L,W*.18,W*.82),clamp(p[1]+Math.sin(a)*L,H*.15,H*.85)];twigs.push([p,[(p[0]+end[0])/2,(p[1]+end[1])/2-H*.03],end,.7]);}
+  for(const [tb,tc,te,sc] of twigs)drawTwig(g,tb,tc,te,4.5*f*sc,1.1*f,'#5a3a2c');
+  for(const [tb,tc,te,sc] of twigs){const n=sc<1?3:4;for(let k=0;k<n;k++){const t=.35+.65*k/(n-1),p=twigPoint(tb,tc,te,t),a=twigAngle(tb,tc,te,t)+(k%2?1:-1)*(.5+r()*.4);drawPalmate(g,r,p[0]+Math.cos(a)*W*.05,p[1]+Math.sin(a)*W*.05,a,W*(.1+r()*.04)*(sc<1?.9:1),f);}
+    drawPalmate(g,r,te[0],te[1],twigAngle(tb,tc,te,1),W*.12,f);}
 }
 function drawFrond(g,r,W,H,f){
   const cx=W*.5,by=H*.995,ty=H*.02,n=46;
@@ -3058,6 +3238,7 @@ function drawFrond(g,r,W,H,f){
 const LEAF_STYLES={
   broadleaf:{shape:'ovate',count:[8,11],len:[.19,.26],wid:.52,hue:[84,106],sat:[38,56],lig:[24,38],serrate:.06,teeth:14,twig:'#5b4632',spread:66},
   bush:{shape:'round',count:[12,16],len:[.13,.18],wid:.62,hue:[96,122],sat:[34,52],lig:[18,30],gloss:true,twig:'#4a3a2a',spread:70,side:3},
+  bamboo:{shape:'lance',count:[6,9],len:[.3,.38],wid:.15,hue:[86,106],sat:[40,56],lig:[21,31],petiole:.04,twig:'#56682e',spread:34,droop:true,side:3,tipShift:-6},
   birch:{shape:'birch',count:[9,13],len:[.14,.2],wid:.72,hue:[66,86],sat:[48,68],lig:[32,46],serrate:.1,teeth:18,twig:'#6b5a4a',spread:68,droop:true},
 };
 /* Returns a mip-mapped sRGB atlas (DataTexture) of leaf clusters with straight (dilated) alpha edges.
@@ -3068,7 +3249,7 @@ KE.leafTexture=(THREE,o={})=>{
   g.clearRect(0,0,S,S);
   for(let cy=0;cy<layout.rows;cy++)for(let cx=0;cx<layout.cols;cx++){
     g.save();g.translate(cx*cw,cy*ch);g.beginPath();g.rect(pad,pad,cw-pad*2,ch-pad*2);g.clip();
-    if(species==='sakura')drawSakuraCluster(g,r,cw,ch,f);else if(species==='conifer')drawConiferCluster(g,r,cw,ch,f);else if(species==='palm')drawFrond(g,r,cw,ch,f);else drawLeafCluster(g,r,cw,ch,LEAF_STYLES[species]||LEAF_STYLES.broadleaf,f);
+    if(species==='sakura')drawSakuraCluster(g,r,cw,ch,f);else if(species==='conifer'||species==='jpine'||species==='cedar')drawConiferCluster(g,r,cw,ch,f,species);else if(species==='maple')drawMapleCluster(g,r,cw,ch,f);else if(species==='palm')drawFrond(g,r,cw,ch,f);else drawLeafCluster(g,r,cw,ch,LEAF_STYLES[species]||LEAF_STYLES.broadleaf,f);
     g.restore();}
   const tex=imageToTexture(THREE,g.getImageData(0,0,S,S),S,S,true);tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping;tex.userData={layout,species,kind:'leafAtlas'};return tex;
 };
@@ -3104,7 +3285,7 @@ function periodicNoise(seed){
       if(dd<f1){f2=f1;f1=dd;id=h(cx*5+2,cy*17+1);}else if(dd<f2)f2=dd;}out[0]=f1;out[1]=f2;out[2]=id;return out;};
   return noise;
 }
-const BARK_KINDS={broadleaf:'oak',oak:'oak',bush:'oak',conifer:'pine',pine:'pine',birch:'birch',sakura:'cherry',cherry:'cherry',palm:'palm'};
+const BARK_KINDS={broadleaf:'oak',oak:'oak',bush:'oak',conifer:'pine',pine:'pine',jpine:'pine',cedar:'cedar',maple:'maple',birch:'birch',sakura:'cherry',cherry:'cherry',palm:'palm',bamboo:'bamboo'};
 /* Tileable procedural bark: returns a mip-mapped sRGB DataTexture (use with RepeatWrapping UVs). */
 KE.barkTexture=(THREE,o={})=>{
   const kind=BARK_KINDS[o.species||o.kind||'broadleaf']||'oak',S=clamp(Math.round(o.size||256),32,1024),N=periodicNoise((o.seed||3)*31+kind.length*7),data=new Uint8Array(S*S*4),cell=[0,0,0];
@@ -3118,6 +3299,9 @@ KE.barkTexture=(THREE,o={})=>{
       const k=1-Math.max(dash*.85,patch*.9);r=(.86-.12*tone+peel*.05)*k+.06;g=(.84-.12*tone-peel*.05)*k+.06;b=(.78-.1*tone-peel*.12)*k+.06;}
     else if(kind==='cherry'){const tone=N.fbm(u*4,v*6,4,6),len=smooth(.62,.74,N.noise(u*5,v*64,5,64))*smooth(.3,.55,N.noise(u*20,v*64,20,64)),sheen=.9+.2*N.noise(u*3,v*1,3,1);
       r=lerp((.3+.08*tone)*sheen,.62,len*.75);g=lerp((.18+.05*tone)*sheen,.55,len*.75);b=lerp((.16+.04*tone)*sheen,.48,len*.75);}
+    else if(kind==='cedar'){const strip=N.noise(u*18,v*2,18,2),fib=.8+.3*N.noise(u*60,v*4,60,4),tone=N.fbm(u*4,v*4,4,4),k=(.72+.36*strip)*fib;r=(.46+.1*tone)*k;g=(.27+.06*tone)*k;b=(.18+.04*tone)*k;}
+    else if(kind==='maple'){const tone=N.fbm(u*4,v*6,4,6),streak=smooth(.6,.8,N.noise(u*14,v*3,14,3))*.18,moss=smooth(.58,.75,N.fbm(u*3,v*5,3,5))*.55,k=1-streak;r=(.3+.07*tone)*k;g=(.27+.06*tone)*k;b=(.24+.05*tone)*k;r+=(.24-r)*moss;g+=(.3-g)*moss;b+=(.13-b)*moss;}
+    else if(kind==='bamboo'){const fib=.94+.08*N.noise(u*90,v*3,90,3),tone=N.fbm(u*4,v*8,4,8),spot=smooth(.78,.9,N.noise(u*12,v*20,12,20))*.12,k=fib*(.95+.1*tone)*(1-spot);r=.9*k;g=.92*k;b=.84*k;}
     else{const ringF=v*8+(N.noise(u*4,v*8,4,8)-.5)*.35,ring=smooth(.8,.97,ringF-Math.floor(ringF)),fib=.82+.3*N.noise(u*72,v*6,72,6),tone=N.fbm(u*4,v*4,4,4);
       const k=(1-ring*.55)*fib;r=(.47+.1*tone)*k;g=(.41+.08*tone)*k;b=(.33+.06*tone)*k;}
     const i=(y*S+x)*4;data[i]=clamp(r*255,0,255);data[i+1]=clamp(g*255,0,255);data[i+2]=clamp(b*255,0,255);data[i+3]=255;}
@@ -3140,6 +3324,11 @@ const SPECIES={
   sakura:{height:4.3,trunkRadius:.24,levels:3,branches:[5,4,3],lengthFalloff:.7,start:[.3,.25,.2],angle:[[45,75],[30,58],[25,50]],gravity:.02,phototropism:.05,wobble:.3,trunkTop:.55,tipRatio:.3,childRadius:.66,shape:'umbrella',segs:[10,7,5,3],radial:[10,7,5,4],leafCount:210,cross:.6,leafSize:1.05,flare:.45,leafMinT:.3,lean:.14,normalBend:.72,barkColor:0xd8c0b8,transColor:0xffc2d8},
   birch:{height:6.5,trunkRadius:.15,levels:3,branches:[10,4,3],lengthFalloff:.5,start:[.32,.25,.2],angle:[[26,44],[28,50],[35,65]],gravity:.07,phototropism:.07,wobble:.12,trunkTop:.94,tipRatio:.18,childRadius:.5,shape:'oval',segs:[12,6,4,3],radial:[9,6,4,3],leafCount:190,cross:.45,leafSize:.85,flare:.25,leafMinT:.3,lean:.05,normalBend:.7,barkColor:0xffffff,transColor:0xe4f07a},
   palm:{height:6,trunkRadius:.2,levels:0,branches:[11],lengthFalloff:.45,start:[1],angle:[[0,0]],gravity:.1,phototropism:.05,wobble:.02,trunkTop:.95,tipRatio:.72,childRadius:.3,shape:'palm',segs:[14],radial:[10],leafCount:0,leafSize:2.6,flare:.35,leafMinT:1,lean:.3,normalBend:.4,barkColor:0xffffff,transColor:0xd6e878},
+  /* Japanese species: black pine (kuromatsu) with a leaning, twisting trunk and flat needle pads at the branch ends;
+     cedar (sugi), tall and narrow; Japanese maple (momiji) with a broad umbrella crown of red palmate leaves. */
+  jpine:{height:6.5,trunkRadius:.23,levels:2,branches:[11,7],lengthFalloff:.7,start:[.3,.3],angle:[[78,100],[25,55]],gravity:.02,phototropism:.03,wobble:.42,trunkTop:.78,tipRatio:.28,childRadius:.5,shape:'umbrella',segs:[12,6,4],radial:[10,6,4],leafCount:520,leafSize:1.5,flare:.45,leafMinT:.35,lean:.42,normalBend:.6,flatCards:true,barkColor:0xa08a78,transColor:0xa6c460},
+  cedar:{height:28,trunkRadius:.42,levels:1,branches:[54],lengthFalloff:.3,start:[.5],angle:[[82,108]],gravity:.05,phototropism:.04,wobble:.04,trunkTop:1,tipRatio:.07,childRadius:.26,shape:'cone',segs:[18,5],radial:[10,5],leafCount:1100,leafSize:1.7,flare:.45,leafMinT:.08,lean:.01,normalBend:.8,cross:.5,cardRoll:1.1,droop:.2,spire:.7,barkColor:0xb07a5a,transColor:0x7fa048},
+  maple:{height:7,trunkRadius:.34,levels:3,branches:[5,4,3],lengthFalloff:.76,start:[.25,.25,.2],angle:[[45,72],[32,60],[25,50]],gravity:.035,phototropism:.07,wobble:.48,trunkTop:.4,tipRatio:.3,childRadius:.62,shape:'umbrella',segs:[10,7,5,3],radial:[12,7,5,4],leafCount:720,cross:.5,leafSize:1.4,flare:.6,leafMinT:.2,lean:.22,normalBend:.75,droop:.24,barkColor:0x8a8378,transColor:0xff6a30},
   bush:{height:1.4,trunkRadius:.05,levels:2,branches:[5,4],stems:5,lengthFalloff:.55,start:[.25,.2],angle:[[30,60],[30,55]],gravity:.03,phototropism:.08,wobble:.2,trunkTop:.8,tipRatio:.3,childRadius:.6,shape:'round',segs:[6,4,3],radial:[5,4,3],leafCount:120,cross:.5,leafSize:.62,flare:0,leafMinT:.12,lean:.4,normalBend:.8,barkColor:0xb8a088,transColor:0xc8e070},
 };
 KE.TREE_SPECIES=Object.keys(SPECIES);
@@ -3246,7 +3435,7 @@ function buildLeaves(branches,sp,o,H,r,layout){
       let face=v3.sub(radialDir,v3.mul(out,v3.dot(radialDir,out)));face=v3.len(face)<.2?perpBasis(out)[0]:v3.norm(face);
       const side=v3.cross(out,face),roll=(r()-.5)*(sp.cardRoll!==undefined?sp.cardRoll:1.5);nrm=v3.norm(v3.add(v3.mul(face,Math.cos(roll)),v3.mul(side,Math.sin(roll))));right=v3.cross(out,nrm);}
     if(v3.dot(nrm,radialDir)<0){nrm=v3.mul(nrm,-1);right=v3.mul(right,-1);}
-    const sz=size*(.72+.5*r()),tint=[1+(r()-.5)*.14,1+(r()-.5)*.12,1+(r()-.5)*.18],droop=sp.flatCards?.08:.16;
+    let sz=size*(.72+.5*r());if(sp.shape==='cone'&&sp.spire){const hy=clamp((p[1]-(c[1]-R[1]))/(2*R[1]),0,1);sz*=1-sp.spire*hy*hy;}const tint=[1+(r()-.5)*.14,1+(r()-.5)*.12,1+(r()-.5)*.18],droop=sp.droop!==undefined?sp.droop:sp.flatCards?.08:.16;
     emitCard(p,out,right,nrm,sz,Math.floor(r()*cols*rows),r()<.5,tint,droop,s.w,br.phase);
     /* optional crossed second card (rotated 90 degrees about the card axis): no gaps when the first is edge-on */
     if(!sp.flatCards&&r()<(sp.cross||0)){const n2=v3.dot(right,radialDir)>=0?right:v3.mul(right,-1);emitCard(p,out,v3.cross(out,n2),n2,sz*.9,Math.floor(r()*cols*rows),r()<.5,tint,droop,s.w,br.phase);cards++;}
@@ -3289,6 +3478,75 @@ KE.treeGeometry=(THREE,o={})=>{
   const stats={species,branches:branches.length,leafCards:leaves?leaves.cards:0,trunkTriangles:tubes.idx.length/3,leafTriangles:leaves?leaves.idx.length/3:0};
   trunk.userData.keTree=stats;if(leafGeo)leafGeo.userData.keTree=stats;
   return {trunk,leaves:leafGeo,bounds:{box,sphere,height:box.max.y,canopy:leaves?{center:new THREE.Vector3(...leaves.canopy.c),radius:new THREE.Vector3(...leaves.canopy.R)}:null},stats,species,layout};
+};
+/* Bamboo stand (moso-like Phyllostachys): tall, nearly vertical culms spread over a few metres, each a tube with a
+   node every ~35 cm (a raised ridge with a dark line and a pale waxy band below it), deep green to yellow-green,
+   bare for the lower half, with fine side branches and drooping fans of narrow leaves (KE.leafTexture({species:
+   'bamboo'}) cards) over the upper part; the tip arches under the foliage. Same output as treeGeometry ({trunk,
+   leaves, bounds, stats}) and attributes, so it works with barkMaterial/foliageMaterial, wind, LOD and impostors. */
+KE.bambooGeometry=(THREE,o={})=>{
+  const r=KE.random((o.seed===undefined?1:o.seed)*6151+71),detail=clamp(o.detail!==undefined?o.detail:(KE.settings.lod||1),.3,1.5),H=o.height||13,n=Math.max(1,Math.round(o.culms||12)),R0=o.radius||.075,spread=o.spread===undefined?3.2:o.spread;
+  const layout=(o.leafCards&&o.leafCards.texture&&o.leafCards.texture.userData&&o.leafCards.texture.userData.layout)||{cols:2,rows:2},cols=layout.cols,rows=layout.rows;
+  const radial=Math.max(detail<.6?4:5,Math.round(8*detail)),nodeGap=o.nodeGap||(detail>=.9?.36:detail>=.6?.45:.55),t=buffers(),ti=[],l=buffers(),li=[];let cards=0;
+  const cx0=[],cz0=[];
+  for(let c=0;c<n;c++){
+    /* culm positions: jittered within the stand, kept at least 35 cm apart */
+    let bx=0,bz=0;for(let tries=0;tries<12;tries++){const a=r()*TAU,d=Math.sqrt(r())*spread*.5;bx=Math.cos(a)*d;bz=Math.sin(a)*d;if(cx0.every((x,k)=>Math.hypot(x-bx,cz0[k]-bz)>.35))break;}cx0.push(bx);cz0.push(bz);
+    const age=r(),h=H*(.72+.28*r()),rad=R0*(.7+.45*r())*(.6+.4*h/H),la=r()*TAU,lean=.015+r()*.045,arch=.05+r()*.07,phase=r();
+    const green=[.15+.24*age,.3+.15*age,.08+.05*age];   /* young culms deep green, older ones yellow-green */
+    const at=u=>{const bend=Math.pow(Math.max(0,u-.7)/.3,2)*arch*h;return [bx+Math.cos(la)*(u*h*lean+bend),u*h-bend*.3,bz+Math.sin(la)*(u*h*lean+bend)];};
+    const nodes=Math.max(6,Math.floor(h/nodeGap)),rings=[];
+    const full=detail>=.9;for(let k=0;k<=nodes;k++){const u=k/nodes;rings.push([u,1]);if(k<nodes){if(full){rings.push([u+.05/nodes,2]);rings.push([u+.2/nodes,0]);rings.push([u+.93/nodes,3]);}else rings.push([u+.08/nodes,0]);}}   /* below detail .9 an internode is one band: the dark node ridge, then green to the next node */
+    const vb=t.p.length/3;let vAcc=0,prev=null;
+    for(const [u0,kind] of rings){const u=Math.min(1,u0),P=at(u),T=v3.norm(v3.sub(at(Math.min(1,u+.01)),at(Math.max(0,u-.01)))),[N]=perpBasis(T),B=v3.cross(T,N);if(prev)vAcc+=v3.len(v3.sub(P,prev));prev=P;
+      const rr=rad*(1-.55*Math.pow(u,1.4))*(kind===1?1.09:kind===2?1.03:1);
+      const col=kind===1?[green[0]*.55,green[1]*.55,green[2]*.5]:kind===2?[.62,.66,.52]:kind===3?[green[0]*.9,green[1]*.95,green[2]*.9]:green,ao=.7+.3*Math.min(1,u*5);
+      for(let j=0;j<=radial;j++){const th=j/radial*TAU,dv=v3.add(v3.mul(N,Math.cos(th)),v3.mul(B,Math.sin(th))),q=v3.add(P,v3.mul(dv,rr)),sh=.92+.08*Math.cos(th*2+c);
+        t.p.push(...q);t.n.push(...dv);t.uv.push(j/radial,vAcc*1.2);t.c.push(col[0]*ao*sh,col[1]*ao*sh,col[2]*ao*sh);t.w.push(clamp(q[1]/H,0,1),0,0,phase);}}
+    for(let i=0;i<rings.length-1;i++)for(let j=0;j<radial;j++){const k=vb+i*(radial+1)+j,k2=k+radial+1;ti.push(k,k2,k+1,k+1,k2,k2+1);}
+    /* side branches at nodes of the upper half, each carrying a fan of drooping leaf cards */
+    const sprays=Math.max(6,Math.round((o.leafCount||60)*detail*(h/H)));
+    for(let q=0;q<sprays;q++){const u=.48+.52*Math.pow(r(),.8),P=at(u),az=r()*TAU,blen=(.25+.55*r())*(1.2-u*.5),bdir=v3.norm([Math.cos(az),.35+r()*.3,Math.sin(az)]),root=v3.add(P,v3.mul(bdir,blen));
+      const fan=2+Math.floor(r()*2);for(let f=0;f<fan;f++){const az2=az+(r()-.5)*1.3,out=v3.norm([Math.cos(az2),-.35-r()*.45,Math.sin(az2)]),sz=(o.leafSize||.95)*(.7+.5*r());
+        let right=v3.norm(v3.cross(out,[0,1,0]));const roll=(r()-.5)*1.2;let nrm=v3.cross(right,out);nrm=v3.norm(v3.add(v3.mul(nrm,Math.cos(roll)),v3.mul(right,Math.sin(roll))));right=v3.norm(v3.cross(out,nrm));
+        const ci=Math.floor(r()*cols*rows),cx=ci%cols,cy=Math.floor(ci/cols),flip=r()<.5,b0=l.p.length/3,droop=.22,bw=.55+.45*u,tintL=[.92+r()*.14,.95+r()*.1,.9+r()*.12];
+        for(let row=0;row<3;row++){const tt=row/2;for(let col=0;col<2;col++){const x=col-.5;let v=v3.add(v3.add(root,v3.mul(out,sz*tt)),v3.mul(right,sz*.55*x));v[1]-=sz*droop*tt*tt;
+          const en=v3.norm(v3.add(v3.mul(nrm,.4),v3.mul(v3.norm([v[0]-bx,.6,v[2]-bz]),.6))),ao=.6+.4*u;
+          l.p.push(...v);l.n.push(...en);l.uv.push((cx+(flip?1-(x+.5):(x+.5))*.992+.004)/cols,1-(cy+1)/rows+(.004+tt*.992)/rows);l.c.push(ao*tintL[0],ao*tintL[1],ao*tintL[2]);l.w.push(clamp(v[1]/H,0,1),bw,tt,phase);}}
+        for(let row=0;row<2;row++){const k=b0+row*2;li.push(k,k+1,k+2,k+1,k+3,k+2);}cards++;}
+      /* the branch itself: a thin 3-sided twig */
+      const tb=t.p.length/3,bn=v3.norm(v3.cross(bdir,[0,1,0])),bu=v3.cross(bn,bdir),br=rad*.18;
+      for(const [pp,rr2] of [[P,br],[root,br*.5]])for(let j=0;j<=3;j++){const th=j/3*TAU,dv=v3.add(v3.mul(bn,Math.cos(th)),v3.mul(bu,Math.sin(th))),qq=v3.add(pp,v3.mul(dv,rr2));t.p.push(...qq);t.n.push(...dv);t.uv.push(j/3,0);t.c.push(green[0]*.8,green[1]*.8,green[2]*.8);t.w.push(clamp(qq[1]/H,0,1),.4,0,phase);}
+      for(let j=0;j<3;j++)ti.push(tb+j,tb+4+j,tb+j+1,tb+j+1,tb+4+j,tb+5+j);}
+  }
+  const trunk=makeGeometry(THREE,t,ti),leaves=makeGeometry(THREE,l,li);const box=trunk.boundingBox.clone().union(leaves.boundingBox),sphere=box.getBoundingSphere(new THREE.Sphere());
+  const stats={species:'bamboo',culms:n,leafCards:cards,trunkTriangles:ti.length/3,leafTriangles:li.length/3};trunk.userData.keTree=stats;leaves.userData.keTree=stats;
+  return {trunk,leaves,bounds:{box,sphere,height:box.max.y,canopy:null},stats,species:'bamboo',layout};
+};
+/* Daisugi (台杉): a Kitayama cedar pruned over generations into a low gnarled stool whose thick horizontal limbs carry many
+   tall, dead-straight shoots, each crowned with a small conical tuft. Built from the same tube and leaf-card code
+   as treeGeometry (stool = level 0, limbs = 1, shoots = 2, tuft twigs = 3); use the cedar leaf texture and bark. */
+KE.daisugiGeometry=(THREE,o={})=>{
+  const r=KE.random((o.seed===undefined?1:o.seed)*4099+5),detail=clamp(o.detail!==undefined?o.detail:(KE.settings.lod||1),.4,1.5),H=o.height||22;
+  const layout=(o.leafCards&&o.leafCards.texture&&o.leafCards.texture.userData&&o.leafCards.texture.userData.layout)||{cols:2,rows:2};
+  const sp={radial:[18,12,7,3],segs:[8,8,10,2],flare:.8,leafCount:o.leafCount||1100,leafSize:o.leafSize||.95,normalBend:.55,cross:.5,cardRoll:1.1,droop:.18,leafMinT:.05,tipRatio:.5};
+  const branches=[],mk=(level,pts,r0,r1,phase,wBase)=>{const n=pts.length;let len=0;for(let i=1;i<n;i++)len+=v3.len(v3.sub(pts[i],pts[i-1]));
+    const b={level,pts,radii:pts.map((_,i)=>lerp(r0,r1,i/(n-1))),weights:pts.map((_,i)=>Math.min(1,wBase+WEIGHT_STEP[Math.min(level,4)]*i/(n-1))),phase,length:len,children:0};branches.push(b);return b;};
+  const stumpH=2.1+r()*.6,stump=[];for(let i=0;i<=6;i++){const t=i/6;stump.push([Math.sin(t*3+r())*.18,t*stumpH,Math.cos(t*2.3+r())*.14]);}mk(0,stump,1.1,.85,r(),0);
+  const top=stump[6],limbs=o.limbs||6;let shootsN=0;
+  for(let L=0;L<limbs;L++){const az=L/limbs*TAU+r()*.5,len=3+r()*2.4,pts=[];let d=v3.norm([Math.cos(az),.2+r()*.2,Math.sin(az)]),p=v3.add(top,[0,-.35,0]);pts.push(p);
+    for(let i=1;i<=8;i++){d=v3.norm(v3.add(d,[(r()-.5)*.4,(r()-.5)*.22-.02,(r()-.5)*.4]));p=v3.add(p,v3.mul(d,len/8));pts.push(p);}
+    const limb=mk(1,pts,.6,.28,r(),0),ns=o.shootsPerLimb||3;limb.children=ns;
+    for(let k=0;k<ns;k++){const s=sampleBranch(limb,Math.min(1,.3+.7*(k+.2+r()*.6)/ns)),h=H*(.55+.45*r())-s.p[1],a=s.p,b=[a[0]+(r()-.5)*.8,a[1]+h,a[2]+(r()-.5)*.8],spts=[];for(let i=0;i<=8;i++)spts.push(v3.lerp(a,b,i/8));
+      const shoot=mk(2,spts,.19,.07,r(),.05),nt=Math.round(16*clamp(detail,.5,1.2));shoot.children=nt;shootsN++;
+      for(let q=0;q<nt;q++){const u=.76+.24*q/nt,s2=sampleBranch(shoot,u),az2=q*GOLDEN+r()*.4,tl=(1.15-.95*(u-.76)/.24)*(.8+.4*r()),dir=v3.norm([Math.cos(az2),-.12+r()*.3,Math.sin(az2)]);
+        mk(3,[s2.p,v3.add(s2.p,v3.mul(dir,tl*.5)),v3.add(s2.p,v3.add(v3.mul(dir,tl),[0,-.15,0]))],.045,.015,shoot.phase,.4);}}
+    /* a clipped foliage pad at the end of each limb */
+    const end=pts[pts.length-1];for(let q=0;q<8;q++){const az2=q/8*TAU+r(),dir=v3.norm([Math.cos(az2),.1+r()*.2,Math.sin(az2)]),tl=.7+.4*r();mk(3,[end,v3.add(end,v3.mul(dir,tl*.5)),v3.add(end,v3.mul(dir,tl))],.05,.02,limb.phase,.3);}}
+  const tubes=buildTubes(branches,sp,detail,H,null,r),leaves=buildLeaves(branches,sp,{detail,leafCards:o.leafCards},H,r,layout);
+  const trunk=makeGeometry(THREE,tubes.a,tubes.idx),leafGeo=leaves?makeGeometry(THREE,leaves.a,leaves.idx):null,box=trunk.boundingBox.clone();if(leafGeo)box.union(leafGeo.boundingBox);
+  const stats={species:'daisugi',shoots:shootsN,branches:branches.length,leafCards:leaves?leaves.cards:0,trunkTriangles:tubes.idx.length/3,leafTriangles:leaves?leaves.idx.length/3:0};trunk.userData.keTree=stats;if(leafGeo)leafGeo.userData.keTree=stats;
+  return {trunk,leaves:leafGeo,bounds:{box,sphere:box.getBoundingSphere(new THREE.Sphere()),height:box.max.y,canopy:null},stats,species:'daisugi',layout};
 };
 /* Convenience: geometry + textures + materials + shadow materials in one Group. */
 KE.tree=(THREE,o={})=>{
@@ -3878,7 +4136,7 @@ KE.foliage={
   glsl:{gust:GUST_GLSL,treeWind:TREE_WIND_GLSL}
 };
 
-KE.registerModule('foliage',{provides:['fernClump','flowerHead','foliageUniforms','foliage','foliageMaterial','foliageDepthMaterial','treeGeometry','tree','TREE_SPECIES','leafTexture','barkTexture','barkMaterial','grassField','fur','FoliageSpawner']});
+KE.registerModule('foliage',{provides:['bambooGeometry','daisugiGeometry','fernClump','flowerHead','foliageUniforms','foliage','foliageMaterial','foliageDepthMaterial','treeGeometry','tree','TREE_SPECIES','leafTexture','barkTexture','barkMaterial','grassField','fur','FoliageSpawner']});
 })();
 
 /* ===== module: 26-weather.js ===== */
@@ -5106,7 +5364,7 @@ function biomeContext(hf,o){
   return {water,range,beach:o.beachHeight===undefined?Math.max(1.2,range*.012):o.beachHeight,snowLine:o.snowLine===undefined?hf.minHeight+range*.74:o.snowLine,
     alpine:o.alpineLine===undefined?hf.minHeight+range*.6:o.alpineLine,rock0:o.rockSlope?o.rockSlope[0]:.55,rock1:o.rockSlope?o.rockSlope[1]:.95,
     moisture:makeNoise(((o.seed===undefined?1:o.seed)>>>0)*13+5),mscale:1/(o.moistureScale||260),flow,flow0:Math.log(1+flowMean*2.5),flow1:Math.log(1+flowMean*14),delta:hf.masks&&hf.masks.delta,
-    dirt:o.dirt===undefined?1:o.dirt,sand:o.sand===undefined?1:o.sand,snow:o.snow===undefined?1:o.snow,rock:o.rock===undefined?1:o.rock};
+    dirt:o.dirt===undefined?1:o.dirt,sand:o.sand===undefined?1:o.sand,snow:o.snow===undefined?1:o.snow,rock:o.rock===undefined?1:o.rock,snowSlope:o.snowSlope||[.55,1.1],snowOverRock:!!o.snowOverRock};
 }
 function computeBiomes(hf,ctx,out,i0,j0,i1,j1){
   const s=hf.size,d=hf.data,sp=hf.spacing,c2=2;
@@ -5118,12 +5376,12 @@ function computeBiomes(hf,ctx,out,i0,j0,i1,j1){
     let rock=smooth(ctx.rock0,ctx.rock1,slope+Math.max(0,-curv)*1.4+n2*.12)*ctx.rock;
     rock=Math.max(rock,smooth(ctx.snowLine,ctx.snowLine+ctx.range*.2,h)*smooth(.35,.7,slope)*ctx.rock);
     const snowH=h+(mn*.6+n2*.4)*ctx.range*.07;
-    const snow=smooth(ctx.snowLine-ctx.range*.03,ctx.snowLine+ctx.range*.05,snowH)*(1-smooth(.55,1.1,slope))*ctx.snow;
+    const snow=smooth(ctx.snowLine-ctx.range*.03,ctx.snowLine+ctx.range*.05,snowH)*(1-smooth(ctx.snowSlope[0],ctx.snowSlope[1],slope))*ctx.snow;
     const beach=ctx.water+ctx.beach*(1+n2*.8);
     const sand=(1-smooth(beach-ctx.beach*.4,beach+ctx.beach*.6,h))*(1-smooth(.35,.7,slope))*ctx.sand;
     const dry=clamp((-mn-.04)*3.2,0,1),alp=smooth(ctx.alpine-ctx.range*.04,ctx.alpine+ctx.range*.08,h+n2*ctx.range*.04);
     let dirt=clamp(fl*.8+dep*.35+dry*(.35+smooth(.15,.45,slope)*.4)+alp*(.25+smooth(.25,.55,slope)*.4)+smooth(.4,.62,slope)*.2+Math.max(0,curv)*.3,0,1)*ctx.dirt;
-    let rem=1;const wr=rock*rem;rem-=wr;const wsn=snow*rem;rem-=wsn;const ws=sand*rem;rem-=ws;const wd=dirt*rem;rem-=wd;const wg=Math.max(0,rem);
+    let rem=1;const wr=rock*(ctx.snowOverRock?1-snow*.85:1)*rem;rem-=wr;const wsn=snow*rem;rem-=wsn;const ws=sand*rem;rem-=ws;const wd=dirt*rem;rem-=wd;const wg=Math.max(0,rem);
     let R=Math.round(wg*255),G=Math.round(ws*255),B=Math.round(wr*255),A=Math.round(wsn*255),sum=R+G+B+A;
     if(sum>255){const over=sum-255;if(R>=over)R-=over;else if(B>=over)B-=over;else{G=Math.max(0,G-over);}}
     void wd;out[k*4]=R;out[k*4+1]=G;out[k*4+2]=B;out[k*4+3]=A;
@@ -5214,7 +5472,7 @@ const TERRAIN_RELIEF=`vec3 keTReliefNormal(vec3 pos,vec3 n,float h,float strengt
 const TERRAIN_FRAG_DECL=`
 uniform sampler2D keNormalMap;uniform sampler2D keBiome;uniform sampler2D keHA;uniform sampler2D keHB;
 uniform sampler2D keTGrass;uniform sampler2D keTSand;uniform sampler2D keTDirt;uniform sampler2D keTRock;uniform sampler2D keTSnow;
-uniform float keTexScale;uniform float keRelief;uniform float keWaterLevel;uniform float keMacro;uniform vec3 keGrassTint;uniform float keFarScale;
+uniform float keTexScale;uniform float keRelief;uniform float keTHTexel;uniform float keWaterLevel;uniform float keMacro;uniform vec3 keGrassTint;uniform float keFarScale;
 varying vec3 keTWorld;varying vec2 keTUV;varying float keTLod;
 ${TERRAIN_RELIEF}
 vec3 keTNormalAt(vec2 uv){vec2 e=texture2D(keNormalMap,uv).xy*2.-1.;return normalize(vec3(e.x,sqrt(max(0.,1.-dot(e,e))),e.y));}
@@ -5248,9 +5506,13 @@ kCol*=1.+keMacro*((kM2-.5)*.22+(kM3-.5)*.1);
 float kWet=1.-smoothstep(keWaterLevel+.05,keWaterLevel+1.1,keTWorld.y);
 diffuseColor.rgb*=pow(max(kCol,vec3(0.)),vec3(2.2))*mix(1.,.62,kWet*(1.-kBS));
 float kHeight=dot(kBA,vec4(kHA.r,kHA.g,kHA.b,kRockH))+kBS*kHB.g;
+/* relief slope from texture-space differences of the near-scale layer heights two texels apart (smooth, mip-aware) */
+vec2 kte=vec2(keTHTexel,0.);vec4 kHA0=texture2D(keHA,kuv),kHAx=texture2D(keHA,kuv+kte),kHAz=texture2D(keHA,kuv+kte.yx);float kHB0=texture2D(keHB,kuv).g;
+float kh0=dot(kBA,vec4(kHA0.r,kHA0.g,kHA0.b,kRockH))+kBS*kHB0;
+vec3 kGrad=vec3(dot(kBA,vec4(kHAx.r,kHAx.g,kHAx.b,kRockH))+kBS*texture2D(keHB,kuv+kte).g-kh0,0.,dot(kBA,vec4(kHAz.r,kHAz.g,kHAz.b,kRockH))+kBS*texture2D(keHB,kuv+kte.yx).g-kh0);
 `;
 const TERRAIN_ROUGH=`roughnessFactor=mix(dot(kBA,vec4(.95,.9,.96,.82))+kBS*.55,.28,kWet*.85);`;
-const TERRAIN_NORMAL=`normal=normalize((viewMatrix*vec4(kN,0.)).xyz);normal=keTReliefNormal(-vViewPosition,normal,kHeight,keRelief*(1.-kFar*.65));`;
+const TERRAIN_NORMAL=`normal=normalize((viewMatrix*vec4(kN,0.)).xyz);{vec3 kg=(viewMatrix*vec4(kGrad,0.)).xyz;normal=normalize(normal-keRelief*30.*(1.-kFar*.8)*(kg-normal*dot(kg,normal)));}`;
 
 function replaceOrThrow(src,target,repl,what){if(src.indexOf(target)<0)throw new Error('KE.GPUTerrain: shader chunk '+target+' not found in '+what+' (Three.js r128 expected)');return src.replace(target,repl);}
 
@@ -5492,7 +5754,7 @@ class GPUTerrain{
     if(!ha||!hb){const g=new T.DataTexture(new Uint8Array([128,128,128,128]),1,1,T.RGBAFormat);g.needsUpdate=true;gray.push(g);ha=ha||g;hb=hb||g;}
     const m=new T.MeshStandardMaterial({roughness:.92,metalness:0});m.name='ke-terrain';m.extensions={derivatives:true};
     m.userData.keTextures=own?[...tex,...tex.heightMaps]:gray;this._materialTextures=own?[...tex,...tex.heightMaps,...gray]:gray;
-    const F=this.materialUniforms={keBiome:{value:this.biomeTexture},keHA:{value:ha},keHB:{value:hb},keTGrass:{value:pick('grass')},keTSand:{value:pick('sand')},keTDirt:{value:pick('dirt')},keTRock:{value:pick('rock')},keTSnow:{value:pick('snow')},
+    const F=this.materialUniforms={keBiome:{value:this.biomeTexture},keHA:{value:ha},keTHTexel:{value:2/((ha.image&&ha.image.width>1)?ha.image.width:512)},keHB:{value:hb},keTGrass:{value:pick('grass')},keTSand:{value:pick('sand')},keTDirt:{value:pick('dirt')},keTRock:{value:pick('rock')},keTSnow:{value:pick('snow')},
       keTexScale:{value:o.textureScale||.3},keFarScale:{value:o.farScale||.2},keRelief:{value:o.relief===undefined?.32:o.relief},keWaterLevel:{value:this.waterLevel},keMacro:{value:o.macro===undefined?1:o.macro},keGrassTint:{value:new THREE.Vector3(...(Array.isArray(o.grassTint)?o.grassTint:[1,1,1]))}};
     for(const k of ['keTGrass','keTSand','keTDirt','keTRock','keTSnow'])if(!F[k].value)throw new Error('KE.GPUTerrain: textures missing '+k.slice(3).toLowerCase());
     m.onBeforeCompile=sh=>{for(const k in F)sh.uniforms[k]=F[k];

@@ -57,6 +57,14 @@ const PRELUDE=()=>{
       assert(v.same&&v.differs,k+' determinism');assert(v.trunk==='ok'&&v.leaves==='ok',k+' geometry '+v.trunk+'/'+v.leaves);assert(v.cards>=(k==='palm'?5:40),k+' leaf cards');
       assert(Math.abs(v.height-v.want)<.02*v.want,k+' height '+v.height);assert(v.flutterMax>.9&&v.phases>4,k+' leaf wind weights');assert(v.rootW<.02,k+' root anchored');}
     assert(Math.abs(r.custom-9)<.1,'custom height '+r.custom);});
+  await test('bamboo stands and the daisugi: deterministic, valid, tall, detail-scaled',async()=>{const r=await page.evaluate(()=>{const T=THREE,KE=KitsuneEngine,out={};
+    const sig=g=>{const a=g.attributes.position.array;let h=0;for(let i=0;i<a.length;i++)h=(h*31+Math.round(a[i]*1e4))|0;return h;};
+    const ok=g=>{const p=g.attributes.position,w=g.attributes.windWeight,idx=g.index.array;if(!w||!g.attributes.uv||!g.attributes.color)return 'attrs';for(let i=0;i<p.array.length;i++)if(!Number.isFinite(p.array[i]))return 'NaN';for(let i=0;i<idx.length;i++)if(idx[i]>=p.count)return 'index';return 'ok';};
+    for(const [name,make] of [['bamboo',o=>KE.bambooGeometry(T,o)],['daisugi',o=>KE.daisugiGeometry(T,o)]]){const a=make({seed:4,detail:1}),b=make({seed:4,detail:1}),c=make({seed:5,detail:1}),lo=make({seed:4,detail:.4});
+      out[name]={same:sig(a.trunk)===sig(b.trunk)&&sig(a.leaves)===sig(b.leaves),differs:sig(a.trunk)!==sig(c.trunk),trunk:ok(a.trunk),leaves:ok(a.leaves),height:+a.bounds.height.toFixed(1),cards:a.stats.leafCards,
+        tris:a.stats.trunkTriangles+a.stats.leafTriangles,trisLow:lo.stats.trunkTriangles+lo.stats.leafTriangles};for(const g of [a,b,c,lo]){g.trunk.dispose();g.leaves.dispose();}}
+    const tex=KE.leafTexture(T,{species:'bamboo',size:128}),mp=KE.leafTexture(T,{species:'maple',size:128});out.textures=[tex.userData.species,mp.userData.species];tex.dispose();mp.dispose();return out;});
+    console.log('   ',JSON.stringify(r));for(const k of ['bamboo','daisugi']){const v=r[k];assert(v.same&&v.differs,k+' determinism');assert(v.trunk==='ok'&&v.leaves==='ok',k+' geometry');assert(v.height>10,k+' height');assert(v.cards>100,k+' cards');assert(v.trisLow<v.tris*.8,k+' detail scaling');}});
   await test('foliage material and its shadow depth material displace vertices identically (mesh and InstancedMesh)',async()=>{const r=await page.evaluate(()=>{const T=THREE,KE=KitsuneEngine;
     const renderer=new T.WebGLRenderer({preserveDrawingBuffer:true});renderer.setSize(64,64);const W=192,H=192,rt=new T.WebGLRenderTarget(W,H);
     const tex=KE.leafTexture(T,{species:'broadleaf',size:128}),geo=KE.treeGeometry(T,{species:'broadleaf',seed:4,leafCards:{texture:tex}});

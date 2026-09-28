@@ -16,8 +16,8 @@ Read this page first, then the reference for the system you are touching.
 | 16-lights | `lights` | `KE.LightPool` | rendering-v3.md §5 | (pipeline, game) |
 | 18-gi | `gi` | `KE.ProbeVolume` | rendering-v3.md §10 | test_gi.cjs |
 | 20-materials | `materials` | `KE.MaterialGraph`, `KE.shaderGraph`, `KE.materialLibrary` | materials.md | test_materials.cjs |
-| 22-water | `water` | `KE.Water`, `KE.waterWaves` | rendering-v3.md §6 | test_water.cjs |
-| 24-foliage | `foliage` | `KE.treeGeometry`, `KE.tree`, `KE.FoliageSpawner`, `KE.grassField`, `KE.fur`, `KE.foliage` | foliage.md | test_foliage.cjs |
+| 22-water | `water` | `KE.Water`, `KE.waterWaves`, `KE.River`, `KE.boatModel` | rendering-v3.md §6 | test_water.cjs |
+| 24-foliage | `foliage` | `KE.treeGeometry`, `KE.tree`, `KE.bambooGeometry`, `KE.daisugiGeometry`, `KE.FoliageSpawner`, `KE.grassField`, `KE.fur`, `KE.foliage` | foliage.md | test_foliage.cjs |
 | 26-weather | `weather` | `KE.SurfaceWeather` | rendering-v3.md §11 | test_weather.cjs |
 | 30-geometry | `geometry` | `KE.simplify`, `KE.buildLODs`, `KE.LODMesh`, `KE.InstancedLOD`, `KE.Impostor`, `KE.VirtualGeometry` | geometry.md | test_geometry.cjs |
 | 32-world | `world` | `KE.Heightfield`, `KE.GPUTerrain`, `KE.WorldPartition`, `KE.scatterCell` | world.md | test_world.cjs |
@@ -49,9 +49,9 @@ This table names the UE5 feature each system is modelled on so you can find the 
 | Exponential Height Fog, Volumetric Fog | pipeline composite + volumetric pass | Analytic height fog with sun inscatter; shadowed volumetric fog marched through cascade shadow maps; light shafts | Half resolution, sun only |
 | Post process, Local Exposure | pipeline final pass | Eye adaptation, local exposure, bloom, lens flare, ACES, grading, DOF, motion blur, debug view modes | No bokeh shapes, camera-only motion blur |
 | Material Editor | `KE.MaterialGraph`, `KE.shaderGraph` | JSON node graphs → GLSL on Standard/Physical materials, live parameters, instances sharing programs | No visual node canvas |
-| Water plugin | `KE.Water` | Gerstner waves, SSR, refraction, depth absorption, caustics, foam, underwater | Single water body, no river splines |
+| Water plugin | `KE.Water`, `KE.River` | Gerstner waves, SSR, refraction, depth absorption, caustics, foam, underwater; spline rivers carved into the terrain with downstream-scrolling flow | No fluid simulation, waterfalls or wakes; one ocean body |
 | Weather (wetness, snow) | `KE.SurfaceWeather` | Wet darkening, puddles with rain ripples, snow cover with drifts | No sheltering, noise-driven puddles |
-| Foliage, PCG, Groom | `KE.FoliageSpawner`, `KE.treeGeometry`, `KE.grassField`, `KE.fur` | Procedural trees (six species), Poisson placement, world-anchored grass with interactors, shell fur | Shell fur rather than strands; no billboard tree LOD in the spawner |
+| Foliage, PCG, Groom | `KE.FoliageSpawner`, `KE.treeGeometry`, `KE.grassField`, `KE.fur` | Procedural trees (nine species including Japanese cedar, black pine and maple), bamboo stands, a daisugi, Poisson placement, world-anchored grass with interactors, shell fur | Shell fur rather than strands; no billboard tree LOD in the spawner |
 | World Partition, Landscape | `KE.WorldPartition`, `KE.GPUTerrain`, `KE.Heightfield` | Cell streaming with time budgets and HLOD proxies; CDLOD terrain in one draw with sculpting; hydraulic and thermal erosion | One heightfield per terrain, no holes or caves |
 | Chaos Physics | `KE.Physics3D` (Rapier 0.19) | Rigid bodies, joints, character controller, vehicles, Voronoi fracture, buoyancy | Main-thread, no cross-platform determinism claim |
 | Chaos Cloth | `KE.Cloth` | Position-based cloth with pins on moving anchors, aerodynamic wind with gusts, sphere/capsule/ground collision | CPU only, no self-collision or tearing, grid sheets only |

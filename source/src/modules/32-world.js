@@ -308,7 +308,7 @@ function biomeContext(hf,o){
   return {water,range,beach:o.beachHeight===undefined?Math.max(1.2,range*.012):o.beachHeight,snowLine:o.snowLine===undefined?hf.minHeight+range*.74:o.snowLine,
     alpine:o.alpineLine===undefined?hf.minHeight+range*.6:o.alpineLine,rock0:o.rockSlope?o.rockSlope[0]:.55,rock1:o.rockSlope?o.rockSlope[1]:.95,
     moisture:makeNoise(((o.seed===undefined?1:o.seed)>>>0)*13+5),mscale:1/(o.moistureScale||260),flow,flow0:Math.log(1+flowMean*2.5),flow1:Math.log(1+flowMean*14),delta:hf.masks&&hf.masks.delta,
-    dirt:o.dirt===undefined?1:o.dirt,sand:o.sand===undefined?1:o.sand,snow:o.snow===undefined?1:o.snow,rock:o.rock===undefined?1:o.rock};
+    dirt:o.dirt===undefined?1:o.dirt,sand:o.sand===undefined?1:o.sand,snow:o.snow===undefined?1:o.snow,rock:o.rock===undefined?1:o.rock,snowSlope:o.snowSlope||[.55,1.1],snowOverRock:!!o.snowOverRock};
 }
 function computeBiomes(hf,ctx,out,i0,j0,i1,j1){
   const s=hf.size,d=hf.data,sp=hf.spacing,c2=2;
@@ -320,12 +320,12 @@ function computeBiomes(hf,ctx,out,i0,j0,i1,j1){
     let rock=smooth(ctx.rock0,ctx.rock1,slope+Math.max(0,-curv)*1.4+n2*.12)*ctx.rock;
     rock=Math.max(rock,smooth(ctx.snowLine,ctx.snowLine+ctx.range*.2,h)*smooth(.35,.7,slope)*ctx.rock);
     const snowH=h+(mn*.6+n2*.4)*ctx.range*.07;
-    const snow=smooth(ctx.snowLine-ctx.range*.03,ctx.snowLine+ctx.range*.05,snowH)*(1-smooth(.55,1.1,slope))*ctx.snow;
+    const snow=smooth(ctx.snowLine-ctx.range*.03,ctx.snowLine+ctx.range*.05,snowH)*(1-smooth(ctx.snowSlope[0],ctx.snowSlope[1],slope))*ctx.snow;
     const beach=ctx.water+ctx.beach*(1+n2*.8);
     const sand=(1-smooth(beach-ctx.beach*.4,beach+ctx.beach*.6,h))*(1-smooth(.35,.7,slope))*ctx.sand;
     const dry=clamp((-mn-.04)*3.2,0,1),alp=smooth(ctx.alpine-ctx.range*.04,ctx.alpine+ctx.range*.08,h+n2*ctx.range*.04);
     let dirt=clamp(fl*.8+dep*.35+dry*(.35+smooth(.15,.45,slope)*.4)+alp*(.25+smooth(.25,.55,slope)*.4)+smooth(.4,.62,slope)*.2+Math.max(0,curv)*.3,0,1)*ctx.dirt;
-    let rem=1;const wr=rock*rem;rem-=wr;const wsn=snow*rem;rem-=wsn;const ws=sand*rem;rem-=ws;const wd=dirt*rem;rem-=wd;const wg=Math.max(0,rem);
+    let rem=1;const wr=rock*(ctx.snowOverRock?1-snow*.85:1)*rem;rem-=wr;const wsn=snow*rem;rem-=wsn;const ws=sand*rem;rem-=ws;const wd=dirt*rem;rem-=wd;const wg=Math.max(0,rem);
     let R=Math.round(wg*255),G=Math.round(ws*255),B=Math.round(wr*255),A=Math.round(wsn*255),sum=R+G+B+A;
     if(sum>255){const over=sum-255;if(R>=over)R-=over;else if(B>=over)B-=over;else{G=Math.max(0,G-over);}}
     void wd;out[k*4]=R;out[k*4+1]=G;out[k*4+2]=B;out[k*4+3]=A;
@@ -416,7 +416,7 @@ const TERRAIN_RELIEF=`vec3 keTReliefNormal(vec3 pos,vec3 n,float h,float strengt
 const TERRAIN_FRAG_DECL=`
 uniform sampler2D keNormalMap;uniform sampler2D keBiome;uniform sampler2D keHA;uniform sampler2D keHB;
 uniform sampler2D keTGrass;uniform sampler2D keTSand;uniform sampler2D keTDirt;uniform sampler2D keTRock;uniform sampler2D keTSnow;
-uniform float keTexScale;uniform float keRelief;uniform float keWaterLevel;uniform float keMacro;uniform vec3 keGrassTint;uniform float keFarScale;
+uniform float keTexScale;uniform float keRelief;uniform float keTHTexel;uniform float keWaterLevel;uniform float keMacro;uniform vec3 keGrassTint;uniform float keFarScale;
 varying vec3 keTWorld;varying vec2 keTUV;varying float keTLod;
 ${TERRAIN_RELIEF}
 vec3 keTNormalAt(vec2 uv){vec2 e=texture2D(keNormalMap,uv).xy*2.-1.;return normalize(vec3(e.x,sqrt(max(0.,1.-dot(e,e))),e.y));}
@@ -450,9 +450,13 @@ kCol*=1.+keMacro*((kM2-.5)*.22+(kM3-.5)*.1);
 float kWet=1.-smoothstep(keWaterLevel+.05,keWaterLevel+1.1,keTWorld.y);
 diffuseColor.rgb*=pow(max(kCol,vec3(0.)),vec3(2.2))*mix(1.,.62,kWet*(1.-kBS));
 float kHeight=dot(kBA,vec4(kHA.r,kHA.g,kHA.b,kRockH))+kBS*kHB.g;
+/* relief slope from texture-space differences of the near-scale layer heights two texels apart (smooth, mip-aware) */
+vec2 kte=vec2(keTHTexel,0.);vec4 kHA0=texture2D(keHA,kuv),kHAx=texture2D(keHA,kuv+kte),kHAz=texture2D(keHA,kuv+kte.yx);float kHB0=texture2D(keHB,kuv).g;
+float kh0=dot(kBA,vec4(kHA0.r,kHA0.g,kHA0.b,kRockH))+kBS*kHB0;
+vec3 kGrad=vec3(dot(kBA,vec4(kHAx.r,kHAx.g,kHAx.b,kRockH))+kBS*texture2D(keHB,kuv+kte).g-kh0,0.,dot(kBA,vec4(kHAz.r,kHAz.g,kHAz.b,kRockH))+kBS*texture2D(keHB,kuv+kte.yx).g-kh0);
 `;
 const TERRAIN_ROUGH=`roughnessFactor=mix(dot(kBA,vec4(.95,.9,.96,.82))+kBS*.55,.28,kWet*.85);`;
-const TERRAIN_NORMAL=`normal=normalize((viewMatrix*vec4(kN,0.)).xyz);normal=keTReliefNormal(-vViewPosition,normal,kHeight,keRelief*(1.-kFar*.65));`;
+const TERRAIN_NORMAL=`normal=normalize((viewMatrix*vec4(kN,0.)).xyz);{vec3 kg=(viewMatrix*vec4(kGrad,0.)).xyz;normal=normalize(normal-keRelief*30.*(1.-kFar*.8)*(kg-normal*dot(kg,normal)));}`;
 
 function replaceOrThrow(src,target,repl,what){if(src.indexOf(target)<0)throw new Error('KE.GPUTerrain: shader chunk '+target+' not found in '+what+' (Three.js r128 expected)');return src.replace(target,repl);}
 
@@ -694,7 +698,7 @@ class GPUTerrain{
     if(!ha||!hb){const g=new T.DataTexture(new Uint8Array([128,128,128,128]),1,1,T.RGBAFormat);g.needsUpdate=true;gray.push(g);ha=ha||g;hb=hb||g;}
     const m=new T.MeshStandardMaterial({roughness:.92,metalness:0});m.name='ke-terrain';m.extensions={derivatives:true};
     m.userData.keTextures=own?[...tex,...tex.heightMaps]:gray;this._materialTextures=own?[...tex,...tex.heightMaps,...gray]:gray;
-    const F=this.materialUniforms={keBiome:{value:this.biomeTexture},keHA:{value:ha},keHB:{value:hb},keTGrass:{value:pick('grass')},keTSand:{value:pick('sand')},keTDirt:{value:pick('dirt')},keTRock:{value:pick('rock')},keTSnow:{value:pick('snow')},
+    const F=this.materialUniforms={keBiome:{value:this.biomeTexture},keHA:{value:ha},keTHTexel:{value:2/((ha.image&&ha.image.width>1)?ha.image.width:512)},keHB:{value:hb},keTGrass:{value:pick('grass')},keTSand:{value:pick('sand')},keTDirt:{value:pick('dirt')},keTRock:{value:pick('rock')},keTSnow:{value:pick('snow')},
       keTexScale:{value:o.textureScale||.3},keFarScale:{value:o.farScale||.2},keRelief:{value:o.relief===undefined?.32:o.relief},keWaterLevel:{value:this.waterLevel},keMacro:{value:o.macro===undefined?1:o.macro},keGrassTint:{value:new THREE.Vector3(...(Array.isArray(o.grassTint)?o.grassTint:[1,1,1]))}};
     for(const k of ['keTGrass','keTSand','keTDirt','keTRock','keTSnow'])if(!F[k].value)throw new Error('KE.GPUTerrain: textures missing '+k.slice(3).toLowerCase());
     m.onBeforeCompile=sh=>{for(const k in F)sh.uniforms[k]=F[k];

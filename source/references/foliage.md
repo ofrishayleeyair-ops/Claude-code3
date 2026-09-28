@@ -67,9 +67,9 @@ Composition rules: every foliage hook chains a previous own `onBeforeCompile`, a
 
 | Option | Default | Meaning |
 |---|---|---|
-| `species` | `'broadleaf'` | `broadleaf`, `conifer`, `sakura`, `birch`, `palm`, `bush` (`KE.TREE_SPECIES`) |
+| `species` | `'broadleaf'` | `broadleaf`, `conifer`, `sakura`, `birch`, `palm`, `bush`, and the Japanese `cedar` (sugi), `jpine` (black pine), `maple` (momiji) (`KE.TREE_SPECIES`) |
 | `seed` | 1 | random seed |
-| `height` | species (5, 7.5, 4.3, 6.5, 6, 1.4) | final height; the finished tree including leaves is fitted to it |
+| `height` | species (5, 7.5, 4.3, 6.5, 6, 1.4; cedar 28, jpine 6.5, maple 7) | final height; the finished tree including leaves is fitted to it |
 | `trunkRadius` | species (.25 broadleaf) | base radius |
 | `levels` | species (3; conifer 2; palm 0) | branching recursion depth (0–4) |
 | `branches` | species ([6,4,3] broadleaf) | children per level (palm: frond count) |
@@ -81,11 +81,15 @@ Growth: each branch is a polyline bent by gravity, phototropism and seeded wobbl
 
 `bounds` = `{box, sphere, height, canopy:{center, radius}}`; `stats` = `{species, branches, leafCards, trunkTriangles, leafTriangles}`. Typical counts at detail 1: broadleaf ≈ 4.4k triangles, conifer ≈ 7.4k, birch ≈ 6.7k, sakura ≈ 4.6k, palm ≈ 0.7k, bush ≈ 3.9k.
 
+Japanese species: `cedar` is a tall sugi with a long bare trunk and a narrow conical crown over its upper half (the `spire` parameter shrinks cards toward the top so it ends in a point; about 4.5k triangles at detail .5); `maple` forks low into a wide dome of twisting branches under red-to-orange palmate leaves (`KE.leafTexture({species:'maple'})` draws seven-lobed toothed leaves) with dark, mossy bark; `jpine` is a leaning black pine with layered needle pads. The `cedar` and `jpine` leaf atlases are needle sprays in the conifer style (longer and darker for `jpine`, dense and short for `cedar`).
+
+`KE.bambooGeometry(THREE, {height:13, culms:12, radius:.075, spread:3.2, leafCount:60, leafSize:.95, nodeGap, seed, detail, leafCards:{texture}})` builds a bamboo stand: nearly vertical culms spread over `spread` metres, each a tube with a node every ~36 cm (a raised dark ridge with a pale waxy band below it at detail ≥ .9; below that one band per internode), coloured from deep green (young) to yellow-green (old), bare for the lower half, with fine side branches carrying drooping fans of narrow leaf cards (`KE.leafTexture({species:'bamboo'})`); the tips arch under the foliage. `KE.daisugiGeometry(THREE, {height:22, limbs:6, shootsPerLimb:3, leafCount:1100, leafSize:.95, seed, detail, leafCards})` builds a daisugi (a Kitayama cedar pruned into a low gnarled stool whose thick limbs carry many tall, straight shoots, each crowned with a small conical tuft, plus clipped pads at the limb ends); use the cedar leaf texture. Both return the `treeGeometry` shape (`{trunk, leaves, bounds, stats}`) with the same attributes, so bark/foliage materials, wind, LOD and impostors work unchanged. A 13 m stand is roughly 10k triangles at detail .5; stream stands in small cells near the player and use impostors beyond (the open world does).
+
 `KE.tree(THREE, options)` is a convenience: geometry + leaf texture + both materials + shadow materials in a `Group`. Extra options: `leafTexture`, `textureSize`, `leafMaterial`, `barkMaterial`, `leafColor`, `barkColor`, `translucency`, `translucencyColor`, `alphaTest`, `wind`. Returns `{group, trunk, leaves, geometry, material, bounds, stats, dispose()}`; `dispose` frees what it created.
 
 `KE.leafTexture(THREE, {species, size:512, seed:1})` paints a mip-mapped sRGB `DataTexture` atlas of leaf sprays (2×2 cells; palm 2×1) on a canvas: curved twigs with alternating leaves (profile, serration, venation, fold shading), blossom clusters for sakura, needle sprays for conifers, fronds for palms. Transparent texels are dilated with neighbouring colour so mips have no dark fringes. `texture.userData.layout` holds the cell layout. Generation takes roughly 100 ms per 512² atlas on the CPU; share one atlas per species.
 
-`KE.barkTexture(THREE, {species, size:256, seed})` paints a tileable bark map (furrowed oak, plated pine, birch with lenticels and patches, banded cherry, ringed palm). `KE.barkMaterial(THREE, {species, color, map, textureSize, roughness:.93, bump:.035, wind, vertexColors})` is a single-sided foliage material without translucency, using the bark map as colour and bump.
+`KE.barkTexture(THREE, {species, size:256, seed})` paints a tileable bark map (furrowed oak, plated pine, birch with lenticels and patches, banded cherry, ringed palm, fibrous red cedar strips, dark mossy maple, smooth bamboo). `KE.barkMaterial(THREE, {species, color, map, textureSize, roughness:.93, bump:.035, wind, vertexColors})` is a single-sided foliage material without translucency, using the bark map as colour and bump.
 
 ### Ground cover: ferns and flowers
 

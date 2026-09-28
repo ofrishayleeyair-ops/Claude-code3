@@ -2,7 +2,7 @@
    node scripts/test_water.cjs [--shots] */
 const {openPage}=require('./harness.cjs');const path=require('path');const shots=process.argv.includes('--shots');
 (async()=>{
- const {page,close,outDir}=await openPage({modules:['src/modules/00-core-v3.js','src/modules/10-pipeline.js','src/modules/12-sky.js','src/modules/14-shadows.js','src/modules/22-water.js'],atlas:true,viewport:{width:800,height:500},name:'water'});
+ const {page,close,outDir}=await openPage({modules:['src/modules/00-core-v3.js','src/modules/10-pipeline.js','src/modules/12-sky.js','src/modules/14-shadows.js','src/modules/22-water.js','src/modules/32-world.js'],atlas:true,viewport:{width:800,height:500},name:'water'});
  await page.evaluate(async()=>{
   const T=THREE,KE=KitsuneEngine;await KE.loadVisualAssets();KE.applyPreset('high');
   const renderer=new T.WebGLRenderer();renderer.setSize(innerWidth,innerHeight);renderer.outputEncoding=T.sRGBEncoding;renderer.toneMapping=T.ACESFilmicToneMapping;renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFSoftShadowMap;document.body.append(renderer.domElement);
@@ -25,6 +25,21 @@ const {openPage}=require('./harness.cjs');const path=require('path');const shots
    await shot('underwater');const r2=await page.evaluate(()=>{t.camera.position.set(16,3.2,70);t.camera.lookAt(40,0,45);t.frame(3);return {under:t.water.underwater,d:t.pipeline.options.fog.density};});
    if(!r.under||!(r.d1>r.d0)||r2.under||r2.d!==r.d0)throw Error(JSON.stringify([r,r2]));});
  await test('fallback without pipeline renders with baked depth',async()=>{await page.evaluate(()=>{for(let i=0;i<3;i++){t.sky.update(1/30,t.camera);t.water.update(1/30,t.camera);t.renderer.render(t.scene,t.camera);}});await shot('direct');});
+ await test('river: profile falls monotonically and stays below the ground; carve cuts a channel; queries agree',async()=>{const r=await page.evaluate(()=>{const {T,KE}=t;
+   const hf=KE.Heightfield?null:null;const ground=(x,z)=>8+Math.sin(x*.05)*3+z*.05+Math.cos(z*.07)*2;
+   const path=KE.River.profile([[10,10],[40,30],[70,20],[100,60]],ground,{width:[6,14],depth:[1.2,2],step:3,minSlope:.003,lateral:10});const P=path.pts;let mono=true,below=true;
+   for(let i=1;i<P.length;i++)if(P[i].y>P[i-1].y-1e-6)mono=false;for(const p of P)if(p.y>ground(p.x,p.z)+1e-6)below=false;
+   const S=65,field={size:S,spacing:2,originX:0,originZ:0,data:new Float32Array(S*S),masks:{flow:new Float32Array(S*S)},recomputeRange(){},version:0};for(let j=0;j<S;j++)for(let i=0;i<S;i++)field.data[j*S+i]=ground(i*2,j*2);
+   const before=field.data.slice(),res=KE.River.carve(field,path,{bank:3,valley:20,valleySlope:.5});let deeper=0,raised=0,maxStep=0;for(let k=0;k<S*S;k++){if(field.data[k]<before[k]-.01)deeper++;if(field.data[k]>before[k]+.6)raised++;}
+   for(let j=0;j<S;j++)for(let i=1;i<S;i++)maxStep=Math.max(maxStep,Math.abs(field.data[j*S+i]-field.data[j*S+i-1]));
+   const river=new KE.River(T,t.scene,{profile:path,sky:t.sky});const mid=river.pointAt(river.length*.5),n=river.nearest(mid.x+mid.nx*1,mid.z+mid.nz*1),f=river.flowAt(mid.x,mid.z),edge=river.edgeDistance(mid.x+mid.nx*(mid.w*.5+5),mid.z+mid.nz*(mid.w*.5+5));
+   t.frame(3);river.update(1/30);const inScene=!!t.scene.getObjectByName('ke-river');river.dispose();
+   return {n:P.length,mono,below,deeper,raised,maxStep:+maxStep.toFixed(2),carved:res.carved,near:+n.d.toFixed(2),ny:+Math.abs(n.y-mid.y).toFixed(3),flow:+Math.hypot(f.x,f.z).toFixed(2),edge:+edge.toFixed(2),inScene,gone:!t.scene.getObjectByName('ke-river')};});
+   if(!r.mono||!r.below||r.deeper<50||r.raised>0||r.maxStep>2.5||Math.abs(r.near-1)>.05||r.ny>.01||!(r.flow>0)||Math.abs(r.edge-5)>.3||!r.inScene||!r.gone)throw Error(JSON.stringify(r));console.log('  ',JSON.stringify(r));});
+ await test('boat models: wasen and yakatabune build, float at their draft and dispose',async()=>{const r=await page.evaluate(()=>{const {T,KE}=t;const out=[];for(const style of ['wasen','yakatabune']){const b=KE.boatModel(T,{style,seed:3});t.scene.add(b.group);
+   const box=new T.Box3().setFromObject(b.group);let meshes=0,lanterns=0;b.group.traverse(o=>{if(o.isMesh){meshes++;if(o.userData.lantern)lanterns++;}});out.push({style,len:+(box.max.x-box.min.x).toFixed(2),h:+(box.max.y-box.min.y).toFixed(2),draft:+b.draft.toFixed(2),meshes,lanterns});b.dispose();}
+   t.frame(1);return out;});
+   const [w,y]=r;if(!(w.len>4&&w.len<7&&w.meshes>=6&&y.len>8&&y.lanterns===4&&w.draft>0))throw Error(JSON.stringify(r));console.log('  ',JSON.stringify(r));});
  await test('dispose',async()=>{const r=await page.evaluate(()=>{t.water.dispose();return !!t.scene.getObjectByName('ke-water');});if(r)throw Error('mesh still in scene');});
  await close();
 })().catch(e=>{console.error(e);process.exit(1);});

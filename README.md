@@ -4,8 +4,8 @@ An offline browser game engine on Three.js r128 (WebGL2) that builds every game 
 
 | Spirit Isle | Open World |
 |---|---|
-| ![Spirit Isle: the fox on the lantern path to the torii gates](media/spirit-isle-day.png) | ![Open World: forested coast, turquoise bay and snow-capped mountains](media/open-world.png) |
-| `spirit-isle.html`: find five spirit stones with a wisp as your guide; day and night, rain, photo mode, F8 editor | `open-world.html`: a 2 km island generated and eroded on load, forests streamed around you, fly mode |
+| ![Spirit Isle: the fox on the lantern path to the torii gates](media/spirit-isle-day.png) | ![Open World: a snow-capped volcano over cedar forest, bamboo and a river](media/open-world.png) |
+| `spirit-isle.html`: find five spirit stones with a wisp as your guide; day and night, rain, photo mode, F8 editor | `open-world.html`: a 2 km Japanese island generated and eroded on load: a snow-capped volcano, a river with boats down to the bay, tall cedars, red maples, sakura, bamboo groves and a daisugi; fly mode |
 
 Open either file in a desktop or mobile browser with WebGL2; no server, account or network request is needed. Low-power machines start on the Low preset; choose High or Ultra in Settings for the full renderer. [START-HERE.html](START-HERE.html) has controls and more screenshots.
 
@@ -13,8 +13,8 @@ Open either file in a desktop or mobile browser with WebGL2; no server, account 
 
 | Area | Systems (module) |
 |---|---|
-| Rendering | HDR pipeline with TAA upscaling and dynamic resolution, GTAO, SSGI, screen-space reflections, height and volumetric fog, light shafts, bloom, eye adaptation and local exposure, DOF, motion blur (`10-pipeline`) · physical sky and volumetric clouds (`12-sky`) · cascaded shadows with PCSS (`14-shadows`) · pooled point lights (`16-lights`) · probe-volume GI with DDGI-style visibility (`18-gi`) · Gerstner water (`22-water`) · rain wetness, puddles, snow (`26-weather`) |
-| Content | JSON material graphs and a 14-material library (`20-materials`) · procedural trees, grass, shell fur, spawner (`24-foliage`) · simplification, LOD, impostors, Nanite-inspired cluster DAG (`30-geometry`) · eroded heightfields, CDLOD GPU terrain, World Partition (`32-world`) · the fox character (`62-characters`) |
+| Rendering | HDR pipeline with TAA upscaling and dynamic resolution, GTAO, SSGI, screen-space reflections, height and volumetric fog, light shafts, bloom, eye adaptation and local exposure, DOF, motion blur (`10-pipeline`) · physical sky and volumetric clouds (`12-sky`) · cascaded shadows with PCSS (`14-shadows`) · pooled point lights (`16-lights`) · probe-volume GI with DDGI-style visibility (`18-gi`) · Gerstner water and carved rivers (`22-water`) · rain wetness, puddles, snow (`26-weather`) |
+| Content | JSON material graphs and a 14-material library (`20-materials`) · procedural trees (including Japanese cedar and maple), bamboo, daisugi, grass, shell fur, spawner (`24-foliage`) · simplification, LOD, impostors, Nanite-inspired cluster DAG (`30-geometry`) · eroded heightfields, CDLOD GPU terrain, World Partition (`32-world`) · the fox character (`62-characters`) · wooden boats (`22-water`) |
 | Simulation | Rapier rigid bodies, joints, character controller, vehicle, fracture, buoyancy (`40-physics`) · position-based cloth (`42-cloth`) · GPU particles (`50-vfx`) |
 | Behaviour | IK, spring chains, procedural gait, blend spaces, state machine, sequencer, camera rails (`60-animation`) · navmesh, crowds, behavior trees, perception, EQS (`70-ai`) · spatial audio, synthesized sounds, ambience, generative music (`80-audio`) |
 | Tools | actors, components, JSON levels, Blueprints (`85-gameplay`) · F8 editor and backquote console with `stat unit` / `stat gpu` (`90-editor`) |

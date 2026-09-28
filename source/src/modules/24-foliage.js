@@ -238,20 +238,40 @@ function drawSakuraCluster(g,r,W,H,f){
   for(const s of spurs){const m=2+Math.floor(r()*3);for(let i=0;i<m;i++){const a=r()*TAU,d=W*.04*r();drawBlossom(g,r,s[0]+Math.cos(a)*d,s[1]+Math.sin(a)*d,W*(.07+r()*.035),r()*TAU);}}
   for(let i=0;i<5;i++){const p=twigPoint(b,c,e,.3+.7*r());g.fillStyle='#e58aa6';g.beginPath();g.ellipse(p[0]+(r()-.5)*W*.2,p[1]+(r()-.5)*W*.1,W*.018,W*.028,r()*3,0,TAU);g.fill();}
 }
-function drawNeedles(g,r,x0,y0,x1,y1,len,f,dark){
+function drawNeedles(g,r,x0,y0,x1,y1,len,f,dark,hue=130){
   const L=Math.hypot(x1-x0,y1-y0),a=Math.atan2(y1-y0,x1-x0),n=Math.floor(L/(2.6*f));g.lineCap='round';
   for(let i=0;i<n;i++){const t=i/n,x=lerp(x0,x1,t),y=lerp(y0,y1,t),l=len*(.55+.45*Math.sin(Math.PI*(.15+.85*t)))*(.85+.3*r());
-    for(const s of [-1,1]){const na=a+s*(.9+r()*.35)-.25*s*t,ex=x+Math.cos(na)*l,ey=y+Math.sin(na)*l,h=130+r()*22,lg=(20+r()*12)*dark;
+    for(const s of [-1,1]){const na=a+s*(.9+r()*.35)-.25*s*t,ex=x+Math.cos(na)*l,ey=y+Math.sin(na)*l,h=hue+r()*22,lg=(20+r()*12)*dark;
       g.strokeStyle=hsl(h,38+r()*14,lg);g.lineWidth=1.9*f;g.beginPath();g.moveTo(x,y);g.lineTo(ex,ey);g.stroke();
       g.strokeStyle=hsl(h-10,40,lg*1.55,.8);g.lineWidth=1.2*f;g.beginPath();g.moveTo(lerp(x,ex,.6),lerp(y,ey,.6));g.lineTo(ex,ey);g.stroke();}}
 }
-function drawConiferCluster(g,r,W,H,f){
-  const bx=W*.5,by=H*.985,ex=W*(.5+(r()-.5)*.12),ey=H*.06;
-  const twigs=[];for(let k=0;k<7;k++){const t=.18+.72*k/6,x=lerp(bx,ex,t),y=lerp(by,ey,t),s=k%2?1:-1,a=-Math.PI/2+s*(.75+r()*.25),l=W*(.3-.18*t)*(.8+.4*r());twigs.push([x,y,x+Math.cos(a)*l,y+Math.sin(a)*l]);}
-  for(const t of twigs)drawNeedles(g,r,t[0],t[1],t[2],t[3],W*.07,f,.8);
+function drawConiferCluster(g,r,W,H,f,species='conifer'){
+  const pine=species==='jpine',cedar=species==='cedar',nl=pine?1.45:cedar?.8:1,hue=pine?118:cedar?122:130,dk=pine?.82:cedar?.78:1;
+  const bx=W*.5,by=H*.985,ex=W*(.5+(r()-.5)*.12),ey=H*.06,n=cedar?11:7;
+  const twigs=[];for(let k=0;k<n;k++){const t=.18+.72*k/(n-1),x=lerp(bx,ex,t),y=lerp(by,ey,t),s=k%2?1:-1,a=-Math.PI/2+s*(.75+r()*.25),l=W*(.3-.18*t)*(.8+.4*r());twigs.push([x,y,x+Math.cos(a)*l,y+Math.sin(a)*l]);}
+  for(const t of twigs)drawNeedles(g,r,t[0],t[1],t[2],t[3],W*.07*nl,f,.8*dk,hue);
   g.strokeStyle='#5b4030';g.lineWidth=3.2*f;g.beginPath();g.moveTo(bx,by);g.lineTo(ex,ey);g.stroke();
   for(const t of twigs){g.lineWidth=1.8*f;g.beginPath();g.moveTo(t[0],t[1]);g.lineTo(t[2],t[3]);g.stroke();}
-  drawNeedles(g,r,bx,by-H*.05,ex,ey,W*.085,f,1);
+  drawNeedles(g,r,bx,by-H*.05,ex,ey,W*.085*nl,f,dk,hue);
+}
+/* Japanese maple spray: palmate leaves with seven pointed, finely toothed lobes on a forked twig; red to orange with a few yellow. */
+function drawPalmate(g,r,x,y,ang,R,f){
+  const lobes=7,spread=4.3,u=r(),hue=u<.62?2+r()*12:u<.9?16+r()*14:36+r()*10,sat=68+r()*16,lig=34+r()*12;
+  g.save();g.translate(x,y);g.rotate(ang);g.strokeStyle=hsl(hue,sat*.6,lig*.6);g.lineWidth=Math.max(1,R*.05);g.beginPath();g.moveTo(-R*.45,0);g.lineTo(0,0);g.stroke();
+  const pts=[];for(let i=0;i<lobes;i++){const th=-spread/2+i*spread/(lobes-1),L=R*(1-.42*Math.pow(Math.abs(i-(lobes-1)/2)/((lobes-1)/2),1.4))*(.9+.2*r()),vh=th+spread/(lobes-1)/2,w=.2;
+    pts.push([Math.cos(th-w)*L*.45,Math.sin(th-w)*L*.45],[Math.cos(th-w*.35)*L*.8,Math.sin(th-w*.35)*L*.8],[Math.cos(th)*L,Math.sin(th)*L],[Math.cos(th+w*.35)*L*.8,Math.sin(th+w*.35)*L*.8],[Math.cos(th+w)*L*.45,Math.sin(th+w)*L*.45]);
+    if(i<lobes-1)pts.push([Math.cos(vh)*R*.3,Math.sin(vh)*R*.3]);}
+  const gr=g.createRadialGradient(0,0,R*.05,0,0,R);gr.addColorStop(0,hsl(hue+6,sat*.9,lig*.72));gr.addColorStop(.6,hsl(hue,sat,lig));gr.addColorStop(1,hsl(hue-2,sat,lig*1.14));
+  g.fillStyle=gr;g.beginPath();g.moveTo(0,0);for(const p of pts)g.lineTo(p[0],p[1]);g.closePath();g.fill();
+  g.strokeStyle=hsl(hue+10,sat*.7,Math.min(80,lig*1.5),.55);g.lineWidth=Math.max(.6,R*.028);for(let i=0;i<lobes;i++){const th=-spread/2+i*spread/(lobes-1);g.beginPath();g.moveTo(0,0);g.lineTo(Math.cos(th)*R*.8,Math.sin(th)*R*.8);g.stroke();}
+  g.strokeStyle='rgba(60,10,5,.35)';g.lineWidth=Math.max(.5,R*.02);g.beginPath();g.moveTo(0,0);for(const p of pts)g.lineTo(p[0],p[1]);g.closePath();g.stroke();g.restore();
+}
+function drawMapleCluster(g,r,W,H,f){
+  const b=[W*.5,H*.985],e=[W*(.5+(r()-.5)*.2),H*.14],c=[W*(.5+(r()-.5)*.35),H*.55],twigs=[[b,c,e,1]];
+  for(let k=0;k<2;k++){const t=.3+.3*k,p=twigPoint(b,c,e,t),sg=k?1:-1,a=twigAngle(b,c,e,t)+sg*(.7+r()*.3),L=H*.32,end=[clamp(p[0]+Math.cos(a)*L,W*.18,W*.82),clamp(p[1]+Math.sin(a)*L,H*.15,H*.85)];twigs.push([p,[(p[0]+end[0])/2,(p[1]+end[1])/2-H*.03],end,.7]);}
+  for(const [tb,tc,te,sc] of twigs)drawTwig(g,tb,tc,te,4.5*f*sc,1.1*f,'#5a3a2c');
+  for(const [tb,tc,te,sc] of twigs){const n=sc<1?3:4;for(let k=0;k<n;k++){const t=.35+.65*k/(n-1),p=twigPoint(tb,tc,te,t),a=twigAngle(tb,tc,te,t)+(k%2?1:-1)*(.5+r()*.4);drawPalmate(g,r,p[0]+Math.cos(a)*W*.05,p[1]+Math.sin(a)*W*.05,a,W*(.1+r()*.04)*(sc<1?.9:1),f);}
+    drawPalmate(g,r,te[0],te[1],twigAngle(tb,tc,te,1),W*.12,f);}
 }
 function drawFrond(g,r,W,H,f){
   const cx=W*.5,by=H*.995,ty=H*.02,n=46;
@@ -262,6 +282,7 @@ function drawFrond(g,r,W,H,f){
 const LEAF_STYLES={
   broadleaf:{shape:'ovate',count:[8,11],len:[.19,.26],wid:.52,hue:[84,106],sat:[38,56],lig:[24,38],serrate:.06,teeth:14,twig:'#5b4632',spread:66},
   bush:{shape:'round',count:[12,16],len:[.13,.18],wid:.62,hue:[96,122],sat:[34,52],lig:[18,30],gloss:true,twig:'#4a3a2a',spread:70,side:3},
+  bamboo:{shape:'lance',count:[6,9],len:[.3,.38],wid:.15,hue:[86,106],sat:[40,56],lig:[21,31],petiole:.04,twig:'#56682e',spread:34,droop:true,side:3,tipShift:-6},
   birch:{shape:'birch',count:[9,13],len:[.14,.2],wid:.72,hue:[66,86],sat:[48,68],lig:[32,46],serrate:.1,teeth:18,twig:'#6b5a4a',spread:68,droop:true},
 };
 /* Returns a mip-mapped sRGB atlas (DataTexture) of leaf clusters with straight (dilated) alpha edges.
@@ -272,7 +293,7 @@ KE.leafTexture=(THREE,o={})=>{
   g.clearRect(0,0,S,S);
   for(let cy=0;cy<layout.rows;cy++)for(let cx=0;cx<layout.cols;cx++){
     g.save();g.translate(cx*cw,cy*ch);g.beginPath();g.rect(pad,pad,cw-pad*2,ch-pad*2);g.clip();
-    if(species==='sakura')drawSakuraCluster(g,r,cw,ch,f);else if(species==='conifer')drawConiferCluster(g,r,cw,ch,f);else if(species==='palm')drawFrond(g,r,cw,ch,f);else drawLeafCluster(g,r,cw,ch,LEAF_STYLES[species]||LEAF_STYLES.broadleaf,f);
+    if(species==='sakura')drawSakuraCluster(g,r,cw,ch,f);else if(species==='conifer'||species==='jpine'||species==='cedar')drawConiferCluster(g,r,cw,ch,f,species);else if(species==='maple')drawMapleCluster(g,r,cw,ch,f);else if(species==='palm')drawFrond(g,r,cw,ch,f);else drawLeafCluster(g,r,cw,ch,LEAF_STYLES[species]||LEAF_STYLES.broadleaf,f);
     g.restore();}
   const tex=imageToTexture(THREE,g.getImageData(0,0,S,S),S,S,true);tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping;tex.userData={layout,species,kind:'leafAtlas'};return tex;
 };
@@ -308,7 +329,7 @@ function periodicNoise(seed){
       if(dd<f1){f2=f1;f1=dd;id=h(cx*5+2,cy*17+1);}else if(dd<f2)f2=dd;}out[0]=f1;out[1]=f2;out[2]=id;return out;};
   return noise;
 }
-const BARK_KINDS={broadleaf:'oak',oak:'oak',bush:'oak',conifer:'pine',pine:'pine',birch:'birch',sakura:'cherry',cherry:'cherry',palm:'palm'};
+const BARK_KINDS={broadleaf:'oak',oak:'oak',bush:'oak',conifer:'pine',pine:'pine',jpine:'pine',cedar:'cedar',maple:'maple',birch:'birch',sakura:'cherry',cherry:'cherry',palm:'palm',bamboo:'bamboo'};
 /* Tileable procedural bark: returns a mip-mapped sRGB DataTexture (use with RepeatWrapping UVs). */
 KE.barkTexture=(THREE,o={})=>{
   const kind=BARK_KINDS[o.species||o.kind||'broadleaf']||'oak',S=clamp(Math.round(o.size||256),32,1024),N=periodicNoise((o.seed||3)*31+kind.length*7),data=new Uint8Array(S*S*4),cell=[0,0,0];
@@ -322,6 +343,9 @@ KE.barkTexture=(THREE,o={})=>{
       const k=1-Math.max(dash*.85,patch*.9);r=(.86-.12*tone+peel*.05)*k+.06;g=(.84-.12*tone-peel*.05)*k+.06;b=(.78-.1*tone-peel*.12)*k+.06;}
     else if(kind==='cherry'){const tone=N.fbm(u*4,v*6,4,6),len=smooth(.62,.74,N.noise(u*5,v*64,5,64))*smooth(.3,.55,N.noise(u*20,v*64,20,64)),sheen=.9+.2*N.noise(u*3,v*1,3,1);
       r=lerp((.3+.08*tone)*sheen,.62,len*.75);g=lerp((.18+.05*tone)*sheen,.55,len*.75);b=lerp((.16+.04*tone)*sheen,.48,len*.75);}
+    else if(kind==='cedar'){const strip=N.noise(u*18,v*2,18,2),fib=.8+.3*N.noise(u*60,v*4,60,4),tone=N.fbm(u*4,v*4,4,4),k=(.72+.36*strip)*fib;r=(.46+.1*tone)*k;g=(.27+.06*tone)*k;b=(.18+.04*tone)*k;}
+    else if(kind==='maple'){const tone=N.fbm(u*4,v*6,4,6),streak=smooth(.6,.8,N.noise(u*14,v*3,14,3))*.18,moss=smooth(.58,.75,N.fbm(u*3,v*5,3,5))*.55,k=1-streak;r=(.3+.07*tone)*k;g=(.27+.06*tone)*k;b=(.24+.05*tone)*k;r+=(.24-r)*moss;g+=(.3-g)*moss;b+=(.13-b)*moss;}
+    else if(kind==='bamboo'){const fib=.94+.08*N.noise(u*90,v*3,90,3),tone=N.fbm(u*4,v*8,4,8),spot=smooth(.78,.9,N.noise(u*12,v*20,12,20))*.12,k=fib*(.95+.1*tone)*(1-spot);r=.9*k;g=.92*k;b=.84*k;}
     else{const ringF=v*8+(N.noise(u*4,v*8,4,8)-.5)*.35,ring=smooth(.8,.97,ringF-Math.floor(ringF)),fib=.82+.3*N.noise(u*72,v*6,72,6),tone=N.fbm(u*4,v*4,4,4);
       const k=(1-ring*.55)*fib;r=(.47+.1*tone)*k;g=(.41+.08*tone)*k;b=(.33+.06*tone)*k;}
     const i=(y*S+x)*4;data[i]=clamp(r*255,0,255);data[i+1]=clamp(g*255,0,255);data[i+2]=clamp(b*255,0,255);data[i+3]=255;}
@@ -344,6 +368,11 @@ const SPECIES={
   sakura:{height:4.3,trunkRadius:.24,levels:3,branches:[5,4,3],lengthFalloff:.7,start:[.3,.25,.2],angle:[[45,75],[30,58],[25,50]],gravity:.02,phototropism:.05,wobble:.3,trunkTop:.55,tipRatio:.3,childRadius:.66,shape:'umbrella',segs:[10,7,5,3],radial:[10,7,5,4],leafCount:210,cross:.6,leafSize:1.05,flare:.45,leafMinT:.3,lean:.14,normalBend:.72,barkColor:0xd8c0b8,transColor:0xffc2d8},
   birch:{height:6.5,trunkRadius:.15,levels:3,branches:[10,4,3],lengthFalloff:.5,start:[.32,.25,.2],angle:[[26,44],[28,50],[35,65]],gravity:.07,phototropism:.07,wobble:.12,trunkTop:.94,tipRatio:.18,childRadius:.5,shape:'oval',segs:[12,6,4,3],radial:[9,6,4,3],leafCount:190,cross:.45,leafSize:.85,flare:.25,leafMinT:.3,lean:.05,normalBend:.7,barkColor:0xffffff,transColor:0xe4f07a},
   palm:{height:6,trunkRadius:.2,levels:0,branches:[11],lengthFalloff:.45,start:[1],angle:[[0,0]],gravity:.1,phototropism:.05,wobble:.02,trunkTop:.95,tipRatio:.72,childRadius:.3,shape:'palm',segs:[14],radial:[10],leafCount:0,leafSize:2.6,flare:.35,leafMinT:1,lean:.3,normalBend:.4,barkColor:0xffffff,transColor:0xd6e878},
+  /* Japanese species: black pine (kuromatsu) with a leaning, twisting trunk and flat needle pads at the branch ends;
+     cedar (sugi), tall and narrow; Japanese maple (momiji) with a broad umbrella crown of red palmate leaves. */
+  jpine:{height:6.5,trunkRadius:.23,levels:2,branches:[11,7],lengthFalloff:.7,start:[.3,.3],angle:[[78,100],[25,55]],gravity:.02,phototropism:.03,wobble:.42,trunkTop:.78,tipRatio:.28,childRadius:.5,shape:'umbrella',segs:[12,6,4],radial:[10,6,4],leafCount:520,leafSize:1.5,flare:.45,leafMinT:.35,lean:.42,normalBend:.6,flatCards:true,barkColor:0xa08a78,transColor:0xa6c460},
+  cedar:{height:28,trunkRadius:.42,levels:1,branches:[54],lengthFalloff:.3,start:[.5],angle:[[82,108]],gravity:.05,phototropism:.04,wobble:.04,trunkTop:1,tipRatio:.07,childRadius:.26,shape:'cone',segs:[18,5],radial:[10,5],leafCount:1100,leafSize:1.7,flare:.45,leafMinT:.08,lean:.01,normalBend:.8,cross:.5,cardRoll:1.1,droop:.2,spire:.7,barkColor:0xb07a5a,transColor:0x7fa048},
+  maple:{height:7,trunkRadius:.34,levels:3,branches:[5,4,3],lengthFalloff:.76,start:[.25,.25,.2],angle:[[45,72],[32,60],[25,50]],gravity:.035,phototropism:.07,wobble:.48,trunkTop:.4,tipRatio:.3,childRadius:.62,shape:'umbrella',segs:[10,7,5,3],radial:[12,7,5,4],leafCount:720,cross:.5,leafSize:1.4,flare:.6,leafMinT:.2,lean:.22,normalBend:.75,droop:.24,barkColor:0x8a8378,transColor:0xff6a30},
   bush:{height:1.4,trunkRadius:.05,levels:2,branches:[5,4],stems:5,lengthFalloff:.55,start:[.25,.2],angle:[[30,60],[30,55]],gravity:.03,phototropism:.08,wobble:.2,trunkTop:.8,tipRatio:.3,childRadius:.6,shape:'round',segs:[6,4,3],radial:[5,4,3],leafCount:120,cross:.5,leafSize:.62,flare:0,leafMinT:.12,lean:.4,normalBend:.8,barkColor:0xb8a088,transColor:0xc8e070},
 };
 KE.TREE_SPECIES=Object.keys(SPECIES);
@@ -450,7 +479,7 @@ function buildLeaves(branches,sp,o,H,r,layout){
       let face=v3.sub(radialDir,v3.mul(out,v3.dot(radialDir,out)));face=v3.len(face)<.2?perpBasis(out)[0]:v3.norm(face);
       const side=v3.cross(out,face),roll=(r()-.5)*(sp.cardRoll!==undefined?sp.cardRoll:1.5);nrm=v3.norm(v3.add(v3.mul(face,Math.cos(roll)),v3.mul(side,Math.sin(roll))));right=v3.cross(out,nrm);}
     if(v3.dot(nrm,radialDir)<0){nrm=v3.mul(nrm,-1);right=v3.mul(right,-1);}
-    const sz=size*(.72+.5*r()),tint=[1+(r()-.5)*.14,1+(r()-.5)*.12,1+(r()-.5)*.18],droop=sp.flatCards?.08:.16;
+    let sz=size*(.72+.5*r());if(sp.shape==='cone'&&sp.spire){const hy=clamp((p[1]-(c[1]-R[1]))/(2*R[1]),0,1);sz*=1-sp.spire*hy*hy;}const tint=[1+(r()-.5)*.14,1+(r()-.5)*.12,1+(r()-.5)*.18],droop=sp.droop!==undefined?sp.droop:sp.flatCards?.08:.16;
     emitCard(p,out,right,nrm,sz,Math.floor(r()*cols*rows),r()<.5,tint,droop,s.w,br.phase);
     /* optional crossed second card (rotated 90 degrees about the card axis): no gaps when the first is edge-on */
     if(!sp.flatCards&&r()<(sp.cross||0)){const n2=v3.dot(right,radialDir)>=0?right:v3.mul(right,-1);emitCard(p,out,v3.cross(out,n2),n2,sz*.9,Math.floor(r()*cols*rows),r()<.5,tint,droop,s.w,br.phase);cards++;}
@@ -493,6 +522,75 @@ KE.treeGeometry=(THREE,o={})=>{
   const stats={species,branches:branches.length,leafCards:leaves?leaves.cards:0,trunkTriangles:tubes.idx.length/3,leafTriangles:leaves?leaves.idx.length/3:0};
   trunk.userData.keTree=stats;if(leafGeo)leafGeo.userData.keTree=stats;
   return {trunk,leaves:leafGeo,bounds:{box,sphere,height:box.max.y,canopy:leaves?{center:new THREE.Vector3(...leaves.canopy.c),radius:new THREE.Vector3(...leaves.canopy.R)}:null},stats,species,layout};
+};
+/* Bamboo stand (moso-like Phyllostachys): tall, nearly vertical culms spread over a few metres, each a tube with a
+   node every ~35 cm (a raised ridge with a dark line and a pale waxy band below it), deep green to yellow-green,
+   bare for the lower half, with fine side branches and drooping fans of narrow leaves (KE.leafTexture({species:
+   'bamboo'}) cards) over the upper part; the tip arches under the foliage. Same output as treeGeometry ({trunk,
+   leaves, bounds, stats}) and attributes, so it works with barkMaterial/foliageMaterial, wind, LOD and impostors. */
+KE.bambooGeometry=(THREE,o={})=>{
+  const r=KE.random((o.seed===undefined?1:o.seed)*6151+71),detail=clamp(o.detail!==undefined?o.detail:(KE.settings.lod||1),.3,1.5),H=o.height||13,n=Math.max(1,Math.round(o.culms||12)),R0=o.radius||.075,spread=o.spread===undefined?3.2:o.spread;
+  const layout=(o.leafCards&&o.leafCards.texture&&o.leafCards.texture.userData&&o.leafCards.texture.userData.layout)||{cols:2,rows:2},cols=layout.cols,rows=layout.rows;
+  const radial=Math.max(detail<.6?4:5,Math.round(8*detail)),nodeGap=o.nodeGap||(detail>=.9?.36:detail>=.6?.45:.55),t=buffers(),ti=[],l=buffers(),li=[];let cards=0;
+  const cx0=[],cz0=[];
+  for(let c=0;c<n;c++){
+    /* culm positions: jittered within the stand, kept at least 35 cm apart */
+    let bx=0,bz=0;for(let tries=0;tries<12;tries++){const a=r()*TAU,d=Math.sqrt(r())*spread*.5;bx=Math.cos(a)*d;bz=Math.sin(a)*d;if(cx0.every((x,k)=>Math.hypot(x-bx,cz0[k]-bz)>.35))break;}cx0.push(bx);cz0.push(bz);
+    const age=r(),h=H*(.72+.28*r()),rad=R0*(.7+.45*r())*(.6+.4*h/H),la=r()*TAU,lean=.015+r()*.045,arch=.05+r()*.07,phase=r();
+    const green=[.15+.24*age,.3+.15*age,.08+.05*age];   /* young culms deep green, older ones yellow-green */
+    const at=u=>{const bend=Math.pow(Math.max(0,u-.7)/.3,2)*arch*h;return [bx+Math.cos(la)*(u*h*lean+bend),u*h-bend*.3,bz+Math.sin(la)*(u*h*lean+bend)];};
+    const nodes=Math.max(6,Math.floor(h/nodeGap)),rings=[];
+    const full=detail>=.9;for(let k=0;k<=nodes;k++){const u=k/nodes;rings.push([u,1]);if(k<nodes){if(full){rings.push([u+.05/nodes,2]);rings.push([u+.2/nodes,0]);rings.push([u+.93/nodes,3]);}else rings.push([u+.08/nodes,0]);}}   /* below detail .9 an internode is one band: the dark node ridge, then green to the next node */
+    const vb=t.p.length/3;let vAcc=0,prev=null;
+    for(const [u0,kind] of rings){const u=Math.min(1,u0),P=at(u),T=v3.norm(v3.sub(at(Math.min(1,u+.01)),at(Math.max(0,u-.01)))),[N]=perpBasis(T),B=v3.cross(T,N);if(prev)vAcc+=v3.len(v3.sub(P,prev));prev=P;
+      const rr=rad*(1-.55*Math.pow(u,1.4))*(kind===1?1.09:kind===2?1.03:1);
+      const col=kind===1?[green[0]*.55,green[1]*.55,green[2]*.5]:kind===2?[.62,.66,.52]:kind===3?[green[0]*.9,green[1]*.95,green[2]*.9]:green,ao=.7+.3*Math.min(1,u*5);
+      for(let j=0;j<=radial;j++){const th=j/radial*TAU,dv=v3.add(v3.mul(N,Math.cos(th)),v3.mul(B,Math.sin(th))),q=v3.add(P,v3.mul(dv,rr)),sh=.92+.08*Math.cos(th*2+c);
+        t.p.push(...q);t.n.push(...dv);t.uv.push(j/radial,vAcc*1.2);t.c.push(col[0]*ao*sh,col[1]*ao*sh,col[2]*ao*sh);t.w.push(clamp(q[1]/H,0,1),0,0,phase);}}
+    for(let i=0;i<rings.length-1;i++)for(let j=0;j<radial;j++){const k=vb+i*(radial+1)+j,k2=k+radial+1;ti.push(k,k2,k+1,k+1,k2,k2+1);}
+    /* side branches at nodes of the upper half, each carrying a fan of drooping leaf cards */
+    const sprays=Math.max(6,Math.round((o.leafCount||60)*detail*(h/H)));
+    for(let q=0;q<sprays;q++){const u=.48+.52*Math.pow(r(),.8),P=at(u),az=r()*TAU,blen=(.25+.55*r())*(1.2-u*.5),bdir=v3.norm([Math.cos(az),.35+r()*.3,Math.sin(az)]),root=v3.add(P,v3.mul(bdir,blen));
+      const fan=2+Math.floor(r()*2);for(let f=0;f<fan;f++){const az2=az+(r()-.5)*1.3,out=v3.norm([Math.cos(az2),-.35-r()*.45,Math.sin(az2)]),sz=(o.leafSize||.95)*(.7+.5*r());
+        let right=v3.norm(v3.cross(out,[0,1,0]));const roll=(r()-.5)*1.2;let nrm=v3.cross(right,out);nrm=v3.norm(v3.add(v3.mul(nrm,Math.cos(roll)),v3.mul(right,Math.sin(roll))));right=v3.norm(v3.cross(out,nrm));
+        const ci=Math.floor(r()*cols*rows),cx=ci%cols,cy=Math.floor(ci/cols),flip=r()<.5,b0=l.p.length/3,droop=.22,bw=.55+.45*u,tintL=[.92+r()*.14,.95+r()*.1,.9+r()*.12];
+        for(let row=0;row<3;row++){const tt=row/2;for(let col=0;col<2;col++){const x=col-.5;let v=v3.add(v3.add(root,v3.mul(out,sz*tt)),v3.mul(right,sz*.55*x));v[1]-=sz*droop*tt*tt;
+          const en=v3.norm(v3.add(v3.mul(nrm,.4),v3.mul(v3.norm([v[0]-bx,.6,v[2]-bz]),.6))),ao=.6+.4*u;
+          l.p.push(...v);l.n.push(...en);l.uv.push((cx+(flip?1-(x+.5):(x+.5))*.992+.004)/cols,1-(cy+1)/rows+(.004+tt*.992)/rows);l.c.push(ao*tintL[0],ao*tintL[1],ao*tintL[2]);l.w.push(clamp(v[1]/H,0,1),bw,tt,phase);}}
+        for(let row=0;row<2;row++){const k=b0+row*2;li.push(k,k+1,k+2,k+1,k+3,k+2);}cards++;}
+      /* the branch itself: a thin 3-sided twig */
+      const tb=t.p.length/3,bn=v3.norm(v3.cross(bdir,[0,1,0])),bu=v3.cross(bn,bdir),br=rad*.18;
+      for(const [pp,rr2] of [[P,br],[root,br*.5]])for(let j=0;j<=3;j++){const th=j/3*TAU,dv=v3.add(v3.mul(bn,Math.cos(th)),v3.mul(bu,Math.sin(th))),qq=v3.add(pp,v3.mul(dv,rr2));t.p.push(...qq);t.n.push(...dv);t.uv.push(j/3,0);t.c.push(green[0]*.8,green[1]*.8,green[2]*.8);t.w.push(clamp(qq[1]/H,0,1),.4,0,phase);}
+      for(let j=0;j<3;j++)ti.push(tb+j,tb+4+j,tb+j+1,tb+j+1,tb+4+j,tb+5+j);}
+  }
+  const trunk=makeGeometry(THREE,t,ti),leaves=makeGeometry(THREE,l,li);const box=trunk.boundingBox.clone().union(leaves.boundingBox),sphere=box.getBoundingSphere(new THREE.Sphere());
+  const stats={species:'bamboo',culms:n,leafCards:cards,trunkTriangles:ti.length/3,leafTriangles:li.length/3};trunk.userData.keTree=stats;leaves.userData.keTree=stats;
+  return {trunk,leaves,bounds:{box,sphere,height:box.max.y,canopy:null},stats,species:'bamboo',layout};
+};
+/* Daisugi (台杉): a Kitayama cedar pruned over generations into a low gnarled stool whose thick horizontal limbs carry many
+   tall, dead-straight shoots, each crowned with a small conical tuft. Built from the same tube and leaf-card code
+   as treeGeometry (stool = level 0, limbs = 1, shoots = 2, tuft twigs = 3); use the cedar leaf texture and bark. */
+KE.daisugiGeometry=(THREE,o={})=>{
+  const r=KE.random((o.seed===undefined?1:o.seed)*4099+5),detail=clamp(o.detail!==undefined?o.detail:(KE.settings.lod||1),.4,1.5),H=o.height||22;
+  const layout=(o.leafCards&&o.leafCards.texture&&o.leafCards.texture.userData&&o.leafCards.texture.userData.layout)||{cols:2,rows:2};
+  const sp={radial:[18,12,7,3],segs:[8,8,10,2],flare:.8,leafCount:o.leafCount||1100,leafSize:o.leafSize||.95,normalBend:.55,cross:.5,cardRoll:1.1,droop:.18,leafMinT:.05,tipRatio:.5};
+  const branches=[],mk=(level,pts,r0,r1,phase,wBase)=>{const n=pts.length;let len=0;for(let i=1;i<n;i++)len+=v3.len(v3.sub(pts[i],pts[i-1]));
+    const b={level,pts,radii:pts.map((_,i)=>lerp(r0,r1,i/(n-1))),weights:pts.map((_,i)=>Math.min(1,wBase+WEIGHT_STEP[Math.min(level,4)]*i/(n-1))),phase,length:len,children:0};branches.push(b);return b;};
+  const stumpH=2.1+r()*.6,stump=[];for(let i=0;i<=6;i++){const t=i/6;stump.push([Math.sin(t*3+r())*.18,t*stumpH,Math.cos(t*2.3+r())*.14]);}mk(0,stump,1.1,.85,r(),0);
+  const top=stump[6],limbs=o.limbs||6;let shootsN=0;
+  for(let L=0;L<limbs;L++){const az=L/limbs*TAU+r()*.5,len=3+r()*2.4,pts=[];let d=v3.norm([Math.cos(az),.2+r()*.2,Math.sin(az)]),p=v3.add(top,[0,-.35,0]);pts.push(p);
+    for(let i=1;i<=8;i++){d=v3.norm(v3.add(d,[(r()-.5)*.4,(r()-.5)*.22-.02,(r()-.5)*.4]));p=v3.add(p,v3.mul(d,len/8));pts.push(p);}
+    const limb=mk(1,pts,.6,.28,r(),0),ns=o.shootsPerLimb||3;limb.children=ns;
+    for(let k=0;k<ns;k++){const s=sampleBranch(limb,Math.min(1,.3+.7*(k+.2+r()*.6)/ns)),h=H*(.55+.45*r())-s.p[1],a=s.p,b=[a[0]+(r()-.5)*.8,a[1]+h,a[2]+(r()-.5)*.8],spts=[];for(let i=0;i<=8;i++)spts.push(v3.lerp(a,b,i/8));
+      const shoot=mk(2,spts,.19,.07,r(),.05),nt=Math.round(16*clamp(detail,.5,1.2));shoot.children=nt;shootsN++;
+      for(let q=0;q<nt;q++){const u=.76+.24*q/nt,s2=sampleBranch(shoot,u),az2=q*GOLDEN+r()*.4,tl=(1.15-.95*(u-.76)/.24)*(.8+.4*r()),dir=v3.norm([Math.cos(az2),-.12+r()*.3,Math.sin(az2)]);
+        mk(3,[s2.p,v3.add(s2.p,v3.mul(dir,tl*.5)),v3.add(s2.p,v3.add(v3.mul(dir,tl),[0,-.15,0]))],.045,.015,shoot.phase,.4);}}
+    /* a clipped foliage pad at the end of each limb */
+    const end=pts[pts.length-1];for(let q=0;q<8;q++){const az2=q/8*TAU+r(),dir=v3.norm([Math.cos(az2),.1+r()*.2,Math.sin(az2)]),tl=.7+.4*r();mk(3,[end,v3.add(end,v3.mul(dir,tl*.5)),v3.add(end,v3.mul(dir,tl))],.05,.02,limb.phase,.3);}}
+  const tubes=buildTubes(branches,sp,detail,H,null,r),leaves=buildLeaves(branches,sp,{detail,leafCards:o.leafCards},H,r,layout);
+  const trunk=makeGeometry(THREE,tubes.a,tubes.idx),leafGeo=leaves?makeGeometry(THREE,leaves.a,leaves.idx):null,box=trunk.boundingBox.clone();if(leafGeo)box.union(leafGeo.boundingBox);
+  const stats={species:'daisugi',shoots:shootsN,branches:branches.length,leafCards:leaves?leaves.cards:0,trunkTriangles:tubes.idx.length/3,leafTriangles:leaves?leaves.idx.length/3:0};trunk.userData.keTree=stats;if(leafGeo)leafGeo.userData.keTree=stats;
+  return {trunk,leaves:leafGeo,bounds:{box,sphere:box.getBoundingSphere(new THREE.Sphere()),height:box.max.y,canopy:null},stats,species:'daisugi',layout};
 };
 /* Convenience: geometry + textures + materials + shadow materials in one Group. */
 KE.tree=(THREE,o={})=>{
@@ -1082,5 +1180,5 @@ KE.foliage={
   glsl:{gust:GUST_GLSL,treeWind:TREE_WIND_GLSL}
 };
 
-KE.registerModule('foliage',{provides:['fernClump','flowerHead','foliageUniforms','foliage','foliageMaterial','foliageDepthMaterial','treeGeometry','tree','TREE_SPECIES','leafTexture','barkTexture','barkMaterial','grassField','fur','FoliageSpawner']});
+KE.registerModule('foliage',{provides:['bambooGeometry','daisugiGeometry','fernClump','flowerHead','foliageUniforms','foliage','foliageMaterial','foliageDepthMaterial','treeGeometry','tree','TREE_SPECIES','leafTexture','barkTexture','barkMaterial','grassField','fur','FoliageSpawner']});
 })();
