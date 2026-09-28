@@ -47,6 +47,13 @@ const shots=process.argv.includes('--shots');
   console.log('  ',JSON.stringify(r));if(!r.enabled||r.after)throw Error('cvar did not toggle');if(r.labels.length&&!r.labels.includes('Scene (opaque)'))throw Error('unexpected stage labels');
   // Query results can take many frames under software rendering; the accumulation logic is unit-tested in test_core.cjs.
   if(r.available&&!r.labels.length)console.log('   note: timer queries exist here but no results arrived within 30 frames');});
+ await test('dynamic resolution steps the internal resolution down on slow frames and back up',async()=>{const r=await page.evaluate(()=>{const p=t.pipeline;t.KE.setSettings({dynamicRes:true});const base=p.options.upscale;
+   const run=(dt,sec)=>{for(let x=0;x<sec;x+=dt)p._dynamicResolution(dt);return p.options.upscale;};
+   const slow1=run(.05,1.6),slow2=run(.05,1.6),hold=run(1/60,2),fast=run(.008,3.5),fast2=run(.008,3.5);p.render(t.scene,t.camera,1/60);const internal=[...p.internal],size=[...p.size];
+   run(.05,1.6);p.render(t.scene,t.camera,1/60);const internal2=[...p.internal];t.KE.setSettings({dynamicRes:false});const reset=p.options.upscale;p.render(t.scene,t.camera,1/60);
+   return {base,slow1,slow2,hold,fast,fast2,internal,internal2,size,reset};});
+  console.log('  ',JSON.stringify(r));if(!(r.slow1<r.base&&r.slow2<r.slow1))throw Error('did not step down');if(r.hold!==r.slow2)throw Error('changed at target frame time');
+  if(!(r.fast>r.slow2&&r.fast2<=r.base))throw Error('did not recover to the preset value');if(!(r.internal2[0]<r.internal[0]))throw Error('internal targets not resized');if(r.reset!==r.base)throw Error('settings did not restore the preset value');});
  await test('each quality preset renders',async()=>{for(const p of ['low','medium','high','ultra','cinematic']){await page.evaluate(p=>t.KE.applyPreset(p),p);await frames(3);}await shot('cinematic');await page.evaluate(()=>t.KE.applyPreset('ultra'));});
  await test('temporal upscaling renders at a reduced internal resolution',async()=>{const r=await page.evaluate(()=>{t.KE.setSettings({upscale:.5});for(let i=0;i<16;i++)t.pipeline.render(t.scene,t.camera,1/60);const gl=t.renderer.getContext(),w=gl.drawingBufferWidth,h=gl.drawingBufferHeight,px=new Uint8Array(w*h*4);gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,px);let s=0,n=0;for(let i=0;i<px.length;i+=4*97){s+=(px[i]+px[i+1]+px[i+2])/3;n++;}
    const out={size:t.pipeline.size,internal:t.pipeline.internal,mean:s/n};t.KE.setSettings({upscale:1});t.pipeline.render(t.scene,t.camera,1/60);out.native=t.pipeline.internal;return out;});

@@ -54,8 +54,8 @@ const COMMANDS = {
   async start() { need(); await page.click('#start'); console.log('started'); },
   // ss [name] — screenshot to $SHOT_DIR/<name>.png
   async ss(name) { need(); const f = path.join(SHOT_DIR, (name || `ss-${Date.now()}`) + '.png'); await page.screenshot({ path: f, timeout: SHOT_TIMEOUT }); console.log('screenshot:', f); },
-  // preset low|medium|high|ultra|cinematic — applies the quality preset; render scale forced to 1 to keep software rendering tolerable
-  async preset(name) { need(); console.log(JSON.stringify(await page.evaluate(n => { demo.KE.applyPreset(n); demo.KE.setSettings({ scale: 1 }); const p = demo.pipeline && demo.pipeline(); return { preset: demo.KE.settings.preset, pipeline: !!(p && p.enabled) }; }, name))); },
+  // preset low|medium|high|ultra|cinematic — applies the quality preset; render scale forced to 1 and dynamic resolution off (at ~1 fps it would drop to the minimum)
+  async preset(name) { need(); console.log(JSON.stringify(await page.evaluate(n => { demo.KE.applyPreset(n); demo.KE.setSettings({ scale: 1, dynamicRes: false }); const p = demo.pipeline && demo.pipeline(); return { preset: demo.KE.settings.preset, pipeline: !!(p && p.enabled) }; }, name))); },
   // day <0..1> — time of day (0 sunrise, .33 noon, .6 sunset, .84 night)
   async day(v) { need(); await page.evaluate(v => demo.setDay(+v), v); console.log('day', v); },
   // rain on|off

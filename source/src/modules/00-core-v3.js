@@ -28,15 +28,15 @@ KE.capabilities=renderer=>{
 
 /* ---------- v3 quality settings ---------- */
 const V3={
-  low:      {pipeline:false,gi:false,taa:false,gtao:false,ssr:false,ssgi:false,volumetrics:false,clouds:0,dof:false,motionBlur:false,autoExposure:false,cascades:1,lod:.6, fur:false,vfx:.35,lights:2,upscale:1},
-  medium:   {pipeline:true, gi:false,taa:true, gtao:false,ssr:false,ssgi:false,volumetrics:false,clouds:1,dof:false,motionBlur:false,autoExposure:true, cascades:2,lod:.8, fur:true, vfx:.6, lights:4,upscale:.67},
-  high:     {pipeline:true, gi:true, taa:true, gtao:true, ssr:true, ssgi:false,volumetrics:true, clouds:1,dof:false,motionBlur:false,autoExposure:true, cascades:3,lod:1,  fur:true, vfx:1,  lights:6,upscale:.8},
-  ultra:    {pipeline:true, gi:true, taa:true, gtao:true, ssr:true, ssgi:true, volumetrics:true, clouds:2,dof:false,motionBlur:false,autoExposure:true, cascades:4,lod:1.25,fur:true, vfx:1,  lights:8,upscale:1},
+  low:      {pipeline:false,gi:false,taa:false,gtao:false,ssr:false,ssgi:false,volumetrics:false,clouds:0,dof:false,motionBlur:false,autoExposure:false,cascades:1,lod:.6, fur:false,vfx:.35,lights:2,upscale:1,dynamicRes:false},
+  medium:   {pipeline:true, gi:false,taa:true, gtao:false,ssr:false,ssgi:false,volumetrics:false,clouds:1,dof:false,motionBlur:false,autoExposure:true, cascades:2,lod:.8, fur:true, vfx:.6, lights:4,upscale:.67,dynamicRes:true},
+  high:     {pipeline:true, gi:true, taa:true, gtao:true, ssr:true, ssgi:false,volumetrics:true, clouds:1,dof:false,motionBlur:false,autoExposure:true, cascades:3,lod:1,  fur:true, vfx:1,  lights:6,upscale:.8,dynamicRes:true},
+  ultra:    {pipeline:true, gi:true, taa:true, gtao:true, ssr:true, ssgi:true, volumetrics:true, clouds:2,dof:false,motionBlur:false,autoExposure:true, cascades:4,lod:1.25,fur:true, vfx:1,  lights:8,upscale:1,dynamicRes:false},
 };
 for(const [name,extra] of Object.entries(V3))Object.assign(KE.PRESETS[name],extra);
 KE.PRESETS.cinematic={...KE.PRESETS.ultra,preset:'cinematic',scale:1.6,shadowRes:2048,tex:512,grass:20000,view:220,aniso:16,dof:true,motionBlur:true,lod:1.5,lights:12};
 KE.PRESET_ORDER=['cinematic','ultra','high','medium','low'];
-const BOOL_V3=['pipeline','gi','taa','gtao','ssr','ssgi','volumetrics','dof','motionBlur','autoExposure','fur'];
+const BOOL_V3=['pipeline','gi','taa','gtao','ssr','ssgi','volumetrics','dof','motionBlur','autoExposure','fur','dynamicRes'];
 const NUM_V3=[['upscale',.5,1,false],['clouds',0,2,true],['cascades',1,4,true],['lod',.25,2,false],['vfx',0,1,false],['lights',0,16,true]];
 const baseSanitize=KE.sanitizeSettings;
 KE.sanitizeSettings=(raw={})=>{
@@ -95,7 +95,7 @@ for(const [name,key,help,type,min,max,scale=1] of [
   ['r.Shadow.Cascades','cascades','Cascaded shadow map count','number',1,4],['r.Shadow.Resolution','shadowRes','Shadow map resolution','number',512,2048],
   ['r.Volumetrics','volumetrics','Light shafts and height fog','boolean'],['r.Clouds','clouds','Cloud quality 0-2','number',0,2],['r.DOF','dof','Depth of field','boolean'],
   ['r.MotionBlur','motionBlur','Camera motion blur','boolean'],['r.AutoExposure','autoExposure','Eye adaptation','boolean'],['r.Pipeline','pipeline','HDR post pipeline','boolean'],
-  ['r.ScreenPercentage','scale','Render scale percent','number',50,200,100],['r.Upscale','upscale','Internal resolution fraction reconstructed by TAA (0.5-1)','number',.5,1],['r.ViewDistance','view','Fog/view distance','number',30,300],['r.LODBias','lod','Geometry detail multiplier','number',.25,2],
+  ['r.ScreenPercentage','scale','Render scale percent','number',50,200,100],['r.Upscale','upscale','Internal resolution fraction reconstructed by TAA (0.5-1)','number',.5,1],['r.DynamicResolution','dynamicRes','Lower/raise the internal resolution to hold the frame rate (needs TAA)','boolean'],['r.ViewDistance','view','Fog/view distance','number',30,300],['r.LODBias','lod','Geometry detail multiplier','number',.25,2],
   ['r.Lights','lights','Max dynamic point lights','number',0,16],['foliage.Grass','grass','Grass blade budget','number',0,20000],['fx.Budget','vfx','Particle budget 0-1','number',0,1],['r.Fur','fur','Shell fur','boolean']])
   KE.cvars.register(name,{help,type,min,max,get:()=>type==='number'?KE.settings[key]*scale:KE.settings[key],set:v=>{KE.settings.auto=false;KE.settings.custom=true;KE.setSettings({[key]:type==='number'?v/scale:v});}});
 KE.cvars.register('t.MaxFPS',{value:0,type:'number',min:0,max:240,help:'Frame cap for KE.Loop users that honor it (0 = uncapped)'});

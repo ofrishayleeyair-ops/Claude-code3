@@ -85,6 +85,7 @@ While the editor is open (F8) the game loop is paused and the editor runs its ow
 |---|---|---|---|---|---|
 | HDR pipeline | off | on | on | on | on |
 | TAA / internal resolution | off | on / .67 | on / .8 | on / 1 | on / 1 |
+| Dynamic resolution | off | on | on | off | off |
 | GTAO / SSR / SSGI | off | off | on / on / off | on | on |
 | Probe GI | off | off | on | on | on |
 | Volumetrics, clouds | off, 0 | off, 1 | on, 1 | on, 2 | on, 2 |

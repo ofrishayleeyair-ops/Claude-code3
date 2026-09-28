@@ -66,7 +66,7 @@ tmux send-keys -t ke 'quit' Enter
 | `launch [file.html] [w h]` | open a built game (default `spirit-isle.html`, 960×600); waits for `window.demo`, the game's error card, or the first page error (reported as `GAME ERROR`) |
 | `start` | click "Enter Spirit Isle" (enables input) |
 | `ss [name]` | screenshot (5-minute timeout) |
-| `preset low\|medium\|high\|ultra\|cinematic` | quality preset; forces render scale 1 |
+| `preset low\|medium\|high\|ultra\|cinematic` | quality preset; forces render scale 1 and turns dynamic resolution off (at software-rendering frame rates it would drop to half resolution) |
 | `day <0..1>` / `rain on\|off` | time of day (.33 noon, .6 sunset, .84 night) / weather |
 | `hold <KeyCode> <ms>`, `press <key>`, `click <selector>` | input (`KeyW` forward, `Space` jump, `KeyT` advance the hour after `start`) |
 | `cvar <name> [value]` | read/set engine console variables: `r.TAA`, `r.GI`, `r.GTAO`, `r.Upscale`, `r.LocalExposure`, `r.ViewMode lit\|ao\|depth\|bloom\|ssgi\|unlit\|lighting\|localexposure`, … (booleans take 0/1, true/false, on/off) |

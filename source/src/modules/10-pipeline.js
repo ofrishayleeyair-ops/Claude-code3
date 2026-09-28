@@ -223,7 +223,7 @@ KE.Pipeline=class{
     this.hdr=caps.halfRT&&o.hdr!==false;this.hdrType=this.hdr?THREE.HalfFloatType:THREE.UnsignedByteType;this.depthOK=caps.depthTexture;
     this.enabled=true;this.frame=0;this.historyValid=false;this.size=[0,0];this.internal=[0,0];this.targets=[];this.stats={passes:0,ms:0};
     this.options={taa:true,taaBlend:.1,upscale:1,gtao:true,aoRadius:1.1,aoStrength:.85,aoPower:1.4,ssgi:false,giStrength:.55,giRadius:3,bloom:true,bloomStrength:.045,bloomRadius:1,bloomThreshold:1.2,bloomKnee:.6,lensFlare:.035,
-      autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,localExposure:{enabled:true,highlightContrast:.75,shadowContrast:.9,detail:1,blurredBlend:.4},fxaa:true,sharpen:.18,
+      autoExposure:true,exposure:1,exposureCompensation:0,exposureKey:.2,minExposure:.25,maxExposure:4,adaptUp:2.5,adaptDown:1.2,dynamicResolution:{enabled:false,targetFps:60,min:.5,step:.1,downThreshold:1.12,upThreshold:.8,downHold:1,upHold:3},localExposure:{enabled:true,highlightContrast:.75,shadowContrast:.9,detail:1,blurredBlend:.4},fxaa:true,sharpen:.18,
       fog:{enabled:true,density:.012,falloff:.12,height:0,start:4,maxOpacity:.9,color:new THREE.Color(.55,.66,.78),inscatter:1.2,inscatterExponent:12,sky:.35,replaceSceneFog:true},
       volumetrics:true,shaftStrength:.25,volumetricFog:{enabled:true,density:.012,falloff:.22,height:0,anisotropy:.45,intensity:1,maxDistance:50,steps:20},dof:{enabled:false,focusDistance:8,aperture:.035,maxBlur:10,autoFocus:false},motionBlur:{enabled:false,strength:.6},
       grading:{saturation:1.05,contrast:1.04,temperature:0,tint:0,lift:[0,0,0],gamma:[1,1,1],gain:[1,1,1],vignette:.22,grain:.012,chromaticAberration:.15},sun:null,debugView:'lit'};
@@ -277,8 +277,19 @@ KE.Pipeline=class{
   set(o={}){for(const [k,v] of Object.entries(o)){const cur=this.options[k];if(cur&&typeof cur==='object'&&!cur.isColor&&!Array.isArray(cur)&&v&&typeof v==='object'&&!v.isColor&&!Array.isArray(v)){for(const [kk,vv] of Object.entries(v)){if(cur[kk]&&cur[kk].isColor&&vv!==undefined&&!(vv&&vv.isColor))cur[kk].set(vv);else if(cur[kk]&&cur[kk].isColor&&vv&&vv.isColor)cur[kk].copy(vv);else cur[kk]=vv;}}else this.options[k]=v;}return this;}
   /* Map KE.settings quality keys onto pipeline passes. */
   applySettings(s=KE.settings){const o=this.options;o.taa=!!s.taa&&this.depthOK;o.gtao=!!s.gtao&&this.depthOK;o.ssgi=!!s.ssgi&&this.depthOK&&this.hdr;o.bloom=s.bloom!==false;o.volumetrics=!!s.volumetrics;o.autoExposure=!!s.autoExposure&&this.hdr;
-    o.fxaa=!!s.aa&&!o.taa;o.upscale=Number.isFinite(s.upscale)?s.upscale:1;o.dof.enabled=!!s.dof&&this.depthOK;o.motionBlur.enabled=!!s.motionBlur&&this.depthOK;this.uniforms.keSSR.value=s.ssr?1:0;this.enabled=s.pipeline!==false;
+    o.fxaa=!!s.aa&&!o.taa;o.upscale=Number.isFinite(s.upscale)?s.upscale:1;this._baseUpscale=o.upscale;this._dr=null;o.dynamicResolution.enabled=!!s.dynamicRes;o.dof.enabled=!!s.dof&&this.depthOK;o.motionBlur.enabled=!!s.motionBlur&&this.depthOK;this.uniforms.keSSR.value=s.ssr?1:0;this.enabled=s.pipeline!==false;
     const q=s.preset==='ultra'||s.preset==='cinematic';this.m.gtao.defines.SLICES=q?3:2;this.m.gtao.defines.STEPS=q?8:6;this.m.gtao.needsUpdate=true;this.historyValid=false;return this;}
+  /* Dynamic resolution: an exponential average of the frame time (the dt passed to render) steps the TAA internal
+     resolution down by `step` after `downHold` seconds above `downThreshold` × the target frame time, and back up toward
+     the preset's value after `upHold` seconds below `upThreshold` ×. Steps are quantised because each change reallocates
+     the internal-resolution targets and restarts TAA history. */
+  _dynamicResolution(dt){const d=this.options.dynamicResolution;if(!d||!d.enabled||!this.options.taa||!(dt>0)||dt>.5)return;
+    const st=this._dr||(this._dr={ema:0,over:0,under:0});st.ema=st.ema?st.ema*.9+dt*.1:dt;const target=1/Math.max(1,d.targetFps||60),max=Math.min(1,this._baseUpscale||1);
+    if(st.ema>target*d.downThreshold){st.over+=dt;st.under=0;}else if(st.ema<target*d.upThreshold){st.under+=dt;st.over=0;}else st.over=st.under=0;
+    let s=this.options.upscale||1;
+    if(st.over>d.downHold&&s>d.min+1e-3){s=Math.max(d.min,Math.round((s-d.step)*100)/100);st.over=0;st.ema=target;}
+    else if(st.under>d.upHold&&s<max-1e-3){s=Math.min(max,Math.round((s+d.step)*100)/100);st.under=0;st.ema=target;}
+    if(s!==this.options.upscale){this.options.upscale=s;this.stats.dynamicUpscale=s;}}
   target(w,h,{type=this.hdrType,format=this.THREE.RGBAFormat,filter=this.THREE.LinearFilter,depth=false}={}){const T=this.THREE,t=new T.WebGLRenderTarget(Math.max(1,w),Math.max(1,h),{type,format,minFilter:filter,magFilter:filter,depthBuffer:depth,stencilBuffer:false,generateMipmaps:false});t.texture.generateMipmaps=false;this.targets.push(t);return t;}
   setSize(){const s=this.renderer.getDrawingBufferSize(this._v2);this._resize(s.x,s.y);return this;}
   /* Display targets (TAA history onward) use the drawing-buffer size; scene and lighting targets use the internal
@@ -302,7 +313,7 @@ KE.Pipeline=class{
   pass(material,target){this.quad.render(this.renderer,target,material);this.stats.passes++;}
   render(scene,camera,dt=1/60){
     const R=this.renderer,T=this.THREE,o=this.options,U=this.uniforms;
-    const G=this.gpu;G.frame();
+    const G=this.gpu;G.frame();if(this.enabled)this._dynamicResolution(dt);
     if(!this.enabled){KE.prepareCamera(camera);G.begin('Scene (direct)');R.render(scene,camera);G.end();return;}
     const t0=performance.now();this.setSize();const [W,H]=this.size,[IW,IH]=this.internal;this.frame++;this.stats.passes=0;
     const prevTarget=R.getRenderTarget(),prevTone=R.toneMapping,prevAutoClear=R.autoClear,prevInfo=R.info.autoReset,prevFog=scene.fog,prevBg=scene.background,prevMask=camera.layers.mask;
